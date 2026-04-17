@@ -1,15 +1,15 @@
 # Ralph Loop v2: Autonomous Spec-Queue Orchestrator with Branch DAG Awareness
 
 **Linear issue:** ENG-176
-**Date:** 2026-04-17
+**Date:** 2026-04-17 (revised after first review)
 **Supersedes:** ENG-151 (see `2026-04-15-spec-queue-orchestrator-design.md` for point-in-time v1 thinking)
 
 ## Problem
 
 Decouple the phases of a development session so that pre-approved work can run while Sean is away from the desk, and review happens interactively on return. v1 established this pattern but made two assumptions that no longer hold:
 
-1. **Each worktree branches from main.** This means an issue can only be dispatched once its blockers are *merged*, not just *ready*. A chain of dependent tickets can't make forward progress overnight — only the root can run; everything else waits for a human review-and-merge in the morning.
-2. **Implementation requires heavy scaffolding.** v1 assumed a two-artifact model (durable spec + pre-written plan) and detailed prompting. With Opus 4.7 as the executor, less handholding is warranted — the question is *how much less.*
+1. **Each worktree branches from main.** An issue could only be dispatched once its blockers were *merged*, not just *ready*. A chain of dependent tickets couldn't make forward progress overnight — only the root could run; everything else waited for a human review-and-merge in the morning.
+2. **Implementation requires heavy scaffolding.** v1 assumed a two-artifact model (durable spec + pre-written plan) and detailed prompting. With Opus 4.7 as the executor and auto mode available, less handholding is warranted — the question is *how much less.*
 
 v2 addresses both and defines a **load-bearing contract** for what the autonomous session consumes. This contract blocks experimentation on upstream tools (brainstorming, plan-writing) because those tools produce the contract's input.
 
@@ -27,34 +27,46 @@ The autonomous session consumes **one artifact**: the PRD written into the Linea
 
 ### 2. Minimal prompt template; trust CLAUDE.md and skill descriptions
 
-The prompt template given to each `claude -p` invocation is intentionally minimal:
+The prompt template given to each `claude -p` invocation:
 
 ```
 You are implementing Linear issue $ISSUE_ID ($ISSUE_TITLE) autonomously.
 The PRD is in the issue description — read it via Linear.
 Branch: $BRANCH_NAME, worktree: $WORKTREE_PATH.
+The worktree has been pre-created at the correct base branch. If you see
+unresolved merge conflicts from parent branches in `git status`, resolve
+them before implementing the feature.
 When implementation is done and tests pass, invoke /prepare-for-review.
 ```
 
-**Rationale:**
+**Branch and worktree are deterministic at prompt-rendering time.** Both are pre-computed by the orchestrator *before* `claude -p` is invoked:
+
+- Branch name comes from Linear's auto-generated slug (`eng-190-foo`) — known from the issue.
+- Worktree path is `~/.claude/worktrees/<branch>` — native `claude --worktree` convention.
+- The orchestrator runs `git worktree add <path> -b <branch> <base>` with the DAG-chosen base (main, parent's branch, or integration-merge branch) *before* dispatch.
+- For dependent tickets this is the same mechanism — the base branch changes (parent's branch instead of main), but the substitution still happens before the prompt is rendered.
+
+**Rationale for minimal prompt:**
 - Opus 4.7 reliably self-invokes skills based on CLAUDE.md conventions and skill descriptions. Duplicating the sequence in the prompt creates drift risk when skills evolve.
-- The sequence of wrap-up skills (`update-stale-docs`, `capture-decisions`, `prune-completed-docs`, `codex-review-gate`, `linear-workflow`) lives inside the `prepare-for-review` skill (see Decision 3). The prompt just names the entry point.
-- Users who want different behavior (e.g., skip decision capture for trivial fixes) can override via per-run config without touching the core template.
+- The wrap-up sequence (`update-stale-docs`, `capture-decisions`, `prune-completed-docs`, `codex-review-gate`, `linear-workflow`) lives inside `prepare-for-review` (Decision 3). The prompt just names the entry point.
 
 ### 3. New skill `prepare-for-review` wraps the handoff checklist
 
-A new global skill, `prepare-for-review`, is the entry point for "implementation is done, ready to hand off to human review." It runs:
+A new global skill, `prepare-for-review`, is the entry point for "implementation is done, ready to hand off to human review." It runs, in order:
 
 1. `update-stale-docs`
 2. `capture-decisions`
 3. `prune-completed-docs`
 4. `codex-review-gate` (iterating on findings, may modify code)
-5. `linear-workflow` to move the issue to In Review
+5. **Post a Linear comment** containing:
+   - A **review summary** — what was done, any surprises or deviations from the PRD.
+   - A **QA test plan** — the manual checks that matter for this work: what to click, what to verify, which edge cases the agent worked around. This closes a review-time gap — the agent that wrote the code knows the risky paths; capturing them at handoff is the cheap moment.
+6. Move the issue via `linear-workflow`: `In Progress → In Review`.
 
 **Rationale:**
 - Separates *phase-generic polish* (this skill) from *project-specific integration* (branch-closing skills — see Decision 4). The polish sequence is the same across projects; the merge ritual isn't.
 - Useful in interactive sessions too — anytime Sean finishes implementing a feature, `/prepare-for-review` ensures docs/decisions/review are complete before handoff.
-- The name is deliberately descriptive of its outcome (work becomes review-ready) rather than tied to superpowers' `-ing` gerund convention.
+- The name is deliberately descriptive of its outcome, not tied to superpowers' `-ing` gerund convention.
 
 **Creation is out of scope for this ticket.** ENG-176 specifies the contract (what the skill does, what it inputs/outputs); a follow-up ticket creates the skill itself.
 
@@ -66,7 +78,7 @@ The superpowers `finishing-a-development-branch` skill is dropped from Sean's ac
 - Merge rituals differ per project; a global skill either over-generalizes or picks an arbitrary default. Project-local skills encode exact conventions.
 - Closing is a separate *phase* from polishing. Mixing test/review/code-change work into a "finishing" skill conflates completion with integration.
 
-**Restructure / replacement of `finishing-a-development-branch` is out of scope for this ticket.** Spin off as a separate follow-up per project.
+**Restructure / replacement of `finishing-a-development-branch` is out of scope for this ticket.** Spin off as per-project follow-ups. An example `close-feature-branch` skill may eventually serve as a reference.
 
 ### 5. New Linear state: "Approved"
 
@@ -81,60 +93,72 @@ Backlog → Todo → Approved → In Progress → In Review → Done
 ```
 
 - **Todo:** actionable, but no PRD yet.
-- **Approved:** PRD written into issue description; blockers (if any) are being worked or already merged. Signals "ready for autonomous pickup."
+- **Approved:** PRD written into issue description; signals "ready for autonomous pickup."
 - **In Progress:** orchestrator dispatched a session for this issue.
 - **In Review:** session completed `prepare-for-review`; awaiting Sean's interactive review + branch close.
 - **Done:** Sean merged via project-local closing skill.
 
 **Rationale:**
 - Clean semantics carried by the state machine, not overloaded labels. Linear's board view makes the queue immediately visible.
-- `In Review` already exists (position 1002, "started" type) and maps exactly to the v2 pickup rule's "Review" state.
+- `In Review` already exists and maps exactly to the v2 pickup rule's "Review" state.
 - Adding one state is a one-time Linear config change.
 
-**Exception labels:**
+**Exception label:**
 
 - `ralph-failed` — autonomous session exited non-zero; Sean decides retry/cancel/debug.
-- `stale-parent` — parent branch amended after child dispatched; child may need rebase during review.
 
-### 6. Pickup rule
+(Stale-parent detection moves out of the orchestrator and into a separate post-commit-hook mechanism — see Follow-up Tickets. It's a review-time concern, not a dispatch-time one.)
 
-An issue is pickup-ready when **all** of:
+### 6. Pickup rule (strict) + pre-flight sanity scan
+
+An issue is **strictly pickup-ready** when **all** of:
 
 1. State is `Approved`.
-2. No `ralph-failed` label (retries are a human decision).
-3. All `blocked-by` issues are in `Done`, `In Review`, or `Canceled`.
+2. No `ralph-failed` label.
+3. All `blocked-by` issues are in `Done` OR `In Review`. **Canceled blockers are *not* counted as resolved.**
 
-**Canceled blocker = resolved blocker.** If Sean cancels an issue, it's no longer blocking. The downstream child may still be meaningful (if not, Sean cancels it too); the orchestrator doesn't judge.
+**Why exclude Canceled:** Cancellation is a judgment call — something was deemed not worth doing. An issue whose parent was canceled shouldn't silently proceed; the dependency relationship may no longer be meaningful. Sean's intervention is warranted.
+
+**Pre-flight sanity scan** — before entering the dispatch loop, `/run-queue` looks for anomalies and asks Sean to clarify before proceeding. Anomalies include:
+
+- Issue has a `Canceled` blocker (warrants human re-evaluation — keep, cancel, or edit dependencies?).
+- Issue has a `Duplicate` blocker (similar — resolve the duplication relationship first).
+- Blocker is itself Approved but not yet In Review/Done, and no chain resolves it — circular or deeply stuck dependency.
+- Issue is marked Approved but lacks a PRD in the description.
+
+On each anomaly, the scan pauses with a description and asks Sean what to do. Only after the scan passes does the dispatch loop begin.
 
 ### 7. Branch DAG awareness
 
 When dispatching issue `B` whose blockers are `{A1, A2, ...}`:
 
-| Blocker set state | Base branch for B |
+| Blocker state | Base branch for B |
 |---|---|
-| All blockers `Done` (merged to main) | `main` |
-| One blocker in `In Review`, rest `Done`/`Canceled` | That blocker's branch |
-| Multiple blockers in `In Review` | **Integration merge branch** (see below) |
-| No blockers | `main` |
+| No blockers, or all blockers merged (`Done`) | `main` |
+| One blocker in `In Review`, rest `Done` | That blocker's branch |
+| Multiple blockers in `In Review` | **Integration merge** (see below) |
 
 **Multi-parent integration merge:**
 
-When two or more blockers are in `In Review`, the orchestrator creates a throwaway integration branch by merging them in turn, then branches B from it.
+The orchestrator attempts to merge the in-review parents sequentially in B's pre-created worktree. Two outcomes:
+
+- **Clean merge:** worktree is ready; agent implements the feature normally.
+- **Merge conflicts:** worktree has unresolved conflicts. The prompt template tells the agent to check `git status` and resolve conflicts before implementing. Opus 4.7 with auto mode can reason about standard merge conflicts — it has access to both parent branches via git log/diff.
 
 ```bash
-git worktree add .worktrees/eng-B-integration -b ralph-integration-eng-B main
-cd .worktrees/eng-B-integration
-git merge <branch-A1> <branch-A2> ...
-# If merge conflicts: remove worktree, skip B (add comment to Linear issue).
+# Orchestrator:
+git worktree add ~/.claude/worktrees/eng-B-slug -b eng-B-slug main
+cd ~/.claude/worktrees/eng-B-slug
+git merge <parent-A1-branch>  # may conflict
+git merge <parent-A2-branch>  # may conflict
+# On conflicts: leave them. The agent resolves.
+# Clean: proceed directly to feature work.
 ```
 
-On success, B's branch starts from this integration branch. On conflict, B is skipped — autonomous session can't resolve cross-parent conflicts; Sean resolves by merging one parent first.
-
-**Stale-parent detection:**
-
-The orchestrator records each child's parent branch HEADs in `progress.json` at dispatch time. At each subsequent orchestrator run, it re-checks those HEADs for still-in-Review children. If a parent HEAD has advanced, add the `stale-parent` label to the child issue and include a Linear comment noting the old/new SHAs.
-
-Sean sees the label when reviewing and decides whether to rebase.
+**Rationale for agent-resolution over orchestrator-skipping:**
+- The orchestrator can't reason about conflicts (it's a bash script); an agent can.
+- v1 would have skipped B and blocked progress; v2's whole point is keeping chains moving.
+- The worst case is the agent gets the merge wrong — which then surfaces during Sean's review, same as any merge done by a developer.
 
 ### 8. Failure handling: skip downstream, continue independents
 
@@ -148,21 +172,30 @@ When a session fails (non-zero exit from `claude -p`):
 **Rationale:**
 - v1's stop-on-failure was conservative but contradicts the whole v2 pitch ("let independent work proceed in parallel chains"). If A fails and C is independent of A, there's no reason to stop C.
 - Skipping the failed issue's *downstream* is conservative where it matters — we don't blindly build on top of failed work.
-- Simple to implement: one DAG traversal to identify "tainted" issues per run.
 
-### 9. Keep-from-v1
+### 9. Auto mode (not `--dangerously-skip-permissions + sandbox`)
 
-These v1 design decisions carry over unchanged:
+Each dispatched `claude -p` invocation runs in **auto mode** (Opus 4.7's autonomous-execution capability). Auto mode proceeds on low-risk work without permission prompts but still declines destructive or high-risk operations.
+
+**Rationale:**
+- Auto mode replaces v1's `--dangerously-skip-permissions` + OS-level sandbox combo. It's risk-aware (respects a high-risk-confirmation contract) where the sandbox was uniformly-permissive-but-isolated. Trade-off: no OS-level isolation, but a much more considered permission model.
+- No `--max-budget-usd` — sessions run to completion. Budget enforcement via monitoring, not mid-session kill.
+- No sandbox config needed — auto mode's permission model handles risk gating.
+
+**New failure class: permission-prompt deadlock.** If the agent asks permission on an action auto mode doesn't auto-approve and Sean isn't at the desk, the session blocks. This is a real operational risk; resolution options are in Open Questions.
+
+### 10. Carried over from v1 (unchanged)
 
 - **Fresh instance per spec** — each issue gets its own `claude -p` invocation with a clean context window.
 - **Local execution** — orchestrator runs locally, not on Anthropic's cloud Routines.
-- **Custom bash script** — deterministic orchestration (sort, dispatch, track), not LLM orchestration.
-- **Native sandbox** — OS-level sandboxing via `.claude/settings.json`; see v1 spec for recommended config.
+- **Custom bash script** — deterministic orchestration (sort, dispatch, track); no LLM-driven orchestration.
 - **Sequential dispatch within a DAG layer** — parallelism is a v3 concern.
-- **Resumable sessions** — each session named `ENG-XXX: title` for `claude --resume`.
-- **Progress file** — `progress.json` per run, read by Sean on return.
-- **Plugin with adapter pattern** — Linear adapter in v1; structure allows other task sources later.
+- **Resumable sessions** — each session named `ENG-XXX: title` for `claude --resume` when Sean reviews.
+- **`progress.json` per run** — human-readable audit trail.
+- **Plugin with slash-command entry point** — `/run-queue` is Sean's trigger.
 - **No PR creation, no automated merging** — the loop stops at "In Review"; closing is human-driven.
+
+**Removed from v1:** sandbox flag (replaced by auto mode), `--max-budget-usd` (no budget cap), adapter-pattern abstraction (YAGNI — inline Linear calls).
 
 ## Architecture
 
@@ -183,18 +216,29 @@ These v1 design decisions carry over unchanged:
 │                  WHILE AWAY                          │
 │                                                      │
 │  /run-queue                                          │
-│    ├─ Query Linear: state=Approved, no ralph-failed  │
-│    ├─ Filter by pickup rule (blockers satisfied)     │
+│    ├─ PRE-FLIGHT SANITY SCAN                         │
+│    │   ├─ Canceled-parent anomalies → ask Sean       │
+│    │   ├─ Missing PRD on Approved issues             │
+│    │   └─ Circular/stuck dependencies                │
+│    ├─ Query: state=Approved, no ralph-failed,        │
+│    │         blockers ⊆ {Done, In Review}            │
 │    ├─ Topological sort                               │
+│    ├─ Show dispatch plan; confirm                    │
 │    └─ For each ready spec (sequential):              │
-│        ├─ Determine base branch (DAG-aware)          │
-│        ├─ If multi-parent: create integration merge  │
-│        ├─ claude -p --worktree --name --sandbox      │
-│        ├─ Session invokes /prepare-for-review        │
-│        ├─ On success:  state → In Review             │
-│        ├─ On failure:  label → ralph-failed, skip    │
-│        │                downstream this run          │
-│        └─ Update progress.json                       │
+│        ├─ dag_base() → main | parent | integration   │
+│        ├─ git worktree add ~/.claude/worktrees/…     │
+│        ├─ For integration: sequential git merges     │
+│        │   (leave conflicts in-place; agent resolves)│
+│        ├─ Linear: Approved → In Progress             │
+│        ├─ claude -p --worktree --name (auto mode)    │
+│        │   • Session reads PRD from Linear           │
+│        │   • Session implements, runs TDD            │
+│        │   • Session invokes /prepare-for-review     │
+│        │   • /prepare-for-review runs polish chain,  │
+│        │     posts QA-plan comment, moves to Review  │
+│        ├─ On non-zero exit: label ralph-failed,      │
+│        │   taint downstream this run                 │
+│        └─ Append to progress.json                    │
 └──────────────────────┬──────────────────────────────┘
                        │
                        ▼
@@ -202,16 +246,18 @@ These v1 design decisions carry over unchanged:
 │                  WHEN BACK                           │
 │                                                      │
 │  For each In Review issue:                           │
-│    cd .worktrees/eng-XXX                             │
-│    claude --resume "ENG-XXX: title"                  │
-│    Review → Fix → /<project-local-closing-skill>     │
+│    Read QA plan (Linear comment)                     │
+│    cd ~/.claude/worktrees/eng-XXX                    │
+│    claude --resume "ENG-XXX: title" (if available)   │
+│    Manual review per QA plan                         │
+│    Iterate → /<project-local-closing-skill>          │
 │                                                      │
 │  For each ralph-failed issue:                        │
-│    cd .worktrees/eng-XXX                             │
-│    claude --resume → debug → retry or cancel         │
+│    cd ~/.claude/worktrees/eng-XXX                    │
+│    Debug interactively → retry or cancel             │
 │                                                      │
-│  For each stale-parent-labeled issue:                │
-│    Rebase onto parent's current HEAD during review   │
+│  (stale-parent-labeled issues, if any, surfaced by   │
+│   the post-commit hook — see Follow-up Tickets)      │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -221,43 +267,60 @@ These v1 design decisions carry over unchanged:
 
 `disable-model-invocation: true` skill. Sean runs before stepping away. Responsibilities:
 
-1. Read config (project, budget, model).
-2. Query Linear for pickup-ready issues (state=Approved, blockers satisfied, no `ralph-failed` label).
-3. Topological sort by `blocked-by` relations.
-4. Dry-run preview: show queue, base-branch choices, multi-parent integration needs.
-5. Prompt for confirmation; on yes, start the orchestrator script.
+1. Read config (project, model, worktree base).
+2. **Pre-flight sanity scan** (see Decision 6). Find anomalies, stop and ask Sean before proceeding.
+3. Query Linear for strict pickup-ready issues; topological sort.
+4. Dry-run preview: show queue, base-branch choices, where integration merges will happen.
+5. Ask Sean to confirm.
+6. Invoke `orchestrator.sh` with the approved queue.
+
+The queue is **fixed at invocation time**. New Approved issues added mid-run are not pulled in until the next `/run-queue`. The "run" in "run-queue" captures this — one invocation processes one queue.
 
 #### 2. Orchestrator script: `orchestrator.sh`
 
-Processes the ordered queue sequentially. For each issue:
+Processes the ordered queue sequentially. Per issue:
 
 ```
-# Determine base branch
-base_branch = dag_base(issue, parent_states)
-  # "main" | parent's branch | integration branch | skip
+base       = dag_base(issue)           # "main" | parent-branch | {integration, parents}
+worktree   = ~/.claude/worktrees/$branch
+session    = "$ISSUE_ID: $ISSUE_TITLE"
 
-# If skip: log, continue to next issue
-# If integration: create throwaway merge branch; on conflict, skip + Linear comment
+# Pre-create worktree
+if base is integration:
+    git worktree add $worktree -b $branch main
+    cd $worktree
+    for parent_branch in base.parents:
+        git merge $parent_branch    # may leave conflicts in the worktree
+                                    # don't abort on conflict; agent resolves
+else:
+    git worktree add $worktree -b $branch $base
 
-# Dispatch
+# Linear: Approved → In Progress
+linear issue update $issue --state "In Progress"
+
+# Dispatch (auto mode)
 claude -p \
-    --worktree ".worktrees/$branch_name" \
-    --name "$session_name" \
-    --dangerously-skip-permissions \
-    --max-budget-usd "$budget_per_spec" \
-    "$minimal_prompt_template"
+    --worktree $worktree \
+    --name "$session" \
+    [auto-mode flag] \
+    "$prompt" \
+    2>&1 | tee $worktree/ralph-output.log
 
 # Classify outcome
 if exit_code == 0:
-    linear.update_state(issue, "In Review")
-    progress.append(success)
+    # /prepare-for-review inside the session already moved state to In Review
+    progress.append({issue, branch, base, outcome: "in_review", ...})
 else:
-    linear.add_label(issue, "ralph-failed")
-    taint_downstream(issue)  # skip issue's DAG descendants this run
-    progress.append(failure)
+    linear issue label add $issue ralph-failed
+    tainted.add_transitive_descendants_of(issue)
+    progress.append({issue, outcome: "failed", exit_code, ...})
+
+# Skip any issue whose id is in `tainted`
 ```
 
-Continues until queue is empty or all remaining issues are tainted/unreachable.
+Continues until the queue is empty or all remaining issues are tainted.
+
+The exact auto-mode CLI flag is an open question (see Open Questions).
 
 #### 3. Topological sort: `toposort.sh`
 
@@ -267,41 +330,38 @@ Kahn's algorithm over `blocked-by` relations. Output order respects: dependencie
 
 ```
 function dag_base(issue):
-    blockers = linear.blocked_by(issue)
+    blockers = linear blocked-by relations
     review_parents = [b for b in blockers if b.state == "In Review"]
 
     if not review_parents:
-        return "main"   # all blockers Done/Canceled, or no blockers
+        return "main"
     if len(review_parents) == 1:
         return review_parents[0].branch_name
-    # Multi-parent case
-    return integration_merge(review_parents)  # may return "skip" on conflict
+    return {"type": "integration", "parents": review_parents}
 ```
 
-#### 5. Linear adapter: `adapters/linear.sh`
+Integration bases trigger the in-worktree sequential merges shown in Component 2.
 
-- **Query:** issues in state=Approved within configured project, filtered by label (exclude `ralph-failed`).
-- **Dependencies:** `blocked-by` relations for pickup rule.
-- **State transitions:** Approved → In Progress (on dispatch), In Progress → In Review (on success).
-- **Labels:** add `ralph-failed` on failure, `stale-parent` on amendment detection.
-- **Comments:** optional audit comments on dispatch, stale-parent detection, or integration-merge conflict.
-- **Branch names:** use Linear's auto-generated `eng-XXX-slug` convention.
+#### 5. Linear interaction (inline, no adapter)
 
-#### 6. Stale-parent scanner (runs at start of each orchestrator run)
+Linear CLI calls are inline in `orchestrator.sh` and `/run-queue`. YAGNI on the adapter pattern — hard-code Linear until a second task source appears.
 
-For every issue currently in `In Review` with a recorded parent branch HEAD:
+Operations:
 
-```
-old_head = progress_history[issue]["parent_head"]
-new_head = git rev-parse <parent_branch>
-if old_head != new_head:
-    linear.add_label(issue, "stale-parent")
-    linear.add_comment(issue, f"Parent {parent_issue} moved from {old_head[:8]} to {new_head[:8]}")
-```
+- **Query** pickup-ready issues: `linear issue query --state Approved --project "$PROJECT" ...`.
+- **Read blockers**: `linear issue view $ID --json | jq '.relations'`.
+- **State transitions**:
+  - Orchestrator: `Approved → In Progress` at dispatch.
+  - Session (via `/prepare-for-review` → `linear-workflow`): `In Progress → In Review` on success.
+- **Labels**: orchestrator adds `ralph-failed` on non-zero exit.
+- **Comments**: pre-flight anomalies noted as comments; QA plan + review summary posted by `/prepare-for-review`.
+- **Branch names**: Linear's auto-generated `eng-XXX-slug`.
 
-#### 7. Progress file: `progress.json`
+**Note:** The `/linear-workflow` skill currently assumes human-in-the-loop invocation. Using it inside an autonomous session may conflict with the orchestrator's state changes. Audit and adjustment is filed as a follow-up ticket (see Follow-up Tickets).
 
-Appends to existing history; supports the stale-parent scanner and gives Sean a summary on return.
+#### 6. Progress file: `progress.json`
+
+Human-readable run summary. Not used by the orchestrator for resumption (queues are fresh each run).
 
 ```json
 {
@@ -313,15 +373,16 @@ Appends to existing history; supports the stale-parent scanner and gives Sean a 
                     "issue": "ENG-190",
                     "branch": "eng-190-foo",
                     "base": "main",
-                    "parents": {},
+                    "worktree": "~/.claude/worktrees/eng-190-foo",
+                    "session": "ENG-190: foo",
                     "outcome": "in_review",
-                    "exit_code": 0
+                    "exit_code": 0,
+                    "duration_seconds": 2710
                 },
                 {
                     "issue": "ENG-191",
                     "branch": "eng-191-bar",
                     "base": "eng-190-foo",
-                    "parents": {"ENG-190": "a1b2c3d4..."},
                     "outcome": "in_review",
                     "exit_code": 0
                 }
@@ -334,24 +395,20 @@ Appends to existing history; supports the stale-parent scanner and gives Sean a 
 }
 ```
 
-#### 8. Configuration: `config.json`
+No parent-HEAD tracking — staleness detection is a post-commit-hook concern, not the orchestrator's.
+
+#### 7. Configuration: `config.json`
 
 ```json
 {
-    "task_source": "linear",
-    "linear": {
-        "project": "Agent Config",
-        "approved_state": "Approved",
-        "review_state": "In Review",
-        "failed_label": "ralph-failed",
-        "stale_parent_label": "stale-parent"
-    },
-    "execution": {
-        "budget_per_spec_usd": 5.00,
-        "model": "opus",
-        "worktree_base": ".worktrees"
-    },
-    "prompt_template": "You are implementing Linear issue $ISSUE_ID ($ISSUE_TITLE) autonomously.\nThe PRD is in the issue description — read it via Linear.\nBranch: $BRANCH_NAME, worktree: $WORKTREE_PATH.\nWhen implementation is done and tests pass, invoke /prepare-for-review."
+    "project": "Agent Config",
+    "approved_state": "Approved",
+    "review_state": "In Review",
+    "failed_label": "ralph-failed",
+    "worktree_base": "~/.claude/worktrees",
+    "model": "opus",
+    "stdout_log_filename": "ralph-output.log",
+    "prompt_template": "You are implementing Linear issue $ISSUE_ID ($ISSUE_TITLE) autonomously.\nThe PRD is in the issue description — read it via Linear.\nBranch: $BRANCH_NAME, worktree: $WORKTREE_PATH.\nThe worktree has been pre-created at the correct base branch. If you see unresolved merge conflicts from parent branches in `git status`, resolve them before implementing the feature.\nWhen implementation is done and tests pass, invoke /prepare-for-review."
 }
 ```
 
@@ -364,13 +421,10 @@ spec-queue/
 │   └── run-queue/
 │       └── SKILL.md              # /run-queue entry point
 ├── scripts/
-│   ├── orchestrator.sh           # Main dispatch loop
+│   ├── orchestrator.sh           # Dispatch loop
 │   ├── toposort.sh               # Topological sort
 │   ├── dag_base.sh               # Base-branch selection
-│   ├── integration_merge.sh      # Multi-parent merge
-│   ├── stale_parent_scan.sh      # Parent-amendment detection
-│   └── adapters/
-│       └── linear.sh             # Linear CLI wrapper
+│   └── preflight_scan.sh         # Pre-flight anomaly detection
 └── config.example.json
 ```
 
@@ -379,7 +433,7 @@ spec-queue/
 Upstream tools (brainstorming, plan-writing) must produce:
 
 1. **A Linear issue** in the configured project, in state `Approved`.
-2. **A PRD written into the issue description.** Format is not rigidly prescribed — any markdown that gives Opus 4.7 enough context to implement without further human input. Experiments on what makes a "good" PRD (ENG-177, ENG-178) decide the recommended shape.
+2. **A PRD written into the issue description.** Format is not rigidly prescribed — any markdown that gives Opus 4.7 enough context to implement without further human input. ENG-177 and ENG-178 experiment with the recommended shape.
 3. **Explicit `blocked-by` relations** for any prerequisite issues. The orchestrator uses these for DAG ordering and base-branch selection.
 
 That's the entire input contract. Everything downstream (branch name, worktree path, session name) is derived by the orchestrator from the Linear issue.
@@ -387,31 +441,38 @@ That's the entire input contract. Everything downstream (branch name, worktree p
 ## Out of scope for this ticket
 
 - **Creating the `prepare-for-review` skill.** Follow-up ticket.
-- **Refactoring / replacing `finishing-a-development-branch`** into project-local closing skills. Follow-up ticket(s) per project.
+- **Refactoring / replacing `finishing-a-development-branch`** into project-local closing skills. Follow-up tickets per project.
+- **Post-commit hook for stale-parent detection.** Review-time concern, not a ralph-loop concern. Follow-up ticket.
+- **Auditing `/linear-workflow` for autonomous-session compatibility.** Follow-up ticket.
 - **Parallel dispatch within a DAG layer.** v3 extension.
 - **Retry logic.** Human-driven after `ralph-failed`.
 - **PR creation / automated merging.** Explicit non-goal.
-- **Cost reporting.** `--max-budget-usd` provides per-spec caps; no aggregate reporting.
 - **Remote / cloud execution.** Local-only for v2.
-- **Non-Linear task sources.** Adapter pattern allows it; only Linear ships.
+- **Non-Linear task sources.** Inline Linear calls; add an adapter when a second source materializes.
 
 ## Follow-up tickets (to file after approval)
 
 1. **Implement ralph loop v2** (the plugin itself) — consumes this design.
-2. **Create `prepare-for-review` skill** — contract defined in Decision 3.
-3. **Replace `finishing-a-development-branch`** with a project-local closing skill for chezmoi (and one per other active project).
-4. **Add "Approved" state to ENG team in Linear** (one-time config, can be done any time).
+2. **Create `prepare-for-review` skill** — includes QA-test-plan generation and Linear comment posting (Decision 3).
+3. **Add "Approved" state to ENG team in Linear** (one-time config, can happen independently).
+4. **Audit `/linear-workflow` skill** for autonomous-session compatibility (Component 5 note).
+5. **Post-commit hook for stale-parent detection** — fires on parent branch amendment during review; labels any In-Review children with `stale-parent`. Not ralph-loop scope.
+6. **Project-local `close-feature-branch` skill** (per active project; example in chezmoi as reference).
 
-ENG-177 and ENG-178 are already filed as the upstream-tool experiments; they consume the contract defined in this ticket.
+ENG-177 and ENG-178 are already filed as upstream-tool experiments; they consume the contract defined here.
 
-## Open questions (to resolve during implementation)
+## Open questions (to resolve at implementation time)
 
-1. **`claude --worktree` flag behavior.** Does the native flag use `.worktrees/` when set, or does it ignore our preference? Affects whether we call `git worktree add` first and pass the path, or let `--worktree` create it. Needs live verification.
+1. **Auto-mode CLI flag for `claude -p`.** Exact flag name, semantics, and what it auto-approves vs. blocks on needs verification against current Claude Code CLI docs.
 
-2. **`--max-budget-usd` exit behavior.** On budget exhaustion: does `claude -p` exit non-zero, or exit 0 with incomplete work? If the latter, the orchestrator would mark the spec complete when it isn't. Needs live test.
+2. **Permission-prompt deadlock in auto mode.** If the agent blocks on a permission prompt with no human present, the session hangs. Resolution options:
+   - (a) Timeout on session duration (e.g., 2× expected) → fail the spec → `ralph-failed`.
+   - (b) A session-level permission-policy file broadening auto-approvals for autonomous runs.
+   - (c) Accept rare blocking; `ralph-failed` covers the aftermath but throughput suffers.
+   - Decision deferred to implementation; needs live testing.
 
-3. **Session output capture.** Should stdout be captured per-spec to `.worktrees/<branch>/orchestrator-output.log`? Useful for debugging failures without resuming; adds I/O. Lean toward yes, behind a config flag.
+3. **Session persistence horizon.** If Sean reviews a month-old In Review issue, is `claude --resume` still available? Claude Code's session GC policy is unknown. Design should not *require* session resume for review — the diff + Linear QA comment + worktree context must be enough on their own. Session resume is a convenience, not a requirement.
 
-4. **Integration-merge cleanup.** The throwaway integration branch created for multi-parent dispatch — does it live on after the child's session, or get cleaned up? Affects disk usage on long chains; no correctness impact.
+4. **`/run-queue` naming.** The v1 name emphasizes "one invocation = one queue." Alternatives: `/run-loop`, `/dispatch-approved`, `/ralph-start`. Not blocking, but worth revisiting when implementing.
 
-5. **Stale-parent check frequency.** Detection runs at start of each orchestrator invocation. If Sean runs the loop infrequently, stale detection is infrequent. Could also run via post-commit hook on parent branches — but that's extra machinery.
+5. **Integration-merge cleanup.** The merge is done *inside* B's real worktree (not a throwaway one), so no cleanup is needed for v2. If B's branch is merged to main, parent merges are absorbed; if abandoned, the worktree is removed with normal worktree hygiene.
