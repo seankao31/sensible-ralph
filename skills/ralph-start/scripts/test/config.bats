@@ -64,7 +64,24 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# 3. config.example.json itself parses cleanly — all keys present, no exit
+# 3. Malformed JSON → exit 1 with "failed to parse" in error output
+# ---------------------------------------------------------------------------
+@test "malformed JSON exits 1 with failed to parse in error" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+  local bad_json="$tmpdir/bad.json"
+
+  echo "not json" > "$bad_json"
+
+  run bash -c "source '$CONFIG_SH' '$bad_json'" 2>&1
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"failed to parse"* ]]
+
+  rm -rf "$tmpdir"
+}
+
+# ---------------------------------------------------------------------------
+# 4. config.example.json itself parses cleanly — all keys present, no exit
 # ---------------------------------------------------------------------------
 @test "config.example.json parses cleanly with no errors" {
   run source_config "$EXAMPLE_CONFIG"

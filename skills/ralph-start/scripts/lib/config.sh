@@ -40,8 +40,11 @@ _config_load() {
     var_name="${entry%%:*}"
     json_key="${entry##*:}"
 
-    # jq returns literal "null" when the key is absent
-    value="$(jq -r --arg k "$json_key" 'if has($k) then .[$k] else "null" end' "$config_file")"
+    # jq returns literal "null" when the key is absent; exits non-zero on parse error
+    value="$(jq -r --arg k "$json_key" 'if has($k) then .[$k] else "null" end' "$config_file")" || {
+      echo "config: failed to parse config file '$config_file'" >&2
+      return 1
+    }
 
     if [[ "$value" == "null" ]]; then
       echo "config: missing required key '$json_key'" >&2
