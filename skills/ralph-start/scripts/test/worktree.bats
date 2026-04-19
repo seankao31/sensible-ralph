@@ -7,7 +7,7 @@ WORKTREE_SH="$SCRIPT_DIR/lib/worktree.sh"
 
 setup() {
   REPO_DIR="$(cd "$(mktemp -d)" && pwd -P)"
-  git -C "$REPO_DIR" init
+  git -C "$REPO_DIR" init -b main
   git -C "$REPO_DIR" config user.email "test@test.com"
   git -C "$REPO_DIR" config user.name "Test"
   # Create an initial commit so main branch exists
@@ -153,6 +153,8 @@ call_fn_from() {
 
   [ "$status" -ne 0 ]
   [[ "$output" =~ "parent ref not found" ]]
+  # Pre-validation must fire before worktree creation — directory must not exist
+  [ ! -d "$wt_path" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -180,4 +182,38 @@ call_fn_from() {
   [ "$status" -eq 0 ]
   [ -f "$wt_path/file-a.txt" ]
   [ -f "$wt_path/file-b.txt" ]
+}
+
+# ---------------------------------------------------------------------------
+# 8. worktree_create_with_integration — first parent conflict stops second merge
+# ---------------------------------------------------------------------------
+@test "worktree_create_with_integration stops at first conflict; second parent not merged" {
+  # Parent A: conflicts with main on conflict.txt
+  git -C "$REPO_DIR" checkout -b "eng-30-conflict-a"
+  echo "parent A version" > "$REPO_DIR/conflict.txt"
+  git -C "$REPO_DIR" add conflict.txt
+  git -C "$REPO_DIR" commit -m "parent A adds conflict.txt"
+  git -C "$REPO_DIR" checkout main
+
+  # main also adds conflict.txt — guarantees an add/add conflict with parent A
+  echo "main version" > "$REPO_DIR/conflict.txt"
+  git -C "$REPO_DIR" add conflict.txt
+  git -C "$REPO_DIR" commit -m "main adds conflict.txt"
+
+  # Parent B: adds a unique file — would be present if incorrectly merged
+  git -C "$REPO_DIR" checkout -b "eng-31-parent-b"
+  echo "content from parent B" > "$REPO_DIR/file-b-unique.txt"
+  git -C "$REPO_DIR" add file-b-unique.txt
+  git -C "$REPO_DIR" commit -m "parent B adds file-b-unique.txt"
+  git -C "$REPO_DIR" checkout main
+
+  local wt_path="$REPO_DIR/.worktrees/two-parent-conflict"
+
+  # Must return 0 (conflict left in-place is expected) AND not merge parent B
+  run call_fn worktree_create_with_integration "$wt_path" "two-parent-conflict" "eng-30-conflict-a" "eng-31-parent-b"
+
+  [ "$status" -eq 0 ]
+  [ -d "$wt_path" ]
+  # Second parent's unique file must NOT be present — it was correctly skipped
+  [ ! -f "$wt_path/file-b-unique.txt" ]
 }

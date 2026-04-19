@@ -25,15 +25,28 @@ worktree_create_with_integration() {
   shift 2
   local parents=("$@")
 
-  git worktree add "$path" -b "$branch" main
-
+  # Validate all parent refs before creating any state
   for parent in "${parents[@]}"; do
-    git -C "$path" show-ref --verify --quiet "refs/heads/$parent" || {
+    git show-ref --verify --quiet "refs/heads/$parent" || {
       printf 'worktree_create_with_integration: parent ref not found: %s\n' "$parent" >&2
       return 1
     }
-    # Conflicts are intentionally left in-place; do not propagate merge exit code.
-    git -C "$path" merge "$parent" --no-edit || true
+  done
+
+  git worktree add "$path" -b "$branch" main
+
+  for parent in "${parents[@]}"; do
+    git -C "$path" merge "$parent" --no-edit && continue
+    # Merge exited non-zero. Was it a conflict (expected) or something else (error)?
+    local unmerged
+    unmerged="$(git -C "$path" diff --name-only --diff-filter=U)"
+    if [[ -n "$unmerged" ]]; then
+      # Conflicts in-place as intended. No further parents can merge until agent resolves.
+      return 0
+    else
+      printf 'worktree_create_with_integration: merge failed for parent %s\n' "$parent" >&2
+      return 1
+    fi
   done
 }
 
