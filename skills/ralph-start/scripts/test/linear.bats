@@ -60,9 +60,11 @@ call_fn() {
   run call_fn linear_list_approved_issues
 
   [ "$status" -eq 0 ]
-  # Should have called: linear issue query --project "Agent Config" --all-teams --json
+  # Should have called: linear issue query --project "Agent Config" --all-teams --limit 0 --json
   grep -q "issue query" "$STUB_ARGS_FILE"
   grep -q -- "--all-teams" "$STUB_ARGS_FILE"
+  grep -q -- "--limit" "$STUB_ARGS_FILE"
+  grep -qF -- "--limit 0" "$STUB_ARGS_FILE"
   grep -q -- "--json" "$STUB_ARGS_FILE"
 }
 
