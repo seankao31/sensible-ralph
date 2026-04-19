@@ -17,6 +17,7 @@ setup() {
   export RALPH_PROJECT="Agent Config"
   export RALPH_APPROVED_STATE="Approved"
   export RALPH_FAILED_LABEL="ralph-failed"
+  export RALPH_REVIEW_STATE="In Review"
 
   # Default stub values — override per test
   export STUB_APPROVED_IDS=""       # newline-separated issue IDs
@@ -256,6 +257,23 @@ ENG-60"
   export STUB_BLOCKERS_ENG_90='[{"id":"ENG-45","state":"Approved","branch":"eng-45"}]'
   # ENG-45's own blockers are all In Review — so NOT stuck
   export STUB_BLOCKERS_ENG_45='[{"id":"ENG-44","state":"In Review","branch":"eng-44"}]'
+  export STUB_DESC_CHARS=300
+
+  run_preflight
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"all clear"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# 12. Stuck chain: blocker is Approved with ZERO own blockers
+#     → NOT stuck (will dispatch on next run — it has no blockers holding it back)
+# ---------------------------------------------------------------------------
+@test "approved blocker with zero own blockers is not a stuck-chain anomaly" {
+  export STUB_APPROVED_IDS="ENG-Z"
+  # ENG-Z's blocker is ENG-Q, which is Approved but has no blockers of its own
+  export STUB_BLOCKERS_ENG_Z='[{"id":"ENG-Q","state":"Approved","branch":"eng-q"}]'
+  export STUB_BLOCKERS_ENG_Q='[]'
   export STUB_DESC_CHARS=300
 
   run_preflight
