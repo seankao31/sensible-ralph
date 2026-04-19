@@ -32,6 +32,12 @@ call_fn() {
   bash -c "cd '$REPO_DIR' && source '$WORKTREE_SH' && $fn_name $(printf '%q ' "$@")"
 }
 
+# Like call_fn but runs from a caller-specified working directory.
+call_fn_from() {
+  local cwd="$1" fn_name="$2"; shift 2
+  CWD_OVERRIDE="$cwd" bash -c "cd \"\$CWD_OVERRIDE\" && source '$WORKTREE_SH' && $fn_name $(printf '%q ' "$@")"
+}
+
 # ---------------------------------------------------------------------------
 # 1. worktree_create_at_base — creates a worktree at the given path on a new branch
 # ---------------------------------------------------------------------------
@@ -112,4 +118,66 @@ call_fn() {
 
   [ "$status" -eq 0 ]
   [ "$output" = "$expected" ]
+}
+
+@test "worktree_path_for_issue strips leading and trailing slashes from RALPH_WORKTREE_BASE" {
+  local expected="$REPO_DIR/.worktrees/eng-99-slash-test"
+
+  run bash -c "cd '$REPO_DIR' && RALPH_WORKTREE_BASE='/.worktrees/' source '$WORKTREE_SH' && worktree_path_for_issue eng-99-slash-test"
+
+  [ "$status" -eq 0 ]
+  [ "$output" = "$expected" ]
+}
+
+# ---------------------------------------------------------------------------
+# 5. worktree_path_for_issue — returns non-zero when cwd has no git repo
+# ---------------------------------------------------------------------------
+@test "worktree_path_for_issue fails when run from a non-git directory" {
+  local no_git_dir
+  no_git_dir="$(mktemp -d)"
+
+  run call_fn_from "$no_git_dir" worktree_path_for_issue "eng-99-no-git"
+
+  [ "$status" -ne 0 ]
+
+  rm -rf "$no_git_dir"
+}
+
+# ---------------------------------------------------------------------------
+# 6. worktree_create_with_integration — bad parent ref returns non-zero + stderr
+# ---------------------------------------------------------------------------
+@test "worktree_create_with_integration returns non-zero for a missing parent ref" {
+  local wt_path="$REPO_DIR/.worktrees/bad-parent-integration"
+
+  run call_fn worktree_create_with_integration "$wt_path" "bad-parent-integration" "nonexistent-branch"
+
+  [ "$status" -ne 0 ]
+  [[ "$output" =~ "parent ref not found" ]]
+}
+
+# ---------------------------------------------------------------------------
+# 7. worktree_create_with_integration — two parents, content from both present
+# ---------------------------------------------------------------------------
+@test "worktree_create_with_integration merges content from two parents" {
+  # Parent A: adds file-a.txt
+  git -C "$REPO_DIR" checkout -b "eng-20-parent-a"
+  echo "content from parent A" > "$REPO_DIR/file-a.txt"
+  git -C "$REPO_DIR" add file-a.txt
+  git -C "$REPO_DIR" commit -m "parent A adds file-a.txt"
+  git -C "$REPO_DIR" checkout main
+
+  # Parent B: adds file-b.txt
+  git -C "$REPO_DIR" checkout -b "eng-21-parent-b"
+  echo "content from parent B" > "$REPO_DIR/file-b.txt"
+  git -C "$REPO_DIR" add file-b.txt
+  git -C "$REPO_DIR" commit -m "parent B adds file-b.txt"
+  git -C "$REPO_DIR" checkout main
+
+  local wt_path="$REPO_DIR/.worktrees/two-parent-integration"
+
+  run call_fn worktree_create_with_integration "$wt_path" "two-parent-integration" "eng-20-parent-a" "eng-21-parent-b"
+
+  [ "$status" -eq 0 ]
+  [ -f "$wt_path/file-a.txt" ]
+  [ -f "$wt_path/file-b.txt" ]
 }

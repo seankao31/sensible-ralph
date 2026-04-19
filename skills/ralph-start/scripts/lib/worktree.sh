@@ -28,7 +28,11 @@ worktree_create_with_integration() {
   git worktree add "$path" -b "$branch" main
 
   for parent in "${parents[@]}"; do
-    # Conflicts are intentionally left in-place; do not add || return 1 here.
+    git -C "$path" show-ref --verify --quiet "refs/heads/$parent" || {
+      printf 'worktree_create_with_integration: parent ref not found: %s\n' "$parent" >&2
+      return 1
+    }
+    # Conflicts are intentionally left in-place; do not propagate merge exit code.
     git -C "$path" merge "$parent" --no-edit || true
   done
 }
@@ -40,6 +44,8 @@ worktree_create_with_integration() {
 worktree_path_for_issue() {
   local branch="$1"
   local repo_root
-  repo_root="$(git rev-parse --show-toplevel)"
-  printf '%s/%s/%s\n' "$repo_root" "$RALPH_WORKTREE_BASE" "$branch"
+  repo_root="$(git rev-parse --show-toplevel)" || return 1
+  local base="${RALPH_WORKTREE_BASE#/}"   # strip leading slash
+  base="${base%/}"                         # strip trailing slash
+  printf '%s/%s/%s\n' "$repo_root" "$base" "$branch"
 }
