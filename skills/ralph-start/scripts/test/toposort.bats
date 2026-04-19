@@ -54,9 +54,9 @@ TOPOSORT="$SCRIPT_DIR/toposort.sh"
 # 4. Cycle → exit 1, stderr contains "cycle"
 # ---------------------------------------------------------------------------
 @test "cycle exits 1 with cycle in stderr" {
-  run bash -c "printf 'ENG-A 2 ENG-B\nENG-B 2 ENG-A\n' | '$TOPOSORT'" 2>&1
+  run bash -c "printf 'ENG-A 2 ENG-B\nENG-B 2 ENG-A\n' | '$TOPOSORT'"
   [ "$status" -eq 1 ]
-  [[ "$output" == *"cycle"* ]]
+  [[ "$output" =~ cycle ]] || [[ "$stderr" =~ cycle ]]
 }
 
 # ---------------------------------------------------------------------------
@@ -87,5 +87,17 @@ TOPOSORT="$SCRIPT_DIR/toposort.sh"
   [ "$status" -eq 0 ]
   [ "${lines[0]}" = "ENG-A" ]
   [ "${lines[1]}" = "ENG-B" ]
+  [ "${#lines[@]}" -eq 2 ]
+}
+
+# ---------------------------------------------------------------------------
+# 8. Same-priority tiebreaker: two unblocked issues with identical priority
+#    emit in lexicographic order (sort -n falls back to lex after numeric).
+# ---------------------------------------------------------------------------
+@test "same-priority issues emit in lexicographic order" {
+  run bash -c "printf 'ENG-Z 3\nENG-A 3\n' | '$TOPOSORT'"
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "ENG-A" ]
+  [ "${lines[1]}" = "ENG-Z" ]
   [ "${#lines[@]}" -eq 2 ]
 }

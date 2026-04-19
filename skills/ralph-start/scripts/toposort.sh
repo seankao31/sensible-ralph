@@ -34,7 +34,7 @@ declare -a all_lines=()
 
 while IFS= read -r line || [[ -n "$line" ]]; do
   # Skip blank lines
-  [[ -z "${line// /}" ]] && continue
+  [[ -z "${line//[[:space:]]/}" ]] && continue
   all_lines+=("$line")
   id="${line%% *}"            # first token
   issue_ids+=("$id")
@@ -110,7 +110,7 @@ while [[ -s "$queue_file" ]]; do
   mv "$queue_file.tmp" "$queue_file"
 
   echo "$id"
-  (( emitted++ )) || true   # || true prevents set -e exit on 0 result
+  (( emitted++ )) || true   # bash 4+: (( )) with result 0 triggers set -e; || true ensures portability
 
   # For each issue that was waiting on this one, decrement its in-degree.
   while IFS= read -r dep || [[ -n "$dep" ]]; do
