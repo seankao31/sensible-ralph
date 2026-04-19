@@ -18,7 +18,7 @@
 # Outputs one issue ID per line.
 linear_list_approved_issues() {
   local raw
-  raw="$(linear issue query --project "$RALPH_PROJECT" --all-teams --state unstarted --json)" || {
+  raw="$(linear issue query --project "$RALPH_PROJECT" --all-teams --json)" || {
     printf 'linear_list_approved_issues: failed to query issues\n' >&2
     return 1
   }
