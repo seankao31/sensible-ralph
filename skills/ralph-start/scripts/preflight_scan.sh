@@ -62,6 +62,12 @@ while IFS= read -r issue_id; do
     anomalies+=("[WARN] $issue_id: has $canceled_count canceled blocker(s) — issue can never become unblocked")
   fi
 
+  # --- Check 1b: Duplicate-state blocker ---
+  duplicate_state_count="$(printf '%s' "$blockers_json" | jq '[.[] | select(.state == "Duplicate")] | length')"
+  if [[ "$duplicate_state_count" -gt 0 ]]; then
+    anomalies+=("[WARN] $issue_id: has $duplicate_state_count blocker(s) in Duplicate state — issue can never become unblocked")
+  fi
+
   # --- Check 2: Duplicate blocker ---
   dupe_count="$(printf '%s' "$blockers_json" | jq '
     group_by(.id)

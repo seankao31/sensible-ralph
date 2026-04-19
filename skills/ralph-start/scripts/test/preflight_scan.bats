@@ -151,6 +151,22 @@ ENG-2"
 }
 
 # ---------------------------------------------------------------------------
+# 4b. Duplicate-state blocker → exit 1, output contains "Duplicate state" and issue ID
+# ---------------------------------------------------------------------------
+@test "duplicate-state blocker exits 1 with Duplicate state and issue ID in output" {
+  export STUB_APPROVED_IDS="ENG-25"
+  export STUB_BLOCKERS_ENG_25='[{"id":"ENG-6","state":"Duplicate","branch":"eng-6"}]'
+  export STUB_BLOCKERS_ENG_6="[]"
+  export STUB_DESC_CHARS=300
+
+  run_preflight
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Duplicate state"* ]]
+  [[ "$output" == *"ENG-25"* ]]
+}
+
+# ---------------------------------------------------------------------------
 # 5. Stuck blocker chain → exit 1, output contains "stuck"
 # A blocker is Approved but its own blockers are not all In Review/Done
 # ---------------------------------------------------------------------------
