@@ -1,0 +1,10 @@
+{
+  "project": "Agent Config",
+  "approved_state": "Approved",
+  "review_state": "In Review",
+  "failed_label": "ralph-failed",
+  "worktree_base": ".worktrees",
+  "model": "opus",
+  "stdout_log_filename": "ralph-output.log",
+  "prompt_template": "You are implementing Linear issue $ISSUE_ID ($ISSUE_TITLE) autonomously.\nThe PRD is in the issue description — read it via Linear.\nBranch: $BRANCH_NAME, worktree: $WORKTREE_PATH.\nThe worktree has been pre-created at the correct base branch. If you see unresolved merge conflicts from parent branches in `git status`, resolve them before implementing the feature.\nWhen implementation is done and tests pass, invoke /prepare-for-review."
+}
