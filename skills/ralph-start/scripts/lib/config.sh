@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-set -euo pipefail
-
 # Config loader: parse config.json with jq, export RALPH_* env vars.
 # Usage: source scripts/lib/config.sh /path/to/config.json
+#
+# All callers in this codebase run with `set -euo pipefail` already active;
+# this file must NOT call `set` at the top level, as sourcing a file with
+# top-level `set` commands mutates the caller's shell options.
 #
 # Exports:
 #   RALPH_PROJECT, RALPH_APPROVED_STATE, RALPH_REVIEW_STATE,
@@ -24,6 +26,15 @@ _config_load() {
     "RALPH_PROMPT_TEMPLATE:prompt_template"
   )
 
+  # Two-pass approach: collect all values first, then export all-or-nothing.
+  # This prevents partial RALPH_* exports in the caller's shell when a key
+  # is missing mid-loop (which would leave stale values on retry).
+  #
+  # bash 3.2 (macOS) does not support associative arrays (declare -A), so
+  # parallel indexed arrays are used as the local staging store.
+  local -a staged_names=()
+  local -a staged_values=()
+
   local entry var_name json_key value
   for entry in "${keys[@]}"; do
     var_name="${entry%%:*}"
@@ -37,10 +48,17 @@ _config_load() {
       return 1
     fi
 
-    # Empty string is allowed; callers validate domain constraints.
-    # printf -v handles multi-line values safely (declare -gx requires bash 4.2+).
-    printf -v "$var_name" '%s' "$value"
-    export "$var_name"
+    staged_names+=("$var_name")
+    staged_values+=("$value")
+  done
+
+  # All keys present — export atomically.
+  # Empty string is allowed; callers validate domain constraints.
+  # printf -v handles multi-line values safely (declare -gx requires bash 4.2+).
+  local i
+  for i in "${!staged_names[@]}"; do
+    printf -v "${staged_names[$i]}" '%s' "${staged_values[$i]}"
+    export "${staged_names[$i]}"
   done
 }
 
