@@ -279,6 +279,26 @@ STUB
   [[ "$update_call" == *"only-label"* ]]
 }
 
+@test "linear_add_label does not duplicate a label already on the issue" {
+  cat > "$STUB_DIR/linear" <<'STUB'
+#!/usr/bin/env bash
+printf '%q ' "$@" >> "$STUB_ARGS_FILE"
+printf '\n' >> "$STUB_ARGS_FILE"
+if [[ "$*" == *"view"* ]]; then
+  printf '{"identifier": "ENG-53", "branchName": "eng-53-x", "state": {"name": "Approved"}, "labels": {"nodes": [{"name": "label-a"}, {"name": "ralph-failed"}]}}'
+fi
+STUB
+  chmod +x "$STUB_DIR/linear"
+
+  run call_fn linear_add_label ENG-53 ralph-failed
+
+  [ "$status" -eq 0 ]
+  update_call="$(grep "issue update ENG-53" "$STUB_ARGS_FILE")"
+  # ralph-failed must appear exactly once
+  count="$(printf '%s' "$update_call" | grep -o 'ralph-failed' | wc -l | tr -d ' ')"
+  [ "$count" -eq 1 ]
+}
+
 # ---------------------------------------------------------------------------
 # 6. linear_comment — calls issue comment add with --body
 # ---------------------------------------------------------------------------
