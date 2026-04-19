@@ -42,8 +42,8 @@ When implementation is done and tests pass, invoke /prepare-for-review.
 **Branch and worktree are deterministic at prompt-rendering time.** Both are pre-computed by the orchestrator *before* `claude -p` is invoked:
 
 - Branch name comes from Linear's auto-generated slug (`eng-190-foo`) — known from the issue.
-- Worktree path is `~/.claude/worktrees/<branch>` — native `claude --worktree` convention.
-- The orchestrator runs `git worktree add <path> -b <branch> <base>` with the DAG-chosen base (main, parent's branch, or integration-merge branch) *before* dispatch.
+- Worktree path is `<repo>/.worktrees/<branch>` — matches chezmoi's existing convention and the primary preference of `superpowers:using-git-worktrees` (project-local, `.gitignore`d). The orchestrator does **not** use `claude --worktree`; see the dispatch detail below.
+- The orchestrator runs `git worktree add <path> -b <branch> <base>` with the DAG-chosen base (main, parent's branch, or integration-merge branch) *before* dispatch. `claude -p` is then invoked with the worktree as its cwd (via subshell `cd`), not via `--worktree`. The `--worktree` flag is a *create* flag that branches off `HEAD` into `<repo>/.claude/worktrees/<name>/` — it can't accept a pre-created path and has no DAG/integration-merge awareness, so it does not fit this orchestrator's needs.
 - For dependent tickets this is the same mechanism — the base branch changes (parent's branch instead of main), but the substitution still happens before the prompt is rendered.
 
 **Rationale for minimal prompt:**
@@ -147,8 +147,8 @@ The orchestrator attempts to merge the in-review parents sequentially in B's pre
 
 ```bash
 # Orchestrator:
-git worktree add ~/.claude/worktrees/eng-B-slug -b eng-B-slug main
-cd ~/.claude/worktrees/eng-B-slug
+git worktree add .worktrees/eng-B-slug -b eng-B-slug main
+cd .worktrees/eng-B-slug
 git merge <parent-A1-branch>  # may conflict
 git merge <parent-A2-branch>  # may conflict
 # On conflicts: leave them. The agent resolves.
@@ -226,11 +226,11 @@ Each dispatched `claude -p` invocation runs in **auto mode** (Opus 4.7's autonom
 │    ├─ Show dispatch plan; confirm                    │
 │    └─ For each ready spec (sequential):              │
 │        ├─ dag_base() → main | parent | integration   │
-│        ├─ git worktree add ~/.claude/worktrees/…     │
+│        ├─ git worktree add .worktrees/<branch>       │
 │        ├─ For integration: sequential git merges     │
 │        │   (leave conflicts in-place; agent resolves)│
 │        ├─ Linear: Approved → In Progress             │
-│        ├─ claude -p --worktree --name (auto mode)    │
+│        ├─ (cd $worktree && claude -p --name auto)    │
 │        │   • Session reads PRD from Linear           │
 │        │   • Session implements, runs TDD            │
 │        │   • Session invokes /prepare-for-review     │
@@ -247,13 +247,13 @@ Each dispatched `claude -p` invocation runs in **auto mode** (Opus 4.7's autonom
 │                                                      │
 │  For each In Review issue:                           │
 │    Read QA plan (Linear comment)                     │
-│    cd ~/.claude/worktrees/eng-XXX                    │
+│    cd .worktrees/eng-XXX                             │
 │    claude --resume "ENG-XXX: title" (if available)   │
 │    Manual review per QA plan                         │
 │    Iterate → /<project-local-closing-skill>          │
 │                                                      │
 │  For each ralph-failed issue:                        │
-│    cd ~/.claude/worktrees/eng-XXX                    │
+│    cd .worktrees/eng-XXX                             │
 │    Debug interactively → retry or cancel             │
 │                                                      │
 │  (stale-parent-labeled issues, if any, surfaced by   │
@@ -282,29 +282,26 @@ Processes the ordered queue sequentially. Per issue:
 
 ```
 base       = dag_base(issue)           # "main" | parent-branch | {integration, parents}
-worktree   = ~/.claude/worktrees/$branch
+worktree   = .worktrees/$branch        # relative to repo root (orchestrator cwd)
 session    = "$ISSUE_ID: $ISSUE_TITLE"
 
-# Pre-create worktree
+# Pre-create worktree at correct base
 if base is integration:
     git worktree add $worktree -b $branch main
-    cd $worktree
     for parent_branch in base.parents:
-        git merge $parent_branch    # may leave conflicts in the worktree
-                                    # don't abort on conflict; agent resolves
+        git -C $worktree merge $parent_branch    # leave conflicts in-place; agent resolves
 else:
     git worktree add $worktree -b $branch $base
 
 # Linear: Approved → In Progress
 linear issue update $issue --state "In Progress"
 
-# Dispatch (auto mode)
-claude -p \
-    --worktree $worktree \
+# Dispatch (auto mode) — cwd = worktree; NOT --worktree (that flag is create-only).
+(cd $worktree && claude -p \
     --name "$session" \
     [auto-mode flag] \
     "$prompt" \
-    2>&1 | tee $worktree/ralph-output.log
+    2>&1 | tee ralph-output.log)
 
 # Classify outcome
 if exit_code == 0:
@@ -373,7 +370,7 @@ Human-readable run summary. Not used by the orchestrator for resumption (queues 
                     "issue": "ENG-190",
                     "branch": "eng-190-foo",
                     "base": "main",
-                    "worktree": "~/.claude/worktrees/eng-190-foo",
+                    "worktree": ".worktrees/eng-190-foo",
                     "session": "ENG-190: foo",
                     "outcome": "in_review",
                     "exit_code": 0,
@@ -405,7 +402,7 @@ No parent-HEAD tracking — staleness detection is a post-commit-hook concern, n
     "approved_state": "Approved",
     "review_state": "In Review",
     "failed_label": "ralph-failed",
-    "worktree_base": "~/.claude/worktrees",
+    "worktree_base": ".worktrees",
     "model": "opus",
     "stdout_log_filename": "ralph-output.log",
     "prompt_template": "You are implementing Linear issue $ISSUE_ID ($ISSUE_TITLE) autonomously.\nThe PRD is in the issue description — read it via Linear.\nBranch: $BRANCH_NAME, worktree: $WORKTREE_PATH.\nThe worktree has been pre-created at the correct base branch. If you see unresolved merge conflicts from parent branches in `git status`, resolve them before implementing the feature.\nWhen implementation is done and tests pass, invoke /prepare-for-review."
