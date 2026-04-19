@@ -12,6 +12,15 @@ issue_id="$1"
 
 blockers_json="$(linear_get_issue_blockers "$issue_id")"
 
+# Fail fast if any in-review blocker has no branch name
+null_branches="$(printf '%s' "$blockers_json" | jq -r \
+  --arg state "$RALPH_REVIEW_STATE" \
+  '.[] | select(.state == $state) | select(.branch == "null" or .branch == "") | .id')"
+if [[ -n "$null_branches" ]]; then
+  printf 'dag_base: in-review blocker(s) have no branch name: %s\n' "$null_branches" >&2
+  exit 1
+fi
+
 # Extract branches of blockers whose state matches RALPH_REVIEW_STATE
 review_branches="$(printf '%s' "$blockers_json" | jq -r \
   --arg state "$RALPH_REVIEW_STATE" \

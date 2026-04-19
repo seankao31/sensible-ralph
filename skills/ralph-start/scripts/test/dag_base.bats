@@ -116,3 +116,15 @@ STUB
   [ "$status" -eq 0 ]
   [ "$output" = "eng-41-review" ]
 }
+
+# ---------------------------------------------------------------------------
+# 6. In Review blocker with "null" branch → exit 1, stderr contains "no branch name"
+# ---------------------------------------------------------------------------
+@test "in-review blocker with null branch exits 1 with error message" {
+  local blockers
+  blockers='[{"id":"ENG-50","state":"In Review","branch":"null"}]'
+  run_dag_base "ENG-100" "$blockers"
+
+  [ "$status" -eq 1 ]
+  [[ "$output" =~ "no branch name" ]]
+}
