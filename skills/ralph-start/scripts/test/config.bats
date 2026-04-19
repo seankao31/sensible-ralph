@@ -13,7 +13,7 @@ EXAMPLE_CONFIG="$FIXTURE_DIR/config.example.json"
 source_config() {
   local config_file="$1"
   # Source in a subshell so we can capture exports without polluting the test env
-  bash -c "source '$CONFIG_SH' '$config_file' && env | grep '^RALPH_'"
+  bash -c 'source "$1" "$2" && env | grep "^RALPH_"' _ "$CONFIG_SH" "$config_file"
 }
 
 # ---------------------------------------------------------------------------
@@ -30,8 +30,9 @@ source_config() {
   [[ "$output" == *"RALPH_WORKTREE_BASE=.worktrees"* ]]
   [[ "$output" == *"RALPH_MODEL=opus"* ]]
   [[ "$output" == *"RALPH_STDOUT_LOG=ralph-output.log"* ]]
-  # prompt_template is a multi-line string; just check the var is set
-  [[ "$output" == *"RALPH_PROMPT_TEMPLATE="* ]]
+  # Capture RALPH_PROMPT_TEMPLATE directly to verify multi-line value is intact
+  prompt="$(bash -c 'source "$1" "$2" && printf "%s" "$RALPH_PROMPT_TEMPLATE"' _ "$CONFIG_SH" "$EXAMPLE_CONFIG")"
+  [[ "$prompt" == *"prepare-for-review"* ]]
 }
 
 # ---------------------------------------------------------------------------

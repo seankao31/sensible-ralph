@@ -37,7 +37,10 @@ _config_load() {
       return 1
     fi
 
-    export "${var_name}=${value}"
+    # Empty string is allowed; callers validate domain constraints.
+    # printf -v handles multi-line values safely (declare -gx requires bash 4.2+).
+    printf -v "$var_name" '%s' "$value"
+    export "$var_name"
   done
 }
 
