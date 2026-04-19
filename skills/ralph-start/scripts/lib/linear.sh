@@ -45,11 +45,14 @@ linear_get_issue_blockers() {
   relations_text="$(linear issue relation list "$issue_id")" \
     || { printf 'linear_get_issue_blockers: failed to list relations for %s\n' "$issue_id" >&2; return 1; }
 
-  # Parse blocker IDs: find lines in the Incoming section that say "blocked-by"
-  # Expected format from linear CLI 2.0.0:
-  #   "  ENG-XXX blocked-by ENG-YYY: Title"
-  # After splitting on whitespace: token0=ENG-XXX, token1=blocked-by, token2=ENG-YYY: (with colon)
-  # This parsing must be revisited if the CLI output format changes in a future version.
+  # Parse blocker IDs from text output — this is the only available option.
+  # linear issue view --json does NOT include relations (verified: linear CLI v2.0.0).
+  # linear issue relation list --json is not supported ("Unknown option '--json'").
+  # Expected text format:
+  #   Incoming:
+  #     ENG-XXX blocked-by ENG-YYY: Title
+  # tokens: 0=ENG-XXX  1=blocked-by  2=ENG-YYY:  (colon attached)
+  # Revisit if CLI format changes.
   local blocker_ids=()
   local in_incoming=0
   while IFS= read -r line; do
