@@ -20,8 +20,9 @@ setup() {
   # Write stub linear script
   cat > "$STUB_DIR/linear" <<'STUB'
 #!/usr/bin/env bash
-# Record all argv to the args file (space-separated on one line, newline-terminated)
-echo "$*" >> "$STUB_ARGS_FILE"
+# Record all argv to the args file (shell-quoted, space-separated, newline-terminated)
+printf '%q ' "$@" >> "$STUB_ARGS_FILE"
+printf '\n' >> "$STUB_ARGS_FILE"
 # Emit the configured output
 printf '%s' "$STUB_OUTPUT"
 exit "${STUB_EXIT:-0}"
@@ -123,7 +124,8 @@ Outgoing:
   # Write a smarter stub.
   cat > "$STUB_DIR/linear" <<'STUB'
 #!/usr/bin/env bash
-echo "$*" >> "$STUB_ARGS_FILE"
+printf '%q ' "$@" >> "$STUB_ARGS_FILE"
+printf '\n' >> "$STUB_ARGS_FILE"
 if [[ "$*" == *"relation list"* ]]; then
   printf 'Relations for ENG-21: Title\n\nIncoming:\n  ENG-21 blocked-by ENG-15: Blocker\n'
 elif [[ "$*" == *"view ENG-15"* ]]; then
@@ -155,7 +157,8 @@ STUB
 @test "linear_get_issue_blockers calls issue view for each blocker" {
   cat > "$STUB_DIR/linear" <<'STUB'
 #!/usr/bin/env bash
-echo "$*" >> "$STUB_ARGS_FILE"
+printf '%q ' "$@" >> "$STUB_ARGS_FILE"
+printf '\n' >> "$STUB_ARGS_FILE"
 if [[ "$*" == *"relation list"* ]]; then
   printf 'Relations for ENG-23: Title\n\nIncoming:\n  ENG-23 blocked-by ENG-16: A\n  ENG-23 blocked-by ENG-17: B\n'
 elif [[ "$*" == *"view ENG-16"* ]]; then
@@ -212,7 +215,7 @@ STUB
   [ "$status" -eq 0 ]
   grep -q "issue update ENG-40" "$STUB_ARGS_FILE"
   grep -q -- "--state" "$STUB_ARGS_FILE"
-  grep -q "In Review" "$STUB_ARGS_FILE"
+  grep -qF 'In\ Review' "$STUB_ARGS_FILE"
 }
 
 # ---------------------------------------------------------------------------
@@ -222,7 +225,8 @@ STUB
   # Stub: view returns existing labels, update succeeds
   cat > "$STUB_DIR/linear" <<'STUB'
 #!/usr/bin/env bash
-echo "$*" >> "$STUB_ARGS_FILE"
+printf '%q ' "$@" >> "$STUB_ARGS_FILE"
+printf '\n' >> "$STUB_ARGS_FILE"
 if [[ "$*" == *"view"* ]]; then
   printf '{"identifier": "ENG-50", "branchName": "eng-50-x", "state": {"name": "Approved"}, "labels": {"nodes": [{"name": "existing-label"}]}}'
 fi
@@ -239,7 +243,8 @@ STUB
 @test "linear_add_label preserves existing labels and adds new one" {
   cat > "$STUB_DIR/linear" <<'STUB'
 #!/usr/bin/env bash
-echo "$*" >> "$STUB_ARGS_FILE"
+printf '%q ' "$@" >> "$STUB_ARGS_FILE"
+printf '\n' >> "$STUB_ARGS_FILE"
 if [[ "$*" == *"view"* ]]; then
   printf '{"identifier": "ENG-51", "branchName": "eng-51-x", "state": {"name": "Approved"}, "labels": {"nodes": [{"name": "label-a"}, {"name": "label-b"}]}}'
 fi
@@ -259,7 +264,8 @@ STUB
 @test "linear_add_label works when issue has no existing labels" {
   cat > "$STUB_DIR/linear" <<'STUB'
 #!/usr/bin/env bash
-echo "$*" >> "$STUB_ARGS_FILE"
+printf '%q ' "$@" >> "$STUB_ARGS_FILE"
+printf '\n' >> "$STUB_ARGS_FILE"
 if [[ "$*" == *"view"* ]]; then
   printf '{"identifier": "ENG-52", "branchName": "eng-52-x", "state": {"name": "Approved"}, "labels": {"nodes": []}}'
 fi
@@ -294,5 +300,5 @@ STUB
   run call_fn linear_comment ENG-61 '"Hello world"'
 
   [ "$status" -eq 0 ]
-  grep -q "Hello world" "$STUB_ARGS_FILE"
+  grep -qF 'Hello\ world' "$STUB_ARGS_FILE"
 }
