@@ -6,7 +6,7 @@
 
 ## Problem
 
-Decouple the phases of a development session so that pre-approved work can run while Sean is away from the desk, and review happens interactively on return. v1 established this pattern but made two assumptions that no longer hold:
+Decouple the phases of a development session so that pre-approved work can run while the user is away from the desk, and review happens interactively on return. v1 established this pattern but made two assumptions that no longer hold:
 
 1. **Each worktree branches from main.** An issue could only be dispatched once its blockers were *merged*, not just *ready*. A chain of dependent tickets couldn't make forward progress overnight — only the root could run; everything else waited for a human review-and-merge in the morning.
 2. **Implementation requires heavy scaffolding.** v1 assumed a two-artifact model (durable spec + pre-written plan) and detailed prompting. With Opus 4.7 as the executor and auto mode available, less handholding is warranted — the question is *how much less.*
@@ -65,14 +65,14 @@ A new global skill, `prepare-for-review`, is the entry point for "implementation
 
 **Rationale:**
 - Separates *phase-generic polish* (this skill) from *project-specific integration* (branch-closing skills — see Decision 4). The polish sequence is the same across projects; the merge ritual isn't.
-- Useful in interactive sessions too — anytime Sean finishes implementing a feature, `/prepare-for-review` ensures docs/decisions/review are complete before handoff.
+- Useful in interactive sessions too — anytime the user finishes implementing a feature, `/prepare-for-review` ensures docs/decisions/review are complete before handoff.
 - The name is deliberately descriptive of its outcome, not tied to superpowers' `-ing` gerund convention.
 
 **Creation is out of scope for this ticket.** ENG-176 specifies the contract (what the skill does, what it inputs/outputs); a follow-up ticket creates the skill itself.
 
 ### 4. Branch closing moves to project-local skills
 
-The superpowers `finishing-a-development-branch` skill is dropped from Sean's active workflow. Each project defines its own branch-closing skill tailored to that project's merge ritual (main-only vs. dev/staging/main cascade, tag conventions, etc.).
+The superpowers `finishing-a-development-branch` skill is dropped from the user's active workflow. Each project defines its own branch-closing skill tailored to that project's merge ritual (main-only vs. dev/staging/main cascade, tag conventions, etc.).
 
 **Rationale:**
 - Merge rituals differ per project; a global skill either over-generalizes or picks an arbitrary default. Project-local skills encode exact conventions.
@@ -95,8 +95,8 @@ Backlog → Todo → Approved → In Progress → In Review → Done
 - **Todo:** actionable, but no PRD yet.
 - **Approved:** PRD written into issue description; signals "ready for autonomous pickup."
 - **In Progress:** orchestrator dispatched a session for this issue.
-- **In Review:** session completed `prepare-for-review`; awaiting Sean's interactive review + branch close.
-- **Done:** Sean merged via project-local closing skill.
+- **In Review:** session completed `prepare-for-review`; awaiting the user's interactive review + branch close.
+- **Done:** the user merged via project-local closing skill.
 
 **Rationale:**
 - Clean semantics carried by the state machine, not overloaded labels. Linear's board view makes the queue immediately visible.
@@ -105,7 +105,7 @@ Backlog → Todo → Approved → In Progress → In Review → Done
 
 **Exception label:**
 
-- `ralph-failed` — autonomous session exited non-zero; Sean decides retry/cancel/debug.
+- `ralph-failed` — autonomous session exited non-zero; the user decides retry/cancel/debug.
 
 (Stale-parent detection moves out of the orchestrator and into a separate post-commit-hook mechanism — see Follow-up Tickets. It's a review-time concern, not a dispatch-time one.)
 
@@ -117,16 +117,16 @@ An issue is **strictly pickup-ready** when **all** of:
 2. No `ralph-failed` label.
 3. All `blocked-by` issues are in `Done` OR `In Review`. **Canceled blockers are *not* counted as resolved.**
 
-**Why exclude Canceled:** Cancellation is a judgment call — something was deemed not worth doing. An issue whose parent was canceled shouldn't silently proceed; the dependency relationship may no longer be meaningful. Sean's intervention is warranted.
+**Why exclude Canceled:** Cancellation is a judgment call — something was deemed not worth doing. An issue whose parent was canceled shouldn't silently proceed; the dependency relationship may no longer be meaningful. The user's intervention is warranted.
 
-**Pre-flight sanity scan** — before entering the dispatch loop, `/run-queue` looks for anomalies and asks Sean to clarify before proceeding. Anomalies include:
+**Pre-flight sanity scan** — before entering the dispatch loop, `/run-queue` looks for anomalies and asks the user to clarify before proceeding. Anomalies include:
 
 - Issue has a `Canceled` blocker (warrants human re-evaluation — keep, cancel, or edit dependencies?).
 - Issue has a `Duplicate` blocker (similar — resolve the duplication relationship first).
 - Blocker is itself Approved but not yet In Review/Done, and no chain resolves it — circular or deeply stuck dependency.
 - Issue is marked Approved but lacks a PRD in the description.
 
-On each anomaly, the scan pauses with a description and asks Sean what to do. Only after the scan passes does the dispatch loop begin.
+On each anomaly, the scan pauses with a description and asks the user what to do. Only after the scan passes does the dispatch loop begin.
 
 ### 7. Branch DAG awareness
 
@@ -158,14 +158,14 @@ git merge <parent-A2-branch>  # may conflict
 **Rationale for agent-resolution over orchestrator-skipping:**
 - The orchestrator can't reason about conflicts (it's a bash script); an agent can.
 - v1 would have skipped B and blocked progress; v2's whole point is keeping chains moving.
-- The worst case is the agent gets the merge wrong — which then surfaces during Sean's review, same as any merge done by a developer.
+- The worst case is the agent gets the merge wrong — which then surfaces during the user's review, same as any merge done by a developer.
 
 ### 8. Failure handling: skip downstream, continue independents
 
 When a session fails (non-zero exit from `claude -p`):
 
 1. Add `ralph-failed` label to the issue.
-2. Leave Linear state as `In Progress` (Sean resolves).
+2. Leave Linear state as `In Progress` (the user resolves).
 3. Mark the issue's transitive DAG descendants as *blocked* for this run (don't dispatch them).
 4. Continue dispatching issues that are **not** downstream of the failure.
 
@@ -182,7 +182,7 @@ Each dispatched `claude -p` invocation runs in **auto mode** (Opus 4.7's autonom
 - No `--max-budget-usd` — sessions run to completion. Budget enforcement via monitoring, not mid-session kill.
 - No sandbox config needed — auto mode's permission model handles risk gating.
 
-**New failure class: permission-prompt deadlock.** If the agent asks permission on an action auto mode doesn't auto-approve and Sean isn't at the desk, the session blocks. This is a real operational risk; resolution options are in Open Questions.
+**New failure class: permission-prompt deadlock.** If the agent asks permission on an action auto mode doesn't auto-approve and the user isn't at the desk, the session blocks. This is a real operational risk; resolution options are in Open Questions.
 
 ### 10. Carried over from v1 (unchanged)
 
@@ -190,9 +190,9 @@ Each dispatched `claude -p` invocation runs in **auto mode** (Opus 4.7's autonom
 - **Local execution** — orchestrator runs locally, not on Anthropic's cloud Routines.
 - **Custom bash script** — deterministic orchestration (sort, dispatch, track); no LLM-driven orchestration.
 - **Sequential dispatch within a DAG layer** — parallelism is a v3 concern.
-- **Resumable sessions** — each session named `ENG-XXX: title` for `claude --resume` when Sean reviews.
+- **Resumable sessions** — each session named `ENG-XXX: title` for `claude --resume` when the user reviews.
 - **`progress.json` per run** — human-readable audit trail.
-- **Plugin with slash-command entry point** — `/run-queue` is Sean's trigger.
+- **Plugin with slash-command entry point** — `/run-queue` is the user's trigger.
 - **No PR creation, no automated merging** — the loop stops at "In Review"; closing is human-driven.
 
 **Removed from v1:** sandbox flag (replaced by auto mode), `--max-budget-usd` (no budget cap), adapter-pattern abstraction (YAGNI — inline Linear calls).
@@ -217,7 +217,7 @@ Each dispatched `claude -p` invocation runs in **auto mode** (Opus 4.7's autonom
 │                                                      │
 │  /run-queue                                          │
 │    ├─ PRE-FLIGHT SANITY SCAN                         │
-│    │   ├─ Canceled-parent anomalies → ask Sean       │
+│    │   ├─ Canceled-parent anomalies → ask the user       │
 │    │   ├─ Missing PRD on Approved issues             │
 │    │   └─ Circular/stuck dependencies                │
 │    ├─ Query: state=Approved, no ralph-failed,        │
@@ -265,13 +265,13 @@ Each dispatched `claude -p` invocation runs in **auto mode** (Opus 4.7's autonom
 
 #### 1. Slash command entry point: `/run-queue`
 
-`disable-model-invocation: true` skill. Sean runs before stepping away. Responsibilities:
+`disable-model-invocation: true` skill. The user runs before stepping away. Responsibilities:
 
 1. Read config (project, model, worktree base).
-2. **Pre-flight sanity scan** (see Decision 6). Find anomalies, stop and ask Sean before proceeding.
+2. **Pre-flight sanity scan** (see Decision 6). Find anomalies, stop and ask the user before proceeding.
 3. Query Linear for strict pickup-ready issues; topological sort.
 4. Dry-run preview: show queue, base-branch choices, where integration merges will happen.
-5. Ask Sean to confirm.
+5. Ask the user to confirm.
 6. Invoke `orchestrator.sh` with the approved queue.
 
 The queue is **fixed at invocation time**. New Approved issues added mid-run are not pulled in until the next `/run-queue`. The "run" in "run-queue" captures this — one invocation processes one queue.
@@ -468,7 +468,7 @@ ENG-177 and ENG-178 are already filed as upstream-tool experiments; they consume
    - (c) Accept rare blocking; `ralph-failed` covers the aftermath but throughput suffers.
    - Decision deferred to implementation; needs live testing.
 
-3. **Session persistence horizon.** If Sean reviews a month-old In Review issue, is `claude --resume` still available? Claude Code's session GC policy is unknown. Design should not *require* session resume for review — the diff + Linear QA comment + worktree context must be enough on their own. Session resume is a convenience, not a requirement.
+3. **Session persistence horizon.** If the user reviews a month-old In Review issue, is `claude --resume` still available? Claude Code's session GC policy is unknown. Design should not *require* session resume for review — the diff + Linear QA comment + worktree context must be enough on their own. Session resume is a convenience, not a requirement.
 
 4. **`/run-queue` naming.** The v1 name emphasizes "one invocation = one queue." Alternatives: `/run-loop`, `/dispatch-approved`, `/ralph-start`. Not blocking, but worth revisiting when implementing.
 
