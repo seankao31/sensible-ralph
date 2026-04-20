@@ -19,6 +19,7 @@ setup() {
   export RALPH_FAILED_LABEL="ralph-failed"
   export RALPH_REVIEW_STATE="In Review"
   export RALPH_DONE_STATE="Done"
+  export RALPH_CONFIG_LOADED=1
 
   # Default stub values — override per test
   export STUB_APPROVED_IDS=""       # newline-separated issue IDs

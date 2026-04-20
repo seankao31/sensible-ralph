@@ -33,6 +33,10 @@ setup() {
   export RALPH_MODEL="opus"
   export RALPH_STDOUT_LOG="ralph-output.log"
   export RALPH_PROMPT_TEMPLATE='Issue: $ISSUE_ID Title: $ISSUE_TITLE Branch: $BRANCH_NAME Path: $WORKTREE_PATH'
+  # Marker so orchestrator's auto-source guard skips loading config.sh — the
+  # test fixture has no config.json on disk; we simulate the post-load state
+  # by exporting all RALPH_* vars directly.
+  export RALPH_CONFIG_LOADED=1
 
   # Claude invocation capture + state-transition trace
   export STUB_CLAUDE_ARGS_FILE="$STUB_DIR/claude_args"

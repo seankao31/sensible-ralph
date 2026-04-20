@@ -14,6 +14,7 @@ setup() {
   export RALPH_APPROVED_STATE="Approved"
   export RALPH_PROJECT="Agent Config"
   export RALPH_FAILED_LABEL="ralph-failed"
+  export RALPH_CONFIG_LOADED=1
 }
 
 # ---------------------------------------------------------------------------

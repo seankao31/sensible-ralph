@@ -102,3 +102,17 @@ EOF
   run source_config "$EXAMPLE_CONFIG"
   [ "$status" -eq 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# 5. config.sh exports RALPH_CONFIG_LOADED=1 as a dedicated load marker.
+#    Entry-point scripts gate auto-source on this marker — using a single
+#    RALPH_* var (e.g. RALPH_PROJECT) as the gate would let a shell with a
+#    stale partial export skip the auto-source and then trip on missing
+#    new vars under set -u. The marker proves config.sh ran to completion.
+# ---------------------------------------------------------------------------
+@test "config.sh exports RALPH_CONFIG_LOADED=1 after successful load" {
+  run source_config "$EXAMPLE_CONFIG"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"RALPH_CONFIG_LOADED=1"* ]]
+}

@@ -70,6 +70,12 @@ _config_load() {
     printf -v "${staged_names[$i]}" '%s' "${staged_values[$i]}"
     export "${staged_names[$i]}"
   done
+
+  # Dedicated marker that proves _config_load ran to completion. Entry-point
+  # scripts gate auto-source on this rather than on any single RALPH_* var,
+  # so a stale partial export from a different session/repo can't make them
+  # skip config loading and then trip on missing keys.
+  export RALPH_CONFIG_LOADED=1
 }
 
 _config_load "$1"

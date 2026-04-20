@@ -36,18 +36,30 @@ worktree_create_with_integration() {
   local parents=("$@")
   local parent_count="${#parents[@]}"
 
-  # Validate all parent refs before creating any state
+  # Validate all parent refs before creating any state. Accept either a local
+  # head or a remote-tracking ref under origin/ — on a fresh clone, review
+  # branches are typically present only via `git fetch` without a local head.
+  # The resolved ref name (local short-name or "origin/<branch>") is recorded
+  # in parallel so the merge step is unambiguous.
+  local resolved_refs=()
+  local parent
   for parent in "${parents[@]}"; do
-    git show-ref --verify --quiet "refs/heads/$parent" || {
-      printf 'worktree_create_with_integration: parent ref not found: %s\n' "$parent" >&2
+    if git show-ref --verify --quiet "refs/heads/$parent"; then
+      resolved_refs+=("$parent")
+    elif git show-ref --verify --quiet "refs/remotes/origin/$parent"; then
+      resolved_refs+=("origin/$parent")
+    else
+      printf 'worktree_create_with_integration: parent ref not found locally or under origin/: %s\n' "$parent" >&2
       return 1
-    }
+    fi
   done
 
   git worktree add "$path" -b "$branch" main
 
-  for parent in "${parents[@]}"; do
-    git -C "$path" merge "$parent" --no-edit && continue
+  local i merge_ref
+  for (( i = 0; i < parent_count; i++ )); do
+    merge_ref="${resolved_refs[$i]}"
+    git -C "$path" merge "$merge_ref" --no-edit && continue
     # Merge exited non-zero. Was it a conflict (expected) or something else (error)?
     local unmerged
     unmerged="$(git -C "$path" diff --name-only --diff-filter=U)"
@@ -58,10 +70,10 @@ worktree_create_with_integration() {
       fi
       # Multi-parent: abort and fail. Subsequent parents can't be silently dropped.
       git -C "$path" merge --abort 2>/dev/null || true
-      printf 'worktree_create_with_integration: multi-parent merge conflict on %s — cannot continue (subsequent parents would be silently dropped). Resolve in main or re-sequence parents.\n' "$parent" >&2
+      printf 'worktree_create_with_integration: multi-parent merge conflict on %s — cannot continue (subsequent parents would be silently dropped). Resolve in main or re-sequence parents.\n' "$merge_ref" >&2
       return 1
     else
-      printf 'worktree_create_with_integration: merge failed for parent %s\n' "$parent" >&2
+      printf 'worktree_create_with_integration: merge failed for parent %s\n' "$merge_ref" >&2
       return 1
     fi
   done

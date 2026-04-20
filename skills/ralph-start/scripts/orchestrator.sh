@@ -19,13 +19,16 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# Auto-source config if not already exported. The user may have sourced
-# lib/config.sh in their shell already (advanced use) — in which case we
-# skip the auto-load. Otherwise we read from $RALPH_CONFIG, or the default
-# config.json next to SKILL.md. This removes the bash-shell requirement
-# for callers: each entry-point script has a bash shebang and sources
-# config itself, so the user can invoke from zsh/fish/sh.
-if [[ -z "${RALPH_PROJECT:-}" ]]; then
+# Auto-source config unless the dedicated load marker proves config.sh
+# already ran to completion. (Gating on a single RALPH_* var would let a
+# stale partial export from another shell skip the load and trip on missing
+# keys later.) The user may have sourced lib/config.sh in their shell
+# already (advanced use) — in which case we skip the auto-load. Otherwise
+# we read from $RALPH_CONFIG, or the default config.json next to SKILL.md.
+# This removes the bash-shell requirement for callers: each entry-point
+# script has a bash shebang and sources config itself, so the user can
+# invoke from zsh/fish/sh.
+if [[ -z "${RALPH_CONFIG_LOADED:-}" ]]; then
   CONFIG_FILE="${RALPH_CONFIG:-$SCRIPT_DIR/../config.json}"
   if [[ ! -f "$CONFIG_FILE" ]]; then
     echo "orchestrator: config not found at $CONFIG_FILE — set RALPH_CONFIG or create config.json" >&2

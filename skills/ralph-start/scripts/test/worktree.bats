@@ -144,6 +144,33 @@ call_fn_from() {
 }
 
 # ---------------------------------------------------------------------------
+# 5b. worktree_create_with_integration — accept parent that exists only as
+#     a remote-tracking ref (cross-machine usage: branches fetched from origin
+#     without local heads). Codex review: the local-heads-only check rejected
+#     valid integration parents on fresh clones.
+# ---------------------------------------------------------------------------
+@test "worktree_create_with_integration accepts parent present only as remote tracking ref" {
+  # Build a parent commit, capture its SHA, then synthesize a remote-tracking
+  # ref by deleting the local branch and writing refs/remotes/origin/<branch>
+  # directly. This mimics the post-fetch state without needing a real remote.
+  git -C "$REPO_DIR" checkout -b "eng-50-remote-parent"
+  echo "remote-only parent content" > "$REPO_DIR/remote-only.txt"
+  git -C "$REPO_DIR" add remote-only.txt
+  git -C "$REPO_DIR" commit -m "remote-only parent"
+  local parent_sha; parent_sha="$(git -C "$REPO_DIR" rev-parse HEAD)"
+  git -C "$REPO_DIR" checkout main -q
+  git -C "$REPO_DIR" branch -D "eng-50-remote-parent" -q
+  git -C "$REPO_DIR" update-ref "refs/remotes/origin/eng-50-remote-parent" "$parent_sha"
+
+  local wt_path="$REPO_DIR/.worktrees/remote-parent-integration"
+
+  run call_fn worktree_create_with_integration "$wt_path" "remote-parent-integration" "eng-50-remote-parent"
+
+  [ "$status" -eq 0 ]
+  [ -f "$wt_path/remote-only.txt" ]
+}
+
+# ---------------------------------------------------------------------------
 # 6. worktree_create_with_integration — bad parent ref returns non-zero + stderr
 # ---------------------------------------------------------------------------
 @test "worktree_create_with_integration returns non-zero for a missing parent ref" {
