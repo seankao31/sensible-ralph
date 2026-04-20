@@ -126,11 +126,27 @@ STUB
 }
 
 # ---------------------------------------------------------------------------
-# 6. In Review blocker with "null" branch → exit 1, stderr contains "no branch name"
+# 6. In Review blocker with branch == string "null" → exit 1 with error
 # ---------------------------------------------------------------------------
-@test "in-review blocker with null branch exits 1 with error message" {
+@test "in-review blocker with string-null branch exits 1 with error message" {
   local blockers
   blockers='[{"id":"ENG-50","state":"In Review","branch":"null"}]'
+  run_dag_base "ENG-100" "$blockers"
+
+  [ "$status" -eq 1 ]
+  [[ "$output" =~ "no branch name" ]]
+}
+
+# ---------------------------------------------------------------------------
+# 6b. In Review blocker with branch == JSON null → exit 1 with error.
+# After the GraphQL refactor in linear.sh, missing branchName comes through
+# as true JSON null (not the literal string "null"). Codex P2: dag_base's
+# filter `.branch == "null"` missed this and silently emitted "null" as the
+# base branch.
+# ---------------------------------------------------------------------------
+@test "in-review blocker with json-null branch exits 1 with error message" {
+  local blockers
+  blockers='[{"id":"ENG-51","state":"In Review","branch":null}]'
   run_dag_base "ENG-100" "$blockers"
 
   [ "$status" -eq 1 ]
