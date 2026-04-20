@@ -1009,3 +1009,152 @@ CLAUDESH
   local marker_contents; marker_contents="$(cat "$REPO_DIR/.worktrees/eng-190/marker.txt")"
   [ "$marker_contents" = "do not destroy" ]
 }
+
+# ---------------------------------------------------------------------------
+# 21. run_id: every record from a single orchestrator invocation shares the
+#     same run_id (groups records for auditing — design Component 6).
+# ---------------------------------------------------------------------------
+@test "run_id: all records from a single run share the same run_id" {
+  export STUB_CLAUDE_EXIT=0
+  export STUB_CLAUDE_TRANSITION_STATE="In Review"
+
+  # Smart per-issue transition stub so all three issues reach in_review.
+  cat > "$STUB_DIR/claude" <<'CLAUDESH'
+#!/usr/bin/env bash
+printf '%q ' "$@" >> "$STUB_CLAUDE_ARGS_FILE"
+printf '\n' >> "$STUB_CLAUDE_ARGS_FILE"
+issue_id=""
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == "--name" ]]; then
+    shift
+    issue_id="${1%%:*}"
+    break
+  fi
+  shift
+done
+if [[ -n "${STUB_CLAUDE_TRANSITION_STATE:-}" && -n "$issue_id" ]]; then
+  printf '%s' "$STUB_CLAUDE_TRANSITION_STATE" > "$STUB_DIR/linear_state_$issue_id"
+fi
+exit 0
+CLAUDESH
+  chmod +x "$STUB_DIR/claude"
+
+  local q; q="$(write_queue ENG-200 ENG-201 ENG-202)"
+  run_orch "$q"
+
+  [ "$status" -eq 0 ]
+
+  local records; records="$(jq 'length' < "$REPO_DIR/progress.json")"
+  [ "$records" -eq 3 ]
+
+  # All three records carry a non-empty run_id
+  local null_run_ids; null_run_ids="$(jq '[.[] | select(.run_id == null or .run_id == "")] | length' < "$REPO_DIR/progress.json")"
+  [ "$null_run_ids" -eq 0 ]
+
+  # All run_ids are identical within a single run
+  local distinct_run_ids; distinct_run_ids="$(jq '[.[].run_id] | unique | length' < "$REPO_DIR/progress.json")"
+  [ "$distinct_run_ids" -eq 1 ]
+
+  # run_id matches the ISO 8601 UTC format produced by date -u +%Y-%m-%dT%H:%M:%SZ
+  local sample; sample="$(jq -r '.[0].run_id' < "$REPO_DIR/progress.json")"
+  [[ "$sample" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
+}
+
+# ---------------------------------------------------------------------------
+# 22. run_id: running the orchestrator twice against the same progress.json
+#     produces two distinct run_ids, and both runs' records survive (the
+#     atomic tmpfile+mv append preserves prior contents).
+# ---------------------------------------------------------------------------
+@test "run_id: two consecutive orchestrator runs append with distinct run_ids, prior records preserved" {
+  export STUB_CLAUDE_EXIT=0
+  export STUB_CLAUDE_TRANSITION_STATE="In Review"
+
+  cat > "$STUB_DIR/claude" <<'CLAUDESH'
+#!/usr/bin/env bash
+printf '%q ' "$@" >> "$STUB_CLAUDE_ARGS_FILE"
+printf '\n' >> "$STUB_CLAUDE_ARGS_FILE"
+issue_id=""
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == "--name" ]]; then
+    shift
+    issue_id="${1%%:*}"
+    break
+  fi
+  shift
+done
+if [[ -n "${STUB_CLAUDE_TRANSITION_STATE:-}" && -n "$issue_id" ]]; then
+  printf '%s' "$STUB_CLAUDE_TRANSITION_STATE" > "$STUB_DIR/linear_state_$issue_id"
+fi
+exit 0
+CLAUDESH
+  chmod +x "$STUB_DIR/claude"
+
+  # First run: ENG-210
+  local q1; q1="$(write_queue ENG-210)"
+  run_orch "$q1"
+  [ "$status" -eq 0 ]
+
+  # Sleep 1s to guarantee date -u +%...%SZ produces a different second.
+  # run_id is second-resolution by design; back-to-back runs within the
+  # same second would share an id, which is fine semantically but defeats
+  # this test's ability to distinguish the two invocations.
+  sleep 1
+
+  # Second run: ENG-211 (fresh queue, same progress.json)
+  local q2; q2="$(write_queue ENG-211)"
+  run_orch "$q2"
+  [ "$status" -eq 0 ]
+
+  # Both runs' records are present
+  local records; records="$(jq 'length' < "$REPO_DIR/progress.json")"
+  [ "$records" -eq 2 ]
+
+  # Extract each issue's run_id
+  local run_id_210; run_id_210="$(jq -r '.[] | select(.issue == "ENG-210") | .run_id' < "$REPO_DIR/progress.json")"
+  local run_id_211; run_id_211="$(jq -r '.[] | select(.issue == "ENG-211") | .run_id' < "$REPO_DIR/progress.json")"
+
+  [ -n "$run_id_210" ]
+  [ -n "$run_id_211" ]
+  [ "$run_id_210" != "$run_id_211" ]
+}
+
+# ---------------------------------------------------------------------------
+# 23. atomicity: no progress.json.* tmpfiles remain after orchestrator exits.
+#     The mktemp+jq+mv path must consume every temp file it creates —
+#     leftover tmpfiles would indicate a crashed write or a missing mv.
+# ---------------------------------------------------------------------------
+@test "atomicity: no progress.json tmpfiles linger in cwd after orchestrator exits" {
+  export STUB_CLAUDE_EXIT=0
+  export STUB_CLAUDE_TRANSITION_STATE="In Review"
+
+  cat > "$STUB_DIR/claude" <<'CLAUDESH'
+#!/usr/bin/env bash
+printf '%q ' "$@" >> "$STUB_CLAUDE_ARGS_FILE"
+printf '\n' >> "$STUB_CLAUDE_ARGS_FILE"
+issue_id=""
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == "--name" ]]; then
+    shift
+    issue_id="${1%%:*}"
+    break
+  fi
+  shift
+done
+if [[ -n "${STUB_CLAUDE_TRANSITION_STATE:-}" && -n "$issue_id" ]]; then
+  printf '%s' "$STUB_CLAUDE_TRANSITION_STATE" > "$STUB_DIR/linear_state_$issue_id"
+fi
+exit 0
+CLAUDESH
+  chmod +x "$STUB_DIR/claude"
+
+  local q; q="$(write_queue ENG-220 ENG-221 ENG-222)"
+  run_orch "$q"
+
+  [ "$status" -eq 0 ]
+
+  # progress.json exists; no progress.json.XXXXXX tmpfiles remain
+  [ -f "$REPO_DIR/progress.json" ]
+  local leftover_count
+  leftover_count="$(find "$REPO_DIR" -maxdepth 1 -name 'progress.json.*' -type f | wc -l | tr -d ' ')"
+  [ "$leftover_count" -eq 0 ]
+}
