@@ -101,3 +101,17 @@ TOPOSORT="$SCRIPT_DIR/toposort.sh"
   [ "${lines[1]}" = "ENG-Z" ]
   [ "${#lines[@]}" -eq 2 ]
 }
+
+# ---------------------------------------------------------------------------
+# 9. Linear's priority=0 means "no priority" — must sort AFTER all real
+#    priorities (1=Urgent through 4=Low), not before them. Without this
+#    remap an unprioritized issue jumps the queue ahead of urgent work.
+# ---------------------------------------------------------------------------
+@test "priority 0 (no priority) sorts after all numbered priorities" {
+  run bash -c "printf 'ENG-NONE 0\nENG-URGENT 1\nENG-LOW 4\n' | '$TOPOSORT'"
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "ENG-URGENT" ]
+  [ "${lines[1]}" = "ENG-LOW" ]
+  [ "${lines[2]}" = "ENG-NONE" ]
+  [ "${#lines[@]}" -eq 3 ]
+}

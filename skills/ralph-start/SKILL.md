@@ -52,7 +52,7 @@ Filter strictly to pickup-ready issues — an issue is pickup-ready only if ALL 
 - Every `blocked-by` relation is in {`Done`, `$RALPH_REVIEW_STATE`}
 - No `blocked-by` relation is `Canceled` or `Duplicate`
 
-For each approved issue, fetch blockers via `linear_get_issue_blockers` and apply the filter. Collect the qualifying issue IDs along with their priority (numeric 1-4 from `linear issue view --json | jq -r '.priority'`).
+For each approved issue, fetch blockers via `linear_get_issue_blockers` and apply the filter. Collect the qualifying issue IDs along with their priority (numeric 0-4 from `linear issue view --json | jq -r '.priority'` — Linear returns 0 for unprioritized issues; toposort remaps 0 to sort after 4).
 
 ### Step 4: Topological sort
 

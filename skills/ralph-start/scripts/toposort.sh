@@ -57,6 +57,12 @@ for line in "${all_lines[@]}"; do
   id="${tokens[0]}"
   priority="${tokens[1]}"
 
+  # Linear returns priority=0 for "no priority". Ascending numeric sort would
+  # put unprioritized issues ahead of priority=1 (Urgent), which lets a
+  # disconnected no-priority issue jump the queue. Remap 0 to 5 so it sorts
+  # after Low (priority=4).
+  [[ "$priority" -eq 0 ]] && priority=5
+
   echo "$priority" > "$tmpdir/$id/priority"
   echo "0"         > "$tmpdir/$id/indegree"
   touch              "$tmpdir/$id/dependents"
