@@ -60,6 +60,37 @@ call_fn_from() {
   [ "$output" = "feature-xyz" ]
 }
 
+@test "worktree_create_at_base accepts base ref present only as remote tracking ref" {
+  # Fresh-clone case: a single-parent base (review branch) that was fetched
+  # but not checked out as a local head. Codex P1: previously failed because
+  # the short name was passed directly to `git worktree add`.
+  git -C "$REPO_DIR" checkout -b "eng-60-remote-base"
+  echo "remote-base content" > "$REPO_DIR/remote-base.txt"
+  git -C "$REPO_DIR" add remote-base.txt
+  git -C "$REPO_DIR" commit -m "remote-only base"
+  local base_sha; base_sha="$(git -C "$REPO_DIR" rev-parse HEAD)"
+  git -C "$REPO_DIR" checkout main -q
+  git -C "$REPO_DIR" branch -D "eng-60-remote-base" -q
+  git -C "$REPO_DIR" update-ref "refs/remotes/origin/eng-60-remote-base" "$base_sha"
+
+  local wt_path="$REPO_DIR/.worktrees/single-remote-parent"
+
+  run call_fn worktree_create_at_base "$wt_path" "single-remote-parent" "eng-60-remote-base"
+
+  [ "$status" -eq 0 ]
+  [ -f "$wt_path/remote-base.txt" ]
+}
+
+@test "worktree_create_at_base returns non-zero when base ref is missing entirely" {
+  local wt_path="$REPO_DIR/.worktrees/bad-base"
+
+  run call_fn worktree_create_at_base "$wt_path" "bad-base" "nonexistent-branch"
+
+  [ "$status" -ne 0 ]
+  [[ "$output" =~ "base ref not found" ]]
+  [ ! -d "$wt_path" ]
+}
+
 # ---------------------------------------------------------------------------
 # 2. worktree_create_with_integration — clean merge brings parent content in
 # ---------------------------------------------------------------------------

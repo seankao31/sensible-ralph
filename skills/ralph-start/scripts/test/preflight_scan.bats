@@ -19,7 +19,12 @@ setup() {
   export RALPH_FAILED_LABEL="ralph-failed"
   export RALPH_REVIEW_STATE="In Review"
   export RALPH_DONE_STATE="Done"
-  export RALPH_CONFIG_LOADED=1
+  # Touch a dummy config and set the marker to the resolved path so the
+  # entry script's auto-source gate skips loading.
+  local dummy="$STUB_DIR/dummy-config.json"
+  touch "$dummy"
+  export RALPH_CONFIG="$dummy"
+  export RALPH_CONFIG_LOADED="$(cd "$(dirname "$dummy")" && pwd)/$(basename "$dummy")"
 
   # Default stub values — override per test
   export STUB_APPROVED_IDS=""       # newline-separated issue IDs

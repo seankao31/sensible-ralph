@@ -14,7 +14,8 @@ setup() {
   export RALPH_APPROVED_STATE="Approved"
   export RALPH_PROJECT="Agent Config"
   export RALPH_FAILED_LABEL="ralph-failed"
-  export RALPH_CONFIG_LOADED=1
+  # Marker is set per-test in run_dag_base, after the per-test tmp_dir is
+  # created — its path is what the script's auto-source gate compares against.
 }
 
 # ---------------------------------------------------------------------------
@@ -56,7 +57,13 @@ STUB
   # Symlink dag_base.sh into temp dir so \$(dirname "\$0")/lib/linear.sh resolves correctly
   cp "$DAG_BASE" "$tmp_dir/dag_base.sh"
 
-  run bash "$tmp_dir/dag_base.sh" "$issue_id"
+  # Provide a dummy config inside tmp_dir and set the marker to its resolved
+  # path so dag_base.sh's auto-source gate skips loading config.sh.
+  local dummy_config="$tmp_dir/dummy-config.json"
+  touch "$dummy_config"
+  RALPH_CONFIG="$dummy_config" \
+    RALPH_CONFIG_LOADED="$(cd "$(dirname "$dummy_config")" && pwd)/$(basename "$dummy_config")" \
+    run bash "$tmp_dir/dag_base.sh" "$issue_id"
   rm -rf "$tmp_dir"
 }
 

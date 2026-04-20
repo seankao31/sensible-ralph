@@ -110,9 +110,16 @@ EOF
 #    stale partial export skip the auto-source and then trip on missing
 #    new vars under set -u. The marker proves config.sh ran to completion.
 # ---------------------------------------------------------------------------
-@test "config.sh exports RALPH_CONFIG_LOADED=1 after successful load" {
+@test "config.sh exports RALPH_CONFIG_LOADED with the resolved config path" {
+  # Marker carries the resolved config path so a stale marker from another
+  # repo's session can't suppress loading the current repo's config (codex P2).
+  # The path lets entry-point scripts compare against the expected config and
+  # re-source if the location differs.
   run source_config "$EXAMPLE_CONFIG"
 
   [ "$status" -eq 0 ]
-  [[ "$output" == *"RALPH_CONFIG_LOADED=1"* ]]
+  [[ "$output" == *"RALPH_CONFIG_LOADED="* ]]
+  [[ "$output" == *"config.example.json"* ]]
+  # Plain "=1" is no longer the marker — must be the path.
+  ! [[ "$output" == *"RALPH_CONFIG_LOADED=1"$'\n'* ]]
 }

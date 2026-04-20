@@ -9,9 +9,24 @@
 # $1: path   — absolute path where the worktree should be created
 # $2: branch — new branch name to create
 # $3: base   — the base ref to branch from (e.g. "main" or "eng-XXX-parent")
+#
+# Accepts either a local head or a remote-tracking ref under origin/. Fresh
+# clones often have review parents present only via `git fetch` without local
+# heads — passing the short name straight to `git worktree add` would fail to
+# resolve in that case. Resolution is explicit (no DWIM) so the chosen ref
+# is unambiguous in the error path.
 worktree_create_at_base() {
   local path="$1" branch="$2" base="$3"
-  git worktree add "$path" -b "$branch" "$base"
+  local resolved_base
+  if git show-ref --verify --quiet "refs/heads/$base"; then
+    resolved_base="$base"
+  elif git show-ref --verify --quiet "refs/remotes/origin/$base"; then
+    resolved_base="origin/$base"
+  else
+    printf 'worktree_create_at_base: base ref not found locally or under origin/: %s\n' "$base" >&2
+    return 1
+  fi
+  git worktree add "$path" -b "$branch" "$resolved_base"
 }
 
 # Create a worktree for integration (one or more parent branches in review).

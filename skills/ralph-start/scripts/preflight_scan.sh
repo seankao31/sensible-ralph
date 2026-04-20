@@ -14,13 +14,15 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# Auto-source config if not already loaded. See orchestrator.sh for rationale.
-if [[ -z "${RALPH_CONFIG_LOADED:-}" ]]; then
-  CONFIG_FILE="${RALPH_CONFIG:-$SCRIPT_DIR/../config.json}"
-  if [[ ! -f "$CONFIG_FILE" ]]; then
-    echo "preflight_scan: config not found at $CONFIG_FILE — set RALPH_CONFIG or create config.json" >&2
-    exit 1
-  fi
+# Auto-source config unless the load marker matches THIS script's expected
+# config path. See orchestrator.sh for rationale.
+CONFIG_FILE="${RALPH_CONFIG:-$SCRIPT_DIR/../config.json}"
+if [[ ! -f "$CONFIG_FILE" ]]; then
+  echo "preflight_scan: config not found at $CONFIG_FILE — set RALPH_CONFIG or create config.json" >&2
+  exit 1
+fi
+RESOLVED_CONFIG="$(cd "$(dirname "$CONFIG_FILE")" && pwd)/$(basename "$CONFIG_FILE")"
+if [[ "${RALPH_CONFIG_LOADED:-}" != "$RESOLVED_CONFIG" ]]; then
   # shellcheck source=lib/config.sh
   source "$SCRIPT_DIR/lib/config.sh" "$CONFIG_FILE"
 fi

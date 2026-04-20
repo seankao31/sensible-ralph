@@ -71,11 +71,15 @@ _config_load() {
     export "${staged_names[$i]}"
   done
 
-  # Dedicated marker that proves _config_load ran to completion. Entry-point
-  # scripts gate auto-source on this rather than on any single RALPH_* var,
-  # so a stale partial export from a different session/repo can't make them
-  # skip config loading and then trip on missing keys.
-  export RALPH_CONFIG_LOADED=1
+  # Dedicated marker that proves _config_load ran to completion AND records
+  # which config file produced the current RALPH_* values. Entry-point scripts
+  # compare this against the config path they would otherwise load — if the
+  # paths differ (e.g. the operator sourced another repo's config earlier in
+  # the same shell), the entry-point re-sources the correct file. Storing the
+  # path (vs. just =1) prevents cross-repo Linear-project bleed-through.
+  local resolved_config
+  resolved_config="$(cd "$(dirname "$config_file")" && pwd)/$(basename "$config_file")"
+  export RALPH_CONFIG_LOADED="$resolved_config"
 }
 
 _config_load "$1"
