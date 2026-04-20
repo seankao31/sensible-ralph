@@ -124,7 +124,7 @@ An issue is **strictly pickup-ready** when **all** of:
 - Issue has a `Canceled` blocker (warrants human re-evaluation — keep, cancel, or edit dependencies?).
 - Issue has a `Duplicate` blocker (similar — resolve the duplication relationship first).
 - Blocker is itself Approved but not yet In Review/Done, and no chain resolves it — circular or deeply stuck dependency.
-- Issue is marked Approved but lacks a PRD in the description.
+- Issue is marked Approved but lacks a PRD in the description. Operationalized as `< 200 non-whitespace characters`; the threshold is a heuristic, tune if we see false positives (short-but-valid PRDs) or false negatives (long-but-empty descriptions).
 
 On each anomaly, the scan pauses with a description and asks the user what to do. Only after the scan passes does the dispatch loop begin.
 
@@ -140,25 +140,27 @@ When dispatching issue `B` whose blockers are `{A1, A2, ...}`:
 
 **Multi-parent integration merge:**
 
-The orchestrator attempts to merge the in-review parents sequentially in B's pre-created worktree. Two outcomes:
+The orchestrator attempts to merge the in-review parents sequentially in B's pre-created worktree. Outcomes differ by parent count:
 
-- **Clean merge:** worktree is ready; agent implements the feature normally.
-- **Merge conflicts:** worktree has unresolved conflicts. The prompt template tells the agent to check `git status` and resolve conflicts before implementing. Opus 4.7 with auto mode can reason about standard merge conflicts — it has access to both parent branches via git log/diff.
+- **Clean merge (single or multi-parent):** worktree is ready; agent implements the feature normally.
+- **Single-parent conflict:** worktree has unresolved conflicts; agent resolves during dispatch (the prompt template tells it to check `git status` first). Opus 4.7 with auto mode can reason about standard merge conflicts — it has access to both parent branches via git log/diff.
+- **Multi-parent conflict:** orchestrator aborts the merge and records `setup_failed` (see `docs/decisions/2026-04-20-ralph-v2-multi-parent-integration-abort.md`). Git's MERGING state forbids continuing through the parent list after a first conflict — the only tractable implementation is fail-fast. Operator resolves manually (merge one parent to main, re-sequence, etc.) before re-queuing.
 
 ```bash
 # Orchestrator:
 git worktree add .worktrees/eng-B-slug -b eng-B-slug main
 cd .worktrees/eng-B-slug
-git merge <parent-A1-branch>  # may conflict
-git merge <parent-A2-branch>  # may conflict
-# On conflicts: leave them. The agent resolves.
+git merge <parent-A1-branch>  # single parent: may conflict (agent resolves)
+git merge <parent-A2-branch>  # multi-parent: abort on any conflict (see decision doc)
 # Clean: proceed directly to feature work.
 ```
 
-**Rationale for agent-resolution over orchestrator-skipping:**
+**Rationale for agent-resolution (single-parent case):**
 - The orchestrator can't reason about conflicts (it's a bash script); an agent can.
 - v1 would have skipped B and blocked progress; v2's whole point is keeping chains moving.
 - The worst case is the agent gets the merge wrong — which then surfaces during the user's review, same as any merge done by a developer.
+
+For the multi-parent case, v2 accepts a partial regression to v1-like "skip on conflict" behavior. Conflicts between two already-approved parents are rare in practice; when they occur, the structural problem (overlapping scope) deserves human resolution, not an agent's best guess across parents it can't fully see.
 
 ### 8. Failure handling: skip downstream, continue independents
 
@@ -285,11 +287,21 @@ base       = dag_base(issue)           # "main" | parent-branch | {integration, 
 worktree   = .worktrees/$branch        # relative to repo root (orchestrator cwd)
 session    = "$ISSUE_ID: $ISSUE_TITLE"
 
-# Pre-create worktree at correct base
+# Pre-create worktree at correct base. Setup-step failures (branch lookup,
+# dag_base, worktree creation, .ralph-base-sha write, Linear state transition)
+# are caught per-issue and recorded as outcome: "setup_failed" with a
+# failed_step identifier, then the loop continues with the next queued issue.
+# Pre-existing worktree path or branch at the target location emits
+# outcome: "local_residue" WITHOUT mutating Linear — the issue is healthy;
+# only the local environment needs operator cleanup.
 if base is integration:
     git worktree add $worktree -b $branch main
     for parent_branch in base.parents:
-        git -C $worktree merge $parent_branch    # leave conflicts in-place; agent resolves
+        git -C $worktree merge $parent_branch
+        # Single parent with conflict: leave in-place; agent resolves.
+        # Multi-parent with conflict: abort + record setup_failed. See
+        # `docs/decisions/2026-04-20-ralph-v2-multi-parent-integration-abort.md`
+        # for why git semantics forbid "leave and continue" across multiple parents.
 else:
     git worktree add $worktree -b $branch $base
 
@@ -299,25 +311,48 @@ linear issue update $issue --state "In Progress"
 # Dispatch (auto mode) — cwd = worktree; NOT --worktree (that flag is create-only).
 (cd $worktree && claude -p \
     --name "$session" \
-    [auto-mode flag] \
+    --permission-mode auto \
     "$prompt" \
     2>&1 | tee ralph-output.log)
 
-# Classify outcome
-if exit_code == 0:
-    # /prepare-for-review inside the session already moved state to In Review
-    progress.append({issue, branch, base, outcome: "in_review", ...})
-else:
+# Classify outcome (see Outcome Model below and the decision doc for
+# `local_residue` + `unknown_post_state` rationale).
+post_state, state_fetch_ok = linear_get_issue_state(issue)  # may fail transiently
+
+if exit_code == 0 and not state_fetch_ok:
+    outcome = "unknown_post_state"          # no label, no taint
+elif exit_code == 0 and post_state == review_state:
+    outcome = "in_review"                   # success
+elif exit_code == 0:
+    outcome = "exit_clean_no_review"        # auto mode refused something; taint
     linear issue label add $issue ralph-failed
     tainted.add_transitive_descendants_of(issue)
-    progress.append({issue, outcome: "failed", exit_code, ...})
+else:
+    outcome = "failed"                      # non-zero exit; taint
+    linear issue label add $issue ralph-failed
+    tainted.add_transitive_descendants_of(issue)
+
+progress.append({issue, branch, base, outcome, exit_code, duration, run_id, ...})
 
 # Skip any issue whose id is in `tainted`
 ```
 
 Continues until the queue is empty or all remaining issues are tainted.
 
-The exact auto-mode CLI flag is an open question (see Open Questions).
+##### Outcome model
+
+Six outcomes. The spec's original two-outcome model (`in_review` / `failed`) proved insufficient once implementation surfaced three ambiguities: (a) `claude -p --permission-mode auto` can exit 0 without transitioning state when it refuses a permission-gated operation; (b) pre-dispatch setup can fail in ways that are distinct from session failures; (c) local environment residue and transient Linear read failures must not be collapsed to `failed`, because they'd mutate Linear state for issues the orchestrator never actually touched or successfully dispatched.
+
+| Outcome | Classification rule | `ralph-failed` label | Taints descendants |
+|---|---|---|---|
+| `in_review` | exit 0 AND post-state == review_state | no | no |
+| `exit_clean_no_review` | exit 0 AND post-state != review_state | yes | yes |
+| `failed` | exit != 0 | yes | yes |
+| `setup_failed` | pre-dispatch setup step failed (branch lookup, dag_base, worktree create, base-sha write, Linear state transition) | yes | yes |
+| `local_residue` | target path or branch pre-existed at start of dispatch | **no** | **no** |
+| `unknown_post_state` | exit 0 AND post-state fetch failed transiently | **no** | **no** |
+
+`local_residue` and `unknown_post_state` are the only outcomes that deliberately leave Linear untouched and descendants un-tainted. Rationale in `docs/decisions/2026-04-20-ralph-v2-ambiguous-outcome-handling.md` — briefly, in both cases the orchestrator cannot distinguish a real failure from operator state (residue) or a transient API blip (unknown), so mutating Linear would destroy correct work in the false-positive direction.
 
 #### 3. Topological sort: `toposort.sh`
 
@@ -431,7 +466,7 @@ Upstream tools (brainstorming, plan-writing) must produce:
 
 1. **A Linear issue** in the configured project, in state `Approved`.
 2. **A PRD written into the issue description.** Format is not rigidly prescribed — any markdown that gives Opus 4.7 enough context to implement without further human input. ENG-177 and ENG-178 experiment with the recommended shape.
-3. **Explicit `blocked-by` relations** for any prerequisite issues. The orchestrator uses these for DAG ordering and base-branch selection.
+3. **Explicit `blocked-by` relations** for any prerequisite issues. The orchestrator uses these for DAG ordering and base-branch selection. **v2 scope limit:** blocker relations are resolved only within the configured project. Cross-project `blocked-by` edges are returned by Linear but fail the "Approved blocker must be in this run's queue" membership check, so cross-project parents appear stuck in preflight. Multi-project initiatives are a common case we'll need to handle — tracked as ENG-203 for a v2.1 extension.
 
 That's the entire input contract. Everything downstream (branch name, worktree path, session name) is derived by the orchestrator from the Linear issue.
 
