@@ -64,6 +64,12 @@ linear_get_issue_blockers() {
   local issue_id="$1"
   printf 'get_blockers %s\n' "$issue_id" >> "$STUB_LINEAR_CALLS_FILE"
   local key; key="$(_issue_var "$issue_id")"
+  # If STUB_BLOCKERS_FAIL_<id> is set, simulate a transient relation-list failure.
+  local fail_var="STUB_BLOCKERS_FAIL_${key}"
+  if [[ -n "${!fail_var:-}" ]]; then
+    printf 'stub: linear_get_issue_blockers failed for %s\n' "$issue_id" >&2
+    return 1
+  fi
   local var="STUB_BLOCKERS_${key}"
   printf '%s' "${!var:-[]}"
 }
@@ -615,4 +621,96 @@ CLAUDESH
 
   local eng111_outcome; eng111_outcome="$(jq -r '.[] | select(.issue == "ENG-111") | .outcome' < "$REPO_DIR/progress.json")"
   [ "$eng111_outcome" = "in_review" ]
+}
+
+# ---------------------------------------------------------------------------
+# 13. P1: phase-1 blocker-fetch failure for one issue must not abort the run
+# ---------------------------------------------------------------------------
+@test "phase-1 blocker fetch failure for one issue: orchestrator continues and dispatches all others" {
+  export STUB_CLAUDE_EXIT=0
+  export STUB_CLAUDE_TRANSITION_STATE="In Review"
+
+  # ENG-120 blockers-fetch fails transiently; ENG-121 and ENG-122 are fine
+  # and independent.
+  export STUB_BLOCKERS_FAIL_ENG_120=1
+  export STUB_BLOCKERS_ENG_121='[]'
+  export STUB_BLOCKERS_ENG_122='[]'
+
+  # Per-issue transition stub
+  cat > "$STUB_DIR/claude" <<'CLAUDESH'
+#!/usr/bin/env bash
+printf '%q ' "$@" >> "$STUB_CLAUDE_ARGS_FILE"
+printf '\n' >> "$STUB_CLAUDE_ARGS_FILE"
+issue_id=""
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == "--name" ]]; then
+    shift
+    issue_id="${1%%:*}"
+    break
+  fi
+  shift
+done
+if [[ -n "${STUB_CLAUDE_TRANSITION_STATE:-}" && -n "$issue_id" ]]; then
+  printf '%s' "$STUB_CLAUDE_TRANSITION_STATE" > "$STUB_DIR/linear_state_$issue_id"
+fi
+exit 0
+CLAUDESH
+  chmod +x "$STUB_DIR/claude"
+
+  local q; q="$(write_queue ENG-120 ENG-121 ENG-122)"
+  run_orch "$q"
+
+  [ "$status" -eq 0 ]
+
+  # All three issues dispatched — the blocker-fetch failure for ENG-120 did
+  # not abort the orchestrator or prevent its own or others' dispatch.
+  local invocations; invocations="$(wc -l < "$STUB_CLAUDE_ARGS_FILE" | tr -d ' ')"
+  [ "$invocations" -eq 3 ]
+
+  local records; records="$(jq 'length' < "$REPO_DIR/progress.json")"
+  [ "$records" -eq 3 ]
+
+  local eng120_outcome; eng120_outcome="$(jq -r '.[] | select(.issue == "ENG-120") | .outcome' < "$REPO_DIR/progress.json")"
+  [ "$eng120_outcome" = "in_review" ]
+  local eng121_outcome; eng121_outcome="$(jq -r '.[] | select(.issue == "ENG-121") | .outcome' < "$REPO_DIR/progress.json")"
+  [ "$eng121_outcome" = "in_review" ]
+  local eng122_outcome; eng122_outcome="$(jq -r '.[] | select(.issue == "ENG-122") | .outcome' < "$REPO_DIR/progress.json")"
+  [ "$eng122_outcome" = "in_review" ]
+
+  # A warning was emitted to stderr for the skipped map build
+  [[ "$output" == *"failed to fetch blockers for ENG-120"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# 14. P2: linear_get_issue_branch returning literal "null" is treated as missing
+# ---------------------------------------------------------------------------
+@test "linear_get_issue_branch returns literal \"null\": outcome=setup_failed, step=missing_branch_name, no worktree" {
+  export STUB_CLAUDE_EXIT=0
+  export STUB_CLAUDE_TRANSITION_STATE="In Review"
+
+  # `jq -r '.branchName'` on an issue whose branchName field is missing emits
+  # the literal string "null". Simulate that directly.
+  export STUB_BRANCH_ENG_130="null"
+  export STUB_BLOCKERS_ENG_130='[]'
+
+  local q; q="$(write_queue ENG-130)"
+  run_orch "$q"
+
+  [ "$status" -eq 0 ]
+
+  # claude was NOT invoked — setup failed before dispatch
+  local invocations; invocations="$(wc -l < "$STUB_CLAUDE_ARGS_FILE" | tr -d ' ')"
+  [ "$invocations" -eq 0 ]
+
+  # No worktree was created for the "null" branch
+  [ ! -d "$REPO_DIR/.worktrees/null" ]
+
+  # progress.json records setup_failed with step=missing_branch_name
+  local outcome; outcome="$(jq -r '.[0].outcome' < "$REPO_DIR/progress.json")"
+  [ "$outcome" = "setup_failed" ]
+  local step; step="$(jq -r '.[0].failed_step' < "$REPO_DIR/progress.json")"
+  [ "$step" = "missing_branch_name" ]
+
+  # ralph-failed label was added
+  grep -qF "add_label ENG-130 ralph-failed" "$STUB_LINEAR_CALLS_FILE"
 }

@@ -111,7 +111,14 @@ _map_children_of() {
 }
 
 for issue_id in "${queued_ids[@]}"; do
-  blockers_json="$(linear_get_issue_blockers "$issue_id")"
+  # Per-issue fault isolation: if the blocker fetch fails for one issue, skip
+  # map-building for that issue and continue. Its descendants won't be known
+  # in the taint map, so a later failure of this issue won't taint its
+  # children — a documented degradation.
+  if ! blockers_json="$(linear_get_issue_blockers "$issue_id" 2>/dev/null)"; then
+    printf 'orchestrator: failed to fetch blockers for %s — taint propagation will be incomplete for this issue\n' "$issue_id" >&2
+    continue
+  fi
   blocker_count="$(printf '%s' "$blockers_json" | jq 'length')"
   for (( i = 0; i < blocker_count; i++ )); do
     blocker_id="$(printf '%s' "$blockers_json" | jq -r ".[$i].id")"
@@ -179,6 +186,14 @@ _dispatch_issue() {
   if [[ $? -ne 0 || -z "$branch" ]]; then
     set -e
     _record_setup_failure "$issue_id" "linear_get_issue_branch" "$timestamp"
+    return 1
+  fi
+  # `jq -r '.branchName'` emits the literal string "null" when the field is
+  # missing. Treat that as a missing branch name — worktree creation would
+  # otherwise create a branch literally named "null".
+  if [[ "$branch" == "null" ]]; then
+    set -e
+    _record_setup_failure "$issue_id" "missing_branch_name" "$timestamp"
     return 1
   fi
 
