@@ -16,6 +16,8 @@ Dispatch the autonomous spec-queue: sort Approved Linear issues into a DAG-aware
 - `linear` CLI authenticated (`linear --version` succeeds).
 - `jq` available on PATH.
 - `config.json` present in the skill directory (copy from `config.example.json` and customize). Required keys: `project`, `approved_state`, `review_state`, `failed_label`, `worktree_base`, `model`, `stdout_log_filename`, `prompt_template`.
+- Invoke from a `bash` shell. `lib/config.sh` uses bash array syntax that fails to parse in zsh (`${!arr[@]}`); on macOS where the default shell is zsh, run `bash` first or wrap each step in `bash -c '…'`.
+- Invoke from the **main checkout root**, not from inside a worktree. `worktree_path_for_issue` keys off `git rev-parse --show-toplevel`, which returns a linked worktree's own root if you're inside one — new worktrees will then nest at `<worktree>/.worktrees/<branch>` instead of `<repo>/.worktrees/<branch>`.
 
 ## Workflow (run in order)
 
