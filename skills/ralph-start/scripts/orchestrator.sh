@@ -176,14 +176,16 @@ _record_setup_failure() {
 #
 # `--force` is required because .ralph-base-sha (written pre-dispatch) is an
 # untracked file that otherwise causes `git worktree remove` to refuse. The
-# `git worktree prune` call sweeps any stale metadata left behind by the rm -rf
-# fallback, without which `git branch -D` refuses to delete a "checked out" ref.
+# `git worktree prune --expire now` call sweeps any stale metadata left behind
+# by the rm -rf fallback; without `--expire now` the default expiry window
+# keeps the admin entry alive and `git branch -D` refuses to delete a
+# "checked out" ref.
 _cleanup_worktree() {
   local path="$1" branch="$2"
   if [[ -d "$path" ]]; then
     git worktree remove --force "$path" 2>/dev/null || rm -rf "$path"
   fi
-  git worktree prune 2>/dev/null || true
+  git worktree prune --expire now 2>/dev/null || true
   if git show-ref --verify --quiet "refs/heads/$branch"; then
     git branch -D "$branch" 2>/dev/null || true
   fi
@@ -257,10 +259,17 @@ _dispatch_issue() {
   # Create the worktree per base type, capturing the branch's creation point
   # (main's SHA for integration, post-create HEAD otherwise) for the
   # .ralph-base-sha contract consumed by prepare-for-review (ENG-182).
+  #
+  # Worktree creation helpers can fail AFTER `git worktree add` has already
+  # succeeded (e.g. a merge error mid-integration, or a later step that
+  # references the partial worktree). Cleanup on failure is guarded — the
+  # worktree may or may not have been created — but must run unconditionally
+  # so a stale branch/dir doesn't block the next run.
   if [[ "$base_out" == "main" ]]; then
     worktree_create_at_base "$path" "$branch" "main"
     if [[ $? -ne 0 ]]; then
       set -e
+      _cleanup_worktree "$path" "$branch"
       _record_setup_failure "$issue_id" "worktree_create_at_base" "$timestamp"
       return 1
     fi
@@ -280,6 +289,7 @@ _dispatch_issue() {
     worktree_create_with_integration "$path" "$branch" "${parents[@]}"
     if [[ $? -ne 0 ]]; then
       set -e
+      _cleanup_worktree "$path" "$branch"
       _record_setup_failure "$issue_id" "worktree_create_with_integration" "$timestamp"
       return 1
     fi
@@ -287,6 +297,7 @@ _dispatch_issue() {
     worktree_create_at_base "$path" "$branch" "$base_out"
     if [[ $? -ne 0 ]]; then
       set -e
+      _cleanup_worktree "$path" "$branch"
       _record_setup_failure "$issue_id" "worktree_create_at_base" "$timestamp"
       return 1
     fi

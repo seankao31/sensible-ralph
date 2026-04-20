@@ -875,3 +875,51 @@ CLAUDESH
   # Warning was emitted for the failed label call
   [[ "$output" == *"failed to add ralph-failed label to ENG-160"* ]]
 }
+
+# ---------------------------------------------------------------------------
+# 18. P1: integration-path worktree helper failing AFTER `git worktree add`
+#     succeeds (e.g. a non-conflict merge error) must clean up the partial
+#     worktree and branch so the next run isn't blocked. Outcome=setup_failed.
+# ---------------------------------------------------------------------------
+@test "integration worktree helper fails post-add (non-conflict merge error): worktree + branch cleaned up, outcome=setup_failed" {
+  export STUB_CLAUDE_EXIT=0
+  export STUB_CLAUDE_TRANSITION_STATE="In Review"
+
+  # Build an unrelated-histories parent: `git merge` refuses to merge it
+  # (exit 128, no unmerged files), which is the non-conflict failure path
+  # inside worktree_create_with_integration. By that point `git worktree add`
+  # has already created the worktree + branch.
+  git -C "$REPO_DIR" checkout --orphan eng-170-unrelated -q
+  git -C "$REPO_DIR" rm -rf . 2>/dev/null || true
+  echo "u" > "$REPO_DIR/u.txt"
+  git -C "$REPO_DIR" add u.txt
+  git -C "$REPO_DIR" commit -m "unrelated" -q
+  git -C "$REPO_DIR" checkout main -q
+
+  export STUB_DAG_BASE_ENG_170="INTEGRATION eng-170-unrelated"
+  export STUB_BLOCKERS_ENG_170='[]'
+
+  local q; q="$(write_queue ENG-170)"
+  run_orch "$q"
+
+  [ "$status" -eq 0 ]
+
+  # claude was NOT invoked — setup failed at worktree_create_with_integration
+  local invocations; invocations="$(wc -l < "$STUB_CLAUDE_ARGS_FILE" | tr -d ' ')"
+  [ "$invocations" -eq 0 ]
+
+  # progress.json records setup_failed with step=worktree_create_with_integration
+  local outcome; outcome="$(jq -r '.[0].outcome' < "$REPO_DIR/progress.json")"
+  [ "$outcome" = "setup_failed" ]
+  local step; step="$(jq -r '.[0].failed_step' < "$REPO_DIR/progress.json")"
+  [ "$step" = "worktree_create_with_integration" ]
+
+  # The partial worktree directory was cleaned up
+  [ ! -d "$REPO_DIR/.worktrees/eng-170" ]
+
+  # The branch was deleted so a re-run can recreate it
+  ! git -C "$REPO_DIR" show-ref --verify --quiet "refs/heads/eng-170"
+
+  # ralph-failed label was added
+  grep -qF "add_label ENG-170 ralph-failed" "$STUB_LINEAR_CALLS_FILE"
+}
