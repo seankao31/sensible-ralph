@@ -923,3 +923,50 @@ CLAUDESH
   # ralph-failed label was added
   grep -qF "add_label ENG-170 ralph-failed" "$STUB_LINEAR_CALLS_FILE"
 }
+
+# ---------------------------------------------------------------------------
+# 19. P1: when `git worktree add -b` fails because the branch already exists,
+#     cleanup MUST NOT delete that pre-existing branch (it may carry work
+#     from a prior incomplete run). `git worktree add -b` is atomic: if the
+#     worktree directory wasn't created, no new branch was created either.
+# ---------------------------------------------------------------------------
+@test "worktree_create_at_base fails due to pre-existing branch: pre-existing branch preserved, no worktree created" {
+  export STUB_CLAUDE_EXIT=0
+  export STUB_CLAUDE_TRANSITION_STATE="In Review"
+
+  # Pre-create the branch with a commit that represents unsaved prior work.
+  # The branch's tip SHA must survive cleanup unchanged.
+  git -C "$REPO_DIR" branch eng-180
+  git -C "$REPO_DIR" checkout eng-180 -q
+  echo "prior work" > "$REPO_DIR/prior.txt"
+  git -C "$REPO_DIR" add prior.txt
+  git -C "$REPO_DIR" commit -m "prior work on eng-180" -q
+  local prior_sha; prior_sha="$(git -C "$REPO_DIR" rev-parse eng-180)"
+  git -C "$REPO_DIR" checkout main -q
+
+  export STUB_BLOCKERS_ENG_180='[]'
+
+  local q; q="$(write_queue ENG-180)"
+  run_orch "$q"
+
+  [ "$status" -eq 0 ]
+
+  # claude was NOT invoked — setup failed at worktree_create_at_base
+  local invocations; invocations="$(wc -l < "$STUB_CLAUDE_ARGS_FILE" | tr -d ' ')"
+  [ "$invocations" -eq 0 ]
+
+  # progress.json records setup_failed with step=worktree_create_at_base
+  local outcome; outcome="$(jq -r '.[0].outcome' < "$REPO_DIR/progress.json")"
+  [ "$outcome" = "setup_failed" ]
+  local step; step="$(jq -r '.[0].failed_step' < "$REPO_DIR/progress.json")"
+  [ "$step" = "worktree_create_at_base" ]
+
+  # No worktree directory was created at the target path
+  [ ! -d "$REPO_DIR/.worktrees/eng-180" ]
+
+  # CRITICAL: the pre-existing branch STILL EXISTS — cleanup must not have
+  # touched it. If this fails, _cleanup_worktree destroyed unsaved work.
+  git -C "$REPO_DIR" show-ref --verify --quiet "refs/heads/eng-180"
+  local post_sha; post_sha="$(git -C "$REPO_DIR" rev-parse eng-180)"
+  [ "$post_sha" = "$prior_sha" ]
+}

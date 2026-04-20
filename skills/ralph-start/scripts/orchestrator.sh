@@ -174,6 +174,11 @@ _record_setup_failure() {
 # orchestrator run trips over `git worktree add -b <branch>` ("branch already
 # exists") and the issue is permanently blocked until a human cleans up.
 #
+# Gated on worktree-directory existence: `git worktree add -b` is atomic —
+# it either creates BOTH the worktree directory AND the branch, or NEITHER.
+# If the directory doesn't exist, git didn't create a new branch, so any
+# branch of that name is pre-existing work and must NOT be deleted.
+#
 # `--force` is required because .ralph-base-sha (written pre-dispatch) is an
 # untracked file that otherwise causes `git worktree remove` to refuse. The
 # `git worktree prune --expire now` call sweeps any stale metadata left behind
@@ -182,10 +187,13 @@ _record_setup_failure() {
 # "checked out" ref.
 _cleanup_worktree() {
   local path="$1" branch="$2"
-  if [[ -d "$path" ]]; then
-    git worktree remove --force "$path" 2>/dev/null || rm -rf "$path"
+  if [[ ! -d "$path" ]]; then
+    return 0
   fi
-  git worktree prune --expire now 2>/dev/null || true
+  git worktree remove --force "$path" 2>/dev/null || {
+    rm -rf "$path"
+    git worktree prune --expire now 2>/dev/null || true
+  }
   if git show-ref --verify --quiet "refs/heads/$branch"; then
     git branch -D "$branch" 2>/dev/null || true
   fi
