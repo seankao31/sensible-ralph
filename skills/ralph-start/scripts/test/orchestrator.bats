@@ -452,3 +452,167 @@ CLAUDESH
   [ -f "$wt_path/b.txt" ]
   [ -f "$wt_path/.ralph-base-sha" ]
 }
+
+# ---------------------------------------------------------------------------
+# 10. P1: integration base records main's SHA (NOT post-merge HEAD) in .ralph-base-sha
+# ---------------------------------------------------------------------------
+@test "integration base records main's SHA in .ralph-base-sha, not post-merge HEAD" {
+  export STUB_CLAUDE_EXIT=0
+  export STUB_CLAUDE_TRANSITION_STATE="In Review"
+
+  # Build a parent branch with real commits so merge produces a non-empty diff
+  # and the post-merge HEAD is different from main.
+  git -C "$REPO_DIR" checkout -b eng-90-parent-a -q
+  echo "a" > "$REPO_DIR/a.txt"
+  git -C "$REPO_DIR" add a.txt
+  git -C "$REPO_DIR" commit -m "parent a" -q
+  git -C "$REPO_DIR" checkout main -q
+
+  # Capture main's SHA now — this is what .ralph-base-sha should contain.
+  local main_sha; main_sha="$(git -C "$REPO_DIR" rev-parse main)"
+
+  export STUB_DAG_BASE_ENG_91="INTEGRATION eng-90-parent-a"
+  export STUB_CLAUDE_ISSUE_ID="ENG-91"
+
+  local q; q="$(write_queue ENG-91)"
+  run_orch "$q"
+
+  [ "$status" -eq 0 ]
+
+  local wt_path="$REPO_DIR/.worktrees/eng-91"
+  [ -f "$wt_path/.ralph-base-sha" ]
+
+  local recorded_sha; recorded_sha="$(cat "$wt_path/.ralph-base-sha")"
+  local post_merge_sha; post_merge_sha="$(git -C "$wt_path" rev-parse HEAD)"
+
+  # The recorded SHA must equal main's SHA (branch creation point)
+  [ "$recorded_sha" = "$main_sha" ]
+
+  # Sanity: post-merge HEAD must differ from main (proves the merge happened)
+  [ "$post_merge_sha" != "$main_sha" ]
+
+  # Therefore recorded_sha must differ from post-merge HEAD
+  [ "$recorded_sha" != "$post_merge_sha" ]
+}
+
+# ---------------------------------------------------------------------------
+# 11. I1: per-issue fault isolation — worktree creation failure does NOT abort loop
+# ---------------------------------------------------------------------------
+@test "setup failure (branch already exists): outcome=setup_failed, descendants tainted, loop continues" {
+  export STUB_CLAUDE_EXIT=0
+  export STUB_CLAUDE_TRANSITION_STATE="In Review"
+
+  # Pre-create the branch for ENG-100 so `git worktree add -b eng-100` fails.
+  git -C "$REPO_DIR" branch eng-100
+
+  # ENG-101 depends on ENG-100; ENG-102 is independent.
+  export STUB_BLOCKERS_ENG_100='[]'
+  export STUB_BLOCKERS_ENG_101='[{"id":"ENG-100","state":"Approved","branch":"eng-100"}]'
+  export STUB_BLOCKERS_ENG_102='[]'
+
+  # Use the smart per-issue stub so ENG-102 transitions correctly.
+  cat > "$STUB_DIR/claude" <<'CLAUDESH'
+#!/usr/bin/env bash
+printf '%q ' "$@" >> "$STUB_CLAUDE_ARGS_FILE"
+printf '\n' >> "$STUB_CLAUDE_ARGS_FILE"
+issue_id=""
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == "--name" ]]; then
+    shift
+    issue_id="${1%%:*}"
+    break
+  fi
+  shift
+done
+if [[ -n "${STUB_CLAUDE_TRANSITION_STATE:-}" && -n "$issue_id" ]]; then
+  printf '%s' "$STUB_CLAUDE_TRANSITION_STATE" > "$STUB_DIR/linear_state_$issue_id"
+fi
+exit 0
+CLAUDESH
+  chmod +x "$STUB_DIR/claude"
+
+  local q; q="$(write_queue ENG-100 ENG-101 ENG-102)"
+  run_orch "$q"
+
+  [ "$status" -eq 0 ]
+
+  # claude was invoked only for ENG-102 (ENG-100 failed setup, ENG-101 tainted)
+  local invocations; invocations="$(wc -l < "$STUB_CLAUDE_ARGS_FILE" | tr -d ' ')"
+  [ "$invocations" -eq 1 ]
+  grep -qF "ENG-102" "$STUB_CLAUDE_ARGS_FILE"
+  ! grep -qF "ENG-100:" "$STUB_CLAUDE_ARGS_FILE"
+  ! grep -qF "ENG-101:" "$STUB_CLAUDE_ARGS_FILE"
+
+  # ralph-failed label was added to ENG-100
+  grep -qF "add_label ENG-100 ralph-failed" "$STUB_LINEAR_CALLS_FILE"
+
+  # progress.json has three records
+  local records; records="$(jq 'length' < "$REPO_DIR/progress.json")"
+  [ "$records" -eq 3 ]
+
+  local eng100_outcome; eng100_outcome="$(jq -r '.[] | select(.issue == "ENG-100") | .outcome' < "$REPO_DIR/progress.json")"
+  [ "$eng100_outcome" = "setup_failed" ]
+
+  # setup_failed record carries a step identifier
+  local eng100_step; eng100_step="$(jq -r '.[] | select(.issue == "ENG-100") | .failed_step' < "$REPO_DIR/progress.json")"
+  [ -n "$eng100_step" ]
+  [ "$eng100_step" != "null" ]
+
+  local eng101_outcome; eng101_outcome="$(jq -r '.[] | select(.issue == "ENG-101") | .outcome' < "$REPO_DIR/progress.json")"
+  [ "$eng101_outcome" = "skipped" ]
+
+  local eng102_outcome; eng102_outcome="$(jq -r '.[] | select(.issue == "ENG-102") | .outcome' < "$REPO_DIR/progress.json")"
+  [ "$eng102_outcome" = "in_review" ]
+}
+
+# ---------------------------------------------------------------------------
+# 12. I2: dag_base.sh returning empty output is treated as setup_failed
+# ---------------------------------------------------------------------------
+@test "dag_base.sh empty output: outcome=setup_failed, loop continues" {
+  export STUB_CLAUDE_EXIT=0
+  export STUB_CLAUDE_TRANSITION_STATE="In Review"
+
+  # Force dag_base to emit whitespace-only output for ENG-110. (Setting the
+  # stub var to empty would hit bash's `:-` default in the stub; whitespace
+  # exercises the validator's `${var// /}` emptiness check.)
+  export STUB_DAG_BASE_ENG_110="   "
+
+  export STUB_BLOCKERS_ENG_110='[]'
+  export STUB_BLOCKERS_ENG_111='[]'
+
+  cat > "$STUB_DIR/claude" <<'CLAUDESH'
+#!/usr/bin/env bash
+printf '%q ' "$@" >> "$STUB_CLAUDE_ARGS_FILE"
+printf '\n' >> "$STUB_CLAUDE_ARGS_FILE"
+issue_id=""
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == "--name" ]]; then
+    shift
+    issue_id="${1%%:*}"
+    break
+  fi
+  shift
+done
+if [[ -n "${STUB_CLAUDE_TRANSITION_STATE:-}" && -n "$issue_id" ]]; then
+  printf '%s' "$STUB_CLAUDE_TRANSITION_STATE" > "$STUB_DIR/linear_state_$issue_id"
+fi
+exit 0
+CLAUDESH
+  chmod +x "$STUB_DIR/claude"
+
+  local q; q="$(write_queue ENG-110 ENG-111)"
+  run_orch "$q"
+
+  [ "$status" -eq 0 ]
+
+  # Only ENG-111 dispatched
+  local invocations; invocations="$(wc -l < "$STUB_CLAUDE_ARGS_FILE" | tr -d ' ')"
+  [ "$invocations" -eq 1 ]
+  grep -qF "ENG-111" "$STUB_CLAUDE_ARGS_FILE"
+
+  local eng110_outcome; eng110_outcome="$(jq -r '.[] | select(.issue == "ENG-110") | .outcome' < "$REPO_DIR/progress.json")"
+  [ "$eng110_outcome" = "setup_failed" ]
+
+  local eng111_outcome; eng111_outcome="$(jq -r '.[] | select(.issue == "ENG-111") | .outcome' < "$REPO_DIR/progress.json")"
+  [ "$eng111_outcome" = "in_review" ]
+}

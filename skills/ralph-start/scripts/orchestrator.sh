@@ -143,6 +143,191 @@ _taint_descendants() {
   done
 }
 
+# Record a setup_failed outcome and taint downstream dependents. Used by the
+# per-issue fault-isolation path so one bad issue can't abort the whole run.
+_record_setup_failure() {
+  local issue_id="$1"
+  local failed_step="$2"
+  local timestamp="$3"
+  linear_add_label "$issue_id" "$RALPH_FAILED_LABEL" || true
+  _taint_descendants "$issue_id"
+  local record
+  record="$(jq -n \
+    --arg issue "$issue_id" \
+    --arg outcome "setup_failed" \
+    --arg step "$failed_step" \
+    --arg ts "$timestamp" \
+    '{issue: $issue, outcome: $outcome, failed_step: $step, timestamp: $ts}')"
+  _progress_append "$record"
+}
+
+# Per-issue setup + dispatch. Returns 0 on successful dispatch (regardless of
+# the session's outcome — hard/soft failures are still "dispatched"), and
+# returns 1 if setup itself failed before claude could be invoked. The caller
+# treats a non-zero return as "keep going with the next issue".
+_dispatch_issue() {
+  local issue_id="$1"
+  local timestamp; timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  local start_epoch; start_epoch="$(date +%s)"
+
+  # Setup steps run with explicit error handling so any failure is caught,
+  # recorded, and doesn't abort the outer loop.
+  local branch title base_out path base_sha parents
+  set +e
+
+  branch="$(linear_get_issue_branch "$issue_id")"
+  if [[ $? -ne 0 || -z "$branch" ]]; then
+    set -e
+    _record_setup_failure "$issue_id" "linear_get_issue_branch" "$timestamp"
+    return 1
+  fi
+
+  title="$(linear_get_issue_title "$issue_id")"
+  if [[ $? -ne 0 ]]; then
+    set -e
+    _record_setup_failure "$issue_id" "linear_get_issue_title" "$timestamp"
+    return 1
+  fi
+
+  base_out="$("$SCRIPT_DIR/dag_base.sh" "$issue_id")"
+  if [[ $? -ne 0 ]]; then
+    set -e
+    _record_setup_failure "$issue_id" "dag_base" "$timestamp"
+    return 1
+  fi
+
+  # Validate dag_base output: must be non-empty and begin with "main",
+  # "INTEGRATION ", or a plausible branch token (no whitespace).
+  if [[ -z "${base_out//[[:space:]]/}" ]]; then
+    set -e
+    printf 'orchestrator: dag_base.sh returned empty base for %s\n' "$issue_id" >&2
+    _record_setup_failure "$issue_id" "dag_base_empty" "$timestamp"
+    return 1
+  fi
+  if [[ "$base_out" != "main" && "$base_out" != INTEGRATION\ * && "$base_out" =~ [[:space:]] ]]; then
+    set -e
+    printf 'orchestrator: dag_base.sh returned malformed base for %s: %q\n' "$issue_id" "$base_out" >&2
+    _record_setup_failure "$issue_id" "dag_base_malformed" "$timestamp"
+    return 1
+  fi
+
+  path="$(worktree_path_for_issue "$branch")"
+  if [[ $? -ne 0 || -z "$path" ]]; then
+    set -e
+    _record_setup_failure "$issue_id" "worktree_path_for_issue" "$timestamp"
+    return 1
+  fi
+
+  # Create the worktree per base type, capturing the branch's creation point
+  # (main's SHA for integration, post-create HEAD otherwise) for the
+  # .ralph-base-sha contract consumed by prepare-for-review (ENG-182).
+  if [[ "$base_out" == "main" ]]; then
+    worktree_create_at_base "$path" "$branch" "main"
+    if [[ $? -ne 0 ]]; then
+      set -e
+      _record_setup_failure "$issue_id" "worktree_create_at_base" "$timestamp"
+      return 1
+    fi
+    base_sha="$(git -C "$path" rev-parse HEAD)"
+  elif [[ "$base_out" == INTEGRATION\ * ]]; then
+    # shellcheck disable=SC2206
+    parents=(${base_out#INTEGRATION })
+    # Capture main's SHA BEFORE any parent merges — that's the branch's true
+    # creation point. Post-merge HEAD would pull parent commits into the
+    # prepare-for-review diff, which must be scoped to this session's work.
+    base_sha="$(git rev-parse main)"
+    if [[ $? -ne 0 || -z "$base_sha" ]]; then
+      set -e
+      _record_setup_failure "$issue_id" "rev_parse_main" "$timestamp"
+      return 1
+    fi
+    worktree_create_with_integration "$path" "$branch" "${parents[@]}"
+    if [[ $? -ne 0 ]]; then
+      set -e
+      _record_setup_failure "$issue_id" "worktree_create_with_integration" "$timestamp"
+      return 1
+    fi
+  else
+    worktree_create_at_base "$path" "$branch" "$base_out"
+    if [[ $? -ne 0 ]]; then
+      set -e
+      _record_setup_failure "$issue_id" "worktree_create_at_base" "$timestamp"
+      return 1
+    fi
+    base_sha="$(git -C "$path" rev-parse HEAD)"
+  fi
+
+  # Record base SHA before dispatch (prepare-for-review contract, ENG-182)
+  printf '%s\n' "$base_sha" > "$path/.ralph-base-sha"
+  if [[ $? -ne 0 ]]; then
+    set -e
+    _record_setup_failure "$issue_id" "write_base_sha" "$timestamp"
+    return 1
+  fi
+
+  # Transition Linear state to In Progress
+  linear_set_state "$issue_id" "In Progress"
+  if [[ $? -ne 0 ]]; then
+    set -e
+    _record_setup_failure "$issue_id" "linear_set_state" "$timestamp"
+    return 1
+  fi
+
+  set -e
+
+  # Render prompt
+  local prompt="${RALPH_PROMPT_TEMPLATE//\$ISSUE_ID/$issue_id}"
+  prompt="${prompt//\$ISSUE_TITLE/$title}"
+  prompt="${prompt//\$BRANCH_NAME/$branch}"
+  prompt="${prompt//\$WORKTREE_PATH/$path}"
+
+  # Dispatch claude from the worktree cwd, tee-ing output to the log file
+  # without letting tee mask claude's exit code.
+  #
+  # We run the pipeline in a subshell so `cd` is scoped, and have the subshell
+  # exit with claude's exit code (not tee's). `set +e` / explicit capture keeps
+  # the outer `set -e` from aborting on non-zero.
+  local claude_exit=0
+  (
+    cd "$path"
+    set +e
+    claude -p --permission-mode auto --model "$RALPH_MODEL" --name "$issue_id: $title" "$prompt" 2>&1 | tee "$path/$RALPH_STDOUT_LOG"
+    ec="${PIPESTATUS[0]}"
+    exit "$ec"
+  ) || claude_exit=$?
+
+  local end_epoch; end_epoch="$(date +%s)"
+  local duration=$(( end_epoch - start_epoch ))
+
+  # Classify using exit code AND Linear state (Q2 finding)
+  local post_state; post_state="$(linear_get_issue_state "$issue_id")"
+
+  local outcome record
+  if [[ "$claude_exit" -eq 0 && "$post_state" == "$RALPH_REVIEW_STATE" ]]; then
+    outcome="in_review"
+  elif [[ "$claude_exit" -eq 0 ]]; then
+    outcome="exit_clean_no_review"
+    linear_add_label "$issue_id" "$RALPH_FAILED_LABEL"
+    _taint_descendants "$issue_id"
+  else
+    outcome="failed"
+    linear_add_label "$issue_id" "$RALPH_FAILED_LABEL"
+    _taint_descendants "$issue_id"
+  fi
+
+  record="$(jq -n \
+    --arg issue "$issue_id" \
+    --arg branch "$branch" \
+    --arg base "$base_out" \
+    --arg outcome "$outcome" \
+    --argjson exit_code "$claude_exit" \
+    --argjson duration "$duration" \
+    --arg ts "$timestamp" \
+    '{issue: $issue, branch: $branch, base: $base, outcome: $outcome, exit_code: $exit_code, duration_seconds: $duration, timestamp: $ts}')"
+  _progress_append "$record"
+  return 0
+}
+
 # ---------------------------------------------------------------------------
 # Phase 2: dispatch loop
 # ---------------------------------------------------------------------------
@@ -159,100 +344,7 @@ for issue_id in "${queued_ids[@]}"; do
     continue
   fi
 
-  start_epoch="$(date +%s)"
-
-  # Resolve branch + title
-  branch="$(linear_get_issue_branch "$issue_id")"
-  title="$(linear_get_issue_title "$issue_id")"
-
-  # DAG base selection
-  base_out="$("$SCRIPT_DIR/dag_base.sh" "$issue_id")"
-
-  # Compute worktree path (requires REPO_ROOT via git rev-parse)
-  path="$(worktree_path_for_issue "$branch")"
-
-  # Create the worktree per base type
-  if [[ "$base_out" == "main" ]]; then
-    worktree_create_at_base "$path" "$branch" "main"
-  elif [[ "$base_out" == INTEGRATION\ * ]]; then
-    # shellcheck disable=SC2206
-    parents=(${base_out#INTEGRATION })
-    worktree_create_with_integration "$path" "$branch" "${parents[@]}"
-  else
-    worktree_create_at_base "$path" "$branch" "$base_out"
-  fi
-
-  # Record base SHA before dispatch (prepare-for-review contract, ENG-182)
-  git -C "$path" rev-parse HEAD > "$path/.ralph-base-sha"
-
-  # Transition Linear state to In Progress
-  linear_set_state "$issue_id" "In Progress"
-
-  # Render prompt
-  prompt="${RALPH_PROMPT_TEMPLATE//\$ISSUE_ID/$issue_id}"
-  prompt="${prompt//\$ISSUE_TITLE/$title}"
-  prompt="${prompt//\$BRANCH_NAME/$branch}"
-  prompt="${prompt//\$WORKTREE_PATH/$path}"
-
-  # Dispatch claude from the worktree cwd, tee-ing output to the log file
-  # without letting tee mask claude's exit code.
-  #
-  # We run the pipeline in a subshell so `cd` is scoped, and have the subshell
-  # exit with claude's exit code (not tee's). `set +e` / explicit capture keeps
-  # the outer `set -e` from aborting on non-zero.
-  claude_exit=0
-  (
-    cd "$path"
-    set +e
-    claude -p --permission-mode auto --model "$RALPH_MODEL" --name "$issue_id: $title" "$prompt" 2>&1 | tee "$path/$RALPH_STDOUT_LOG"
-    ec="${PIPESTATUS[0]}"
-    exit "$ec"
-  ) || claude_exit=$?
-
-  end_epoch="$(date +%s)"
-  duration=$(( end_epoch - start_epoch ))
-
-  # Classify using exit code AND Linear state (Q2 finding)
-  post_state="$(linear_get_issue_state "$issue_id")"
-
-  if [[ "$claude_exit" -eq 0 && "$post_state" == "$RALPH_REVIEW_STATE" ]]; then
-    outcome="in_review"
-    record="$(jq -n \
-      --arg issue "$issue_id" \
-      --arg branch "$branch" \
-      --arg base "$base_out" \
-      --arg outcome "$outcome" \
-      --argjson exit_code "$claude_exit" \
-      --argjson duration "$duration" \
-      --arg ts "$timestamp" \
-      '{issue: $issue, branch: $branch, base: $base, outcome: $outcome, exit_code: $exit_code, duration_seconds: $duration, timestamp: $ts}')"
-  elif [[ "$claude_exit" -eq 0 ]]; then
-    outcome="exit_clean_no_review"
-    linear_add_label "$issue_id" "$RALPH_FAILED_LABEL"
-    _taint_descendants "$issue_id"
-    record="$(jq -n \
-      --arg issue "$issue_id" \
-      --arg branch "$branch" \
-      --arg base "$base_out" \
-      --arg outcome "$outcome" \
-      --argjson exit_code "$claude_exit" \
-      --argjson duration "$duration" \
-      --arg ts "$timestamp" \
-      '{issue: $issue, branch: $branch, base: $base, outcome: $outcome, exit_code: $exit_code, duration_seconds: $duration, timestamp: $ts}')"
-  else
-    outcome="failed"
-    linear_add_label "$issue_id" "$RALPH_FAILED_LABEL"
-    _taint_descendants "$issue_id"
-    record="$(jq -n \
-      --arg issue "$issue_id" \
-      --arg branch "$branch" \
-      --arg base "$base_out" \
-      --arg outcome "$outcome" \
-      --argjson exit_code "$claude_exit" \
-      --argjson duration "$duration" \
-      --arg ts "$timestamp" \
-      '{issue: $issue, branch: $branch, base: $base, outcome: $outcome, exit_code: $exit_code, duration_seconds: $duration, timestamp: $ts}')"
-  fi
-
-  _progress_append "$record"
+  # Per-issue setup failures are handled inside _dispatch_issue; a non-zero
+  # return just means "move on to the next issue".
+  _dispatch_issue "$issue_id" || true
 done
