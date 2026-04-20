@@ -168,6 +168,27 @@ _record_setup_failure() {
   _progress_append "$record"
 }
 
+# Best-effort cleanup after a post-worktree-creation setup failure. Without
+# this, a failed setup step (e.g. .ralph-base-sha write or linear_set_state)
+# leaves both the worktree directory and the branch in place, so the next
+# orchestrator run trips over `git worktree add -b <branch>` ("branch already
+# exists") and the issue is permanently blocked until a human cleans up.
+#
+# `--force` is required because .ralph-base-sha (written pre-dispatch) is an
+# untracked file that otherwise causes `git worktree remove` to refuse. The
+# `git worktree prune` call sweeps any stale metadata left behind by the rm -rf
+# fallback, without which `git branch -D` refuses to delete a "checked out" ref.
+_cleanup_worktree() {
+  local path="$1" branch="$2"
+  if [[ -d "$path" ]]; then
+    git worktree remove --force "$path" 2>/dev/null || rm -rf "$path"
+  fi
+  git worktree prune 2>/dev/null || true
+  if git show-ref --verify --quiet "refs/heads/$branch"; then
+    git branch -D "$branch" 2>/dev/null || true
+  fi
+}
+
 # Per-issue setup + dispatch. Returns 0 on successful dispatch (regardless of
 # the session's outcome — hard/soft failures are still "dispatched"), and
 # returns 1 if setup itself failed before claude could be invoked. The caller
@@ -276,6 +297,7 @@ _dispatch_issue() {
   printf '%s\n' "$base_sha" > "$path/.ralph-base-sha"
   if [[ $? -ne 0 ]]; then
     set -e
+    _cleanup_worktree "$path" "$branch"
     _record_setup_failure "$issue_id" "write_base_sha" "$timestamp"
     return 1
   fi
@@ -284,6 +306,7 @@ _dispatch_issue() {
   linear_set_state "$issue_id" "In Progress"
   if [[ $? -ne 0 ]]; then
     set -e
+    _cleanup_worktree "$path" "$branch"
     _record_setup_failure "$issue_id" "linear_set_state" "$timestamp"
     return 1
   fi
@@ -314,19 +337,28 @@ _dispatch_issue() {
   local end_epoch; end_epoch="$(date +%s)"
   local duration=$(( end_epoch - start_epoch ))
 
-  # Classify using exit code AND Linear state (Q2 finding)
-  local post_state; post_state="$(linear_get_issue_state "$issue_id")"
+  # Classify using exit code AND Linear state (Q2 finding). A transient
+  # failure fetching the post-dispatch state must not abort the whole run,
+  # so we tolerate it and fall through to exit_clean_no_review (safest
+  # classification: label ralph-failed and taint downstream).
+  local post_state=""
+  if ! post_state="$(linear_get_issue_state "$issue_id" 2>/dev/null)"; then
+    printf 'orchestrator: failed to fetch post-dispatch state for %s; treating as no-transition\n' "$issue_id" >&2
+    post_state=""
+  fi
 
   local outcome record
   if [[ "$claude_exit" -eq 0 && "$post_state" == "$RALPH_REVIEW_STATE" ]]; then
     outcome="in_review"
   elif [[ "$claude_exit" -eq 0 ]]; then
     outcome="exit_clean_no_review"
-    linear_add_label "$issue_id" "$RALPH_FAILED_LABEL"
+    linear_add_label "$issue_id" "$RALPH_FAILED_LABEL" || \
+      printf 'orchestrator: failed to add %s label to %s (continuing)\n' "$RALPH_FAILED_LABEL" "$issue_id" >&2
     _taint_descendants "$issue_id"
   else
     outcome="failed"
-    linear_add_label "$issue_id" "$RALPH_FAILED_LABEL"
+    linear_add_label "$issue_id" "$RALPH_FAILED_LABEL" || \
+      printf 'orchestrator: failed to add %s label to %s (continuing)\n' "$RALPH_FAILED_LABEL" "$issue_id" >&2
     _taint_descendants "$issue_id"
   fi
 

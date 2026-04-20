@@ -88,6 +88,12 @@ linear_set_state() {
   local issue_id="$1"
   local state="$2"
   printf 'set_state %s %s\n' "$issue_id" "$state" >> "$STUB_LINEAR_CALLS_FILE"
+  local key; key="$(_issue_var "$issue_id")"
+  local fail_var="STUB_SET_STATE_FAIL_${key}"
+  if [[ -n "${!fail_var:-}" ]]; then
+    printf 'stub: linear_set_state failed for %s\n' "$issue_id" >&2
+    return 1
+  fi
   printf '%s' "$state" > "$STUB_DIR/linear_state_$issue_id"
 }
 
@@ -95,6 +101,12 @@ linear_add_label() {
   local issue_id="$1"
   local label="$2"
   printf 'add_label %s %s\n' "$issue_id" "$label" >> "$STUB_LINEAR_CALLS_FILE"
+  local key; key="$(_issue_var "$issue_id")"
+  local fail_var="STUB_ADD_LABEL_FAIL_${key}"
+  if [[ -n "${!fail_var:-}" ]]; then
+    printf 'stub: linear_add_label failed for %s\n' "$issue_id" >&2
+    return 1
+  fi
 }
 
 linear_comment() {
@@ -117,6 +129,12 @@ linear_get_issue_title() {
 linear_get_issue_state() {
   local issue_id="$1"
   printf 'get_state %s\n' "$issue_id" >> "$STUB_LINEAR_CALLS_FILE"
+  local key; key="$(_issue_var "$issue_id")"
+  local fail_var="STUB_GET_STATE_FAIL_${key}"
+  if [[ -n "${!fail_var:-}" ]]; then
+    printf 'stub: linear_get_issue_state failed for %s\n' "$issue_id" >&2
+    return 1
+  fi
   local f="$STUB_DIR/linear_state_$issue_id"
   if [[ -f "$f" ]]; then
     cat "$f"
@@ -713,4 +731,147 @@ CLAUDESH
 
   # ralph-failed label was added
   grep -qF "add_label ENG-130 ralph-failed" "$STUB_LINEAR_CALLS_FILE"
+}
+
+# ---------------------------------------------------------------------------
+# 15. P1: linear_set_state failure AFTER worktree creation cleans up worktree
+#     and branch so the next run isn't blocked by a stale branch.
+# ---------------------------------------------------------------------------
+@test "linear_set_state fails after worktree creation: worktree + branch removed, next run unblocked" {
+  export STUB_CLAUDE_EXIT=0
+  export STUB_CLAUDE_TRANSITION_STATE="In Review"
+
+  export STUB_SET_STATE_FAIL_ENG_140=1
+  export STUB_BLOCKERS_ENG_140='[]'
+
+  local q; q="$(write_queue ENG-140)"
+  run_orch "$q"
+
+  [ "$status" -eq 0 ]
+
+  # claude was NOT invoked — setup failed at linear_set_state
+  local invocations; invocations="$(wc -l < "$STUB_CLAUDE_ARGS_FILE" | tr -d ' ')"
+  [ "$invocations" -eq 0 ]
+
+  # progress.json records setup_failed with step=linear_set_state
+  local outcome; outcome="$(jq -r '.[0].outcome' < "$REPO_DIR/progress.json")"
+  [ "$outcome" = "setup_failed" ]
+  local step; step="$(jq -r '.[0].failed_step' < "$REPO_DIR/progress.json")"
+  [ "$step" = "linear_set_state" ]
+
+  # The worktree directory was removed so a re-run can recreate it
+  [ ! -d "$REPO_DIR/.worktrees/eng-140" ]
+
+  # The branch was deleted, so `git worktree add -b eng-140 ...` won't collide
+  ! git -C "$REPO_DIR" show-ref --verify --quiet "refs/heads/eng-140"
+}
+
+# ---------------------------------------------------------------------------
+# 16. P2: post-dispatch linear_get_issue_state failure does not abort the
+#     orchestrator; the issue is classified as exit_clean_no_review and the
+#     loop continues to the next issue.
+# ---------------------------------------------------------------------------
+@test "post-dispatch linear_get_issue_state fails: classified exit_clean_no_review, loop continues" {
+  export STUB_CLAUDE_EXIT=0
+  export STUB_CLAUDE_TRANSITION_STATE="In Review"
+
+  # Make the post-dispatch state fetch fail for ENG-150 but not ENG-151.
+  export STUB_GET_STATE_FAIL_ENG_150=1
+  export STUB_BLOCKERS_ENG_150='[]'
+  export STUB_BLOCKERS_ENG_151='[]'
+
+  # Per-issue transition stub so ENG-151 can land in In Review cleanly.
+  cat > "$STUB_DIR/claude" <<'CLAUDESH'
+#!/usr/bin/env bash
+printf '%q ' "$@" >> "$STUB_CLAUDE_ARGS_FILE"
+printf '\n' >> "$STUB_CLAUDE_ARGS_FILE"
+issue_id=""
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == "--name" ]]; then
+    shift
+    issue_id="${1%%:*}"
+    break
+  fi
+  shift
+done
+if [[ -n "${STUB_CLAUDE_TRANSITION_STATE:-}" && -n "$issue_id" ]]; then
+  printf '%s' "$STUB_CLAUDE_TRANSITION_STATE" > "$STUB_DIR/linear_state_$issue_id"
+fi
+exit 0
+CLAUDESH
+  chmod +x "$STUB_DIR/claude"
+
+  local q; q="$(write_queue ENG-150 ENG-151)"
+  run_orch "$q"
+
+  [ "$status" -eq 0 ]
+
+  # Both issues were dispatched — the state-lookup failure did not abort
+  local invocations; invocations="$(wc -l < "$STUB_CLAUDE_ARGS_FILE" | tr -d ' ')"
+  [ "$invocations" -eq 2 ]
+
+  # ENG-150: exit 0 + unknown state -> exit_clean_no_review + ralph-failed label
+  local eng150_outcome; eng150_outcome="$(jq -r '.[] | select(.issue == "ENG-150") | .outcome' < "$REPO_DIR/progress.json")"
+  [ "$eng150_outcome" = "exit_clean_no_review" ]
+  grep -qF "add_label ENG-150 ralph-failed" "$STUB_LINEAR_CALLS_FILE"
+
+  # ENG-151: normal in_review path still works
+  local eng151_outcome; eng151_outcome="$(jq -r '.[] | select(.issue == "ENG-151") | .outcome' < "$REPO_DIR/progress.json")"
+  [ "$eng151_outcome" = "in_review" ]
+
+  # Warning was emitted for the state-fetch failure
+  [[ "$output" == *"failed to fetch post-dispatch state for ENG-150"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# 17. P2: post-dispatch linear_add_label failure does not abort the
+#     orchestrator; the outcome is still recorded and the loop continues.
+# ---------------------------------------------------------------------------
+@test "post-dispatch linear_add_label fails: warning emitted, outcome recorded, loop continues" {
+  export STUB_CLAUDE_EXIT=9
+  # No transition; hard failure -> orchestrator tries to add ralph-failed label
+  export STUB_ADD_LABEL_FAIL_ENG_160=1
+  export STUB_BLOCKERS_ENG_160='[]'
+  export STUB_BLOCKERS_ENG_161='[]'
+
+  cat > "$STUB_DIR/claude" <<'CLAUDESH'
+#!/usr/bin/env bash
+printf '%q ' "$@" >> "$STUB_CLAUDE_ARGS_FILE"
+printf '\n' >> "$STUB_CLAUDE_ARGS_FILE"
+issue_id=""
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == "--name" ]]; then
+    shift
+    issue_id="${1%%:*}"
+    break
+  fi
+  shift
+done
+case "$issue_id" in
+  ENG-160) exit 9 ;;
+  ENG-161) printf 'In Review' > "$STUB_DIR/linear_state_$issue_id"; exit 0 ;;
+  *) exit 1 ;;
+esac
+CLAUDESH
+  chmod +x "$STUB_DIR/claude"
+
+  local q; q="$(write_queue ENG-160 ENG-161)"
+  run_orch "$q"
+
+  [ "$status" -eq 0 ]
+
+  # Both were dispatched — the label-add failure for ENG-160 did not abort
+  local invocations; invocations="$(wc -l < "$STUB_CLAUDE_ARGS_FILE" | tr -d ' ')"
+  [ "$invocations" -eq 2 ]
+
+  # ENG-160 still recorded as failed, even though labeling errored
+  local eng160_outcome; eng160_outcome="$(jq -r '.[] | select(.issue == "ENG-160") | .outcome' < "$REPO_DIR/progress.json")"
+  [ "$eng160_outcome" = "failed" ]
+
+  # ENG-161 unaffected
+  local eng161_outcome; eng161_outcome="$(jq -r '.[] | select(.issue == "ENG-161") | .outcome' < "$REPO_DIR/progress.json")"
+  [ "$eng161_outcome" = "in_review" ]
+
+  # Warning was emitted for the failed label call
+  [[ "$output" == *"failed to add ralph-failed label to ENG-160"* ]]
 }
