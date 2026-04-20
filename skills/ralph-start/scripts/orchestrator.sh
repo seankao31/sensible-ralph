@@ -273,11 +273,22 @@ _dispatch_issue() {
   # references the partial worktree). Cleanup on failure is guarded — the
   # worktree may or may not have been created — but must run unconditionally
   # so a stale branch/dir doesn't block the next run.
+  #
+  # Gate cleanup on whether the path pre-existed this invocation. If it did
+  # (stale dir from an earlier crashed run, manual mkdir, etc.) `git worktree
+  # add` fails without creating new state — running _cleanup_worktree would
+  # force-remove the operator's existing contents. Only clean up state this
+  # invocation created.
+  local path_existed_before=0
+  [[ -e "$path" ]] && path_existed_before=1
+
   if [[ "$base_out" == "main" ]]; then
     worktree_create_at_base "$path" "$branch" "main"
     if [[ $? -ne 0 ]]; then
       set -e
-      _cleanup_worktree "$path" "$branch"
+      if [[ "$path_existed_before" -eq 0 ]]; then
+        _cleanup_worktree "$path" "$branch"
+      fi
       _record_setup_failure "$issue_id" "worktree_create_at_base" "$timestamp"
       return 1
     fi
@@ -297,7 +308,9 @@ _dispatch_issue() {
     worktree_create_with_integration "$path" "$branch" "${parents[@]}"
     if [[ $? -ne 0 ]]; then
       set -e
-      _cleanup_worktree "$path" "$branch"
+      if [[ "$path_existed_before" -eq 0 ]]; then
+        _cleanup_worktree "$path" "$branch"
+      fi
       _record_setup_failure "$issue_id" "worktree_create_with_integration" "$timestamp"
       return 1
     fi
@@ -305,7 +318,9 @@ _dispatch_issue() {
     worktree_create_at_base "$path" "$branch" "$base_out"
     if [[ $? -ne 0 ]]; then
       set -e
-      _cleanup_worktree "$path" "$branch"
+      if [[ "$path_existed_before" -eq 0 ]]; then
+        _cleanup_worktree "$path" "$branch"
+      fi
       _record_setup_failure "$issue_id" "worktree_create_at_base" "$timestamp"
       return 1
     fi

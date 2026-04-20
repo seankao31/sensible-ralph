@@ -970,3 +970,42 @@ CLAUDESH
   local post_sha; post_sha="$(git -C "$REPO_DIR" rev-parse eng-180)"
   [ "$post_sha" = "$prior_sha" ]
 }
+
+# ---------------------------------------------------------------------------
+# 20. P1: when the target worktree path already exists before orchestrator
+#     runs (stale dir from a crashed run, manual mkdir, etc.), `git worktree
+#     add` fails without creating new state. Cleanup MUST NOT delete the
+#     pre-existing directory — only state this invocation created.
+# ---------------------------------------------------------------------------
+@test "worktree path pre-exists before run: pre-existing dir preserved (marker file intact)" {
+  export STUB_CLAUDE_EXIT=0
+  export STUB_CLAUDE_TRANSITION_STATE="In Review"
+
+  # Pre-create the worktree target path with a marker file that represents
+  # unsaved contents the operator left behind (or a prior crashed run).
+  mkdir -p "$REPO_DIR/.worktrees/eng-190"
+  echo "do not destroy" > "$REPO_DIR/.worktrees/eng-190/marker.txt"
+
+  export STUB_BLOCKERS_ENG_190='[]'
+
+  local q; q="$(write_queue ENG-190)"
+  run_orch "$q"
+
+  [ "$status" -eq 0 ]
+
+  # claude was NOT invoked — setup failed at worktree_create_at_base
+  local invocations; invocations="$(wc -l < "$STUB_CLAUDE_ARGS_FILE" | tr -d ' ')"
+  [ "$invocations" -eq 0 ]
+
+  # progress.json records setup_failed with step=worktree_create_at_base
+  local outcome; outcome="$(jq -r '.[0].outcome' < "$REPO_DIR/progress.json")"
+  [ "$outcome" = "setup_failed" ]
+  local step; step="$(jq -r '.[0].failed_step' < "$REPO_DIR/progress.json")"
+  [ "$step" = "worktree_create_at_base" ]
+
+  # CRITICAL: the pre-existing directory and its contents are UNTOUCHED.
+  [ -d "$REPO_DIR/.worktrees/eng-190" ]
+  [ -f "$REPO_DIR/.worktrees/eng-190/marker.txt" ]
+  local marker_contents; marker_contents="$(cat "$REPO_DIR/.worktrees/eng-190/marker.txt")"
+  [ "$marker_contents" = "do not destroy" ]
+}
