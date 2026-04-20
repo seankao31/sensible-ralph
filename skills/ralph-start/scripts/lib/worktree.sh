@@ -54,6 +54,11 @@ worktree_create_with_integration() {
 # Outputs: $REPO_ROOT/$RALPH_WORKTREE_BASE/<branch>
 # Requires $RALPH_WORKTREE_BASE exported (set by config.sh).
 # Detects REPO_ROOT via git rev-parse --show-toplevel.
+# NOTE: --show-toplevel returns the calling process's worktree root, not the
+# true repo root. Invoking from inside a linked worktree nests new worktrees
+# inside that worktree rather than at <true-repo>/.worktrees/<branch>. To get
+# the true repo root use --path-format=absolute --git-common-dir + dirname.
+# See SKILL.md Prerequisites: invoke /ralph-start from the main checkout root.
 worktree_path_for_issue() {
   local branch="$1"
   local repo_root

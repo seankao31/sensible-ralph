@@ -2,6 +2,11 @@
 # Config loader: parse config.json with jq, export RALPH_* env vars.
 # Usage: source scripts/lib/config.sh /path/to/config.json
 #
+# Must be sourced from bash (bash 3.2+): uses ${!arr[@]} (variable-name
+# indirection for indexed arrays) and `local -a`, both of which are
+# bash-specific. Sourcing from zsh produces `bad substitution` at the
+# ${!staged_names[@]} expansion in _config_load.
+#
 # All callers in this codebase run with `set -euo pipefail` already active;
 # this file must NOT call `set` at the top level, as sourcing a file with
 # top-level `set` commands mutates the caller's shell options.
