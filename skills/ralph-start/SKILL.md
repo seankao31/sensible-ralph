@@ -36,7 +36,7 @@ If non-zero exit: STOP. Print the anomalies and ask the user how to proceed (fix
 "$SKILL_DIR/scripts/build_queue.sh" > ordered_queue.txt
 ```
 
-`build_queue.sh` lists pickup-ready Approved issues (state == `$RALPH_APPROVED_STATE`, no `$RALPH_FAILED_LABEL` label, every blocker resolved to `$RALPH_DONE_STATE` or `$RALPH_REVIEW_STATE`), then topologically sorts them via `toposort.sh` with Linear priority as the tiebreaker (priority=0 sorts last because Linear uses 0 for "no priority"). Issues with non-resolved blockers are skipped with a warning to stderr.
+`build_queue.sh` lists pickup-ready Approved issues (state == `$RALPH_APPROVED_STATE`, no `$RALPH_FAILED_LABEL` label, every blocker in `$RALPH_DONE_STATE`, `$RALPH_REVIEW_STATE`, or `$RALPH_APPROVED_STATE`), then topologically sorts them via `toposort.sh` with Linear priority as the tiebreaker (priority=0 sorts last because Linear uses 0 for "no priority"). Approved blockers are accepted because the orchestrator dispatches Approved chains in topological order — the parent reaches In Review before the child runs and `dag_base.sh` picks up the parent's branch as the base. Issues with blockers in any other state (Triage, Backlog, Todo, In Progress, Canceled, Duplicate) are skipped with a warning to stderr.
 
 If exit is non-zero (cycle detected in toposort), STOP and surface the cycle to the user.
 

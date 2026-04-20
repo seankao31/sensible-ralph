@@ -45,12 +45,19 @@ while IFS= read -r issue_id; do
 
   blockers_json="$(linear_get_issue_blockers "$issue_id")"
 
-  # Pickup-ready check: every blocker must be in $RALPH_DONE_STATE or $RALPH_REVIEW_STATE.
+  # Pickup-ready check: every blocker must be either resolved
+  # (Done / In Review) or Approved. Approved blockers ARE runnable in the
+  # same overnight session — toposort orders them so the parent dispatches
+  # first and reaches In Review, then dag_base picks up the child against
+  # the parent's branch. Any other state (Triage, Backlog, Todo, In Progress,
+  # Canceled, Duplicate) means the chain can't clear this run.
   pickup_ready=1
   blocker_count="$(printf '%s' "$blockers_json" | jq 'length')"
   for (( i = 0; i < blocker_count; i++ )); do
     state="$(printf '%s' "$blockers_json" | jq -r ".[$i].state")"
-    if [[ "$state" != "$RALPH_DONE_STATE" && "$state" != "$RALPH_REVIEW_STATE" ]]; then
+    if [[ "$state" != "$RALPH_DONE_STATE" \
+       && "$state" != "$RALPH_REVIEW_STATE" \
+       && "$state" != "$RALPH_APPROVED_STATE" ]]; then
       pickup_ready=0
       break
     fi
