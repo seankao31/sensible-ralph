@@ -6,24 +6,37 @@ set -euo pipefail
 # Exits non-zero if any anomalies found so the operator can fix before dispatch.
 #
 # Requires RALPH_PROJECT, RALPH_APPROVED_STATE, RALPH_FAILED_LABEL,
-# RALPH_REVIEW_STATE exported (source lib/config.sh first).
+# RALPH_REVIEW_STATE, RALPH_DONE_STATE exported (source lib/config.sh first).
 #
 # Performance: makes O(M * K) Linear CLI calls where M = number of Approved issues,
 # K = average blocker count (plus recursive calls for stuck-chain check).
 # Suitable for queues up to ~20 issues; expect 30-120s for larger queues.
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Auto-source config if not already exported. See orchestrator.sh for rationale.
+if [[ -z "${RALPH_PROJECT:-}" ]]; then
+  CONFIG_FILE="${RALPH_CONFIG:-$SCRIPT_DIR/../config.json}"
+  if [[ ! -f "$CONFIG_FILE" ]]; then
+    echo "preflight_scan: config not found at $CONFIG_FILE — set RALPH_CONFIG or create config.json" >&2
+    exit 1
+  fi
+  # shellcheck source=lib/config.sh
+  source "$SCRIPT_DIR/lib/config.sh" "$CONFIG_FILE"
+fi
+
 # shellcheck source=lib/linear.sh
-source "$(dirname "$0")/lib/linear.sh"
+source "$SCRIPT_DIR/lib/linear.sh"
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-# Check whether a blocker state counts as "resolved" (RALPH_REVIEW_STATE or Done).
+# Check whether a blocker state counts as "resolved" (in review or done).
 # Returns 0 (true) if resolved, 1 (false) otherwise.
 _blocker_is_resolved() {
   local state="$1"
-  [[ "$state" == "$RALPH_REVIEW_STATE" || "$state" == "Done" ]]
+  [[ "$state" == "$RALPH_REVIEW_STATE" || "$state" == "$RALPH_DONE_STATE" ]]
 }
 
 # Fetch the non-whitespace character count for an issue's description.

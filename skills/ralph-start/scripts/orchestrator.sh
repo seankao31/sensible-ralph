@@ -13,10 +13,27 @@ set -euo pipefail
 # pre-sorted by toposort.sh. progress.json is written to the caller's
 # cwd (typically the repo root).
 #
-# Required env: RALPH_REVIEW_STATE, RALPH_FAILED_LABEL, RALPH_WORKTREE_BASE,
-#               RALPH_MODEL, RALPH_STDOUT_LOG, RALPH_PROMPT_TEMPLATE.
+# Required env: RALPH_IN_PROGRESS_STATE, RALPH_REVIEW_STATE, RALPH_FAILED_LABEL,
+#               RALPH_WORKTREE_BASE, RALPH_MODEL, RALPH_STDOUT_LOG,
+#               RALPH_PROMPT_TEMPLATE.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Auto-source config if not already exported. The user may have sourced
+# lib/config.sh in their shell already (advanced use) — in which case we
+# skip the auto-load. Otherwise we read from $RALPH_CONFIG, or the default
+# config.json next to SKILL.md. This removes the bash-shell requirement
+# for callers: each entry-point script has a bash shebang and sources
+# config itself, so the user can invoke from zsh/fish/sh.
+if [[ -z "${RALPH_PROJECT:-}" ]]; then
+  CONFIG_FILE="${RALPH_CONFIG:-$SCRIPT_DIR/../config.json}"
+  if [[ ! -f "$CONFIG_FILE" ]]; then
+    echo "orchestrator: config not found at $CONFIG_FILE — set RALPH_CONFIG or create config.json" >&2
+    exit 1
+  fi
+  # shellcheck source=lib/config.sh
+  source "$SCRIPT_DIR/lib/config.sh" "$CONFIG_FILE"
+fi
 
 # shellcheck source=lib/linear.sh
 source "$SCRIPT_DIR/lib/linear.sh"
@@ -414,7 +431,7 @@ _dispatch_issue() {
   fi
 
   # Transition Linear state to In Progress
-  linear_set_state "$issue_id" "In Progress"
+  linear_set_state "$issue_id" "$RALPH_IN_PROGRESS_STATE"
   if [[ $? -ne 0 ]]; then
     set -e
     _cleanup_worktree "$path" "$branch"

@@ -15,22 +15,14 @@ Dispatch the autonomous spec-queue: sort Approved Linear issues into a DAG-aware
 
 - `linear` CLI authenticated (`linear --version` succeeds).
 - `jq` available on PATH.
-- `config.json` present in the skill directory (copy from `config.example.json` and customize). Required keys: `project`, `approved_state`, `review_state`, `failed_label`, `worktree_base`, `model`, `stdout_log_filename`, `prompt_template`.
-- Invoke from a `bash` shell. `lib/config.sh` uses bash array syntax that fails to parse in zsh (`${!arr[@]}`); on macOS where the default shell is zsh, run `bash` first or wrap each step in `bash -c '…'`.
+- `config.json` present in the skill directory (copy from `config.example.json` and customize, or rely on the committed default). Required keys: `project`, `approved_state`, `in_progress_state`, `review_state`, `done_state`, `failed_label`, `worktree_base`, `model`, `stdout_log_filename`, `prompt_template`. The four state-name keys must match the actual workflow state names in your Linear workspace.
 - Invoke from the **main checkout root**, not from inside a worktree. `worktree_path_for_issue` keys off `git rev-parse --show-toplevel`, which returns a linked worktree's own root if you're inside one — new worktrees will then nest at `<worktree>/.worktrees/<branch>` instead of `<repo>/.worktrees/<branch>`.
+
+The orchestrator scripts have `#!/usr/bin/env bash` shebangs and source `lib/config.sh` internally, so you can run them from any shell (zsh, fish, sh, etc.). Set `RALPH_CONFIG=<path>` to override the default `agent-config/skills/ralph-start/config.json`.
 
 ## Workflow (run in order)
 
-### Step 1: Load config
-
-```bash
-SKILL_DIR="$(dirname "$(realpath "$0")")"  # or the skill install path
-source "$SKILL_DIR/scripts/lib/config.sh" "$SKILL_DIR/config.json"
-```
-
-This exports `RALPH_PROJECT`, `RALPH_APPROVED_STATE`, `RALPH_REVIEW_STATE`, `RALPH_FAILED_LABEL`, `RALPH_WORKTREE_BASE`, `RALPH_MODEL`, `RALPH_STDOUT_LOG`, `RALPH_PROMPT_TEMPLATE`.
-
-### Step 2: Pre-flight sanity scan
+### Step 1: Pre-flight sanity scan
 
 ```bash
 "$SKILL_DIR/scripts/preflight_scan.sh"
@@ -38,33 +30,17 @@ This exports `RALPH_PROJECT`, `RALPH_APPROVED_STATE`, `RALPH_REVIEW_STATE`, `RAL
 
 If non-zero exit: STOP. Print the anomalies and ask the user how to proceed (fix the issues in Linear, cancel a bad blocker, etc.). Do NOT continue to dispatch while anomalies exist.
 
-### Step 3: Gather pickup-ready queue
-
-Source the Linear wrapper and list approved issues:
-```bash
-source "$SKILL_DIR/scripts/lib/linear.sh"
-approved="$(linear_list_approved_issues)"
-```
-
-Filter strictly to pickup-ready issues — an issue is pickup-ready only if ALL of:
-- State == `$RALPH_APPROVED_STATE`
-- No `$RALPH_FAILED_LABEL` label (already handled by `linear_list_approved_issues`)
-- Every `blocked-by` relation is in {`Done`, `$RALPH_REVIEW_STATE`}
-- No `blocked-by` relation is `Canceled` or `Duplicate`
-
-For each approved issue, fetch blockers via `linear_get_issue_blockers` and apply the filter. Collect the qualifying issue IDs along with their priority (numeric 0-4 from `linear issue view --json | jq -r '.priority'` — Linear returns 0 for unprioritized issues; toposort remaps 0 to sort after 4).
-
-### Step 4: Topological sort
-
-Render the filtered queue in the format toposort expects (`<id> <priority> [<blocker_id>...]`, one per line), then:
+### Step 2: Build the ordered queue
 
 ```bash
-"$SKILL_DIR/scripts/toposort.sh" < queue_input.txt > ordered_queue.txt
+"$SKILL_DIR/scripts/build_queue.sh" > ordered_queue.txt
 ```
 
-If exit is non-zero (cycle detected), STOP and surface the cycle to the user.
+`build_queue.sh` lists pickup-ready Approved issues (state == `$RALPH_APPROVED_STATE`, no `$RALPH_FAILED_LABEL` label, every blocker resolved to `$RALPH_DONE_STATE` or `$RALPH_REVIEW_STATE`), then topologically sorts them via `toposort.sh` with Linear priority as the tiebreaker (priority=0 sorts last because Linear uses 0 for "no priority"). Issues with non-resolved blockers are skipped with a warning to stderr.
 
-### Step 5: Dry-run preview and confirmation
+If exit is non-zero (cycle detected in toposort), STOP and surface the cycle to the user.
+
+### Step 3: Dry-run preview and confirmation
 
 Print the ordered queue to the user. For each issue, also print the base branch selection (call `scripts/dag_base.sh <issue_id>` for each). Format:
 
@@ -78,7 +54,7 @@ Queue (5 issues):
 
 Ask the user to confirm (accept / skip specific issues / abort). Do NOT proceed without explicit confirmation — this is the point where the user sees what will be dispatched before walking away.
 
-### Step 6: Dispatch via orchestrator
+### Step 4: Dispatch via orchestrator
 
 ```bash
 "$SKILL_DIR/scripts/orchestrator.sh" ordered_queue.txt

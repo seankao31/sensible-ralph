@@ -25,7 +25,9 @@ setup() {
   # Env vars config.sh would export
   export RALPH_PROJECT="Test Project"
   export RALPH_APPROVED_STATE="Approved"
+  export RALPH_IN_PROGRESS_STATE="In Progress"
   export RALPH_REVIEW_STATE="In Review"
+  export RALPH_DONE_STATE="Done"
   export RALPH_FAILED_LABEL="ralph-failed"
   export RALPH_WORKTREE_BASE=".worktrees"
   export RALPH_MODEL="opus"

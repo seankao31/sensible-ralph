@@ -37,68 +37,41 @@ linear_list_approved_issues() {
 # Get blockers for an issue.
 # Outputs a JSON array: [{"id":"ENG-X","state":"Done","branch":"eng-x-slug"}, ...]
 # Issues with no blocked-by relations output: []
+#
+# Uses `linear api` to query the GraphQL endpoint directly. The CLI's
+# `issue relation list` subcommand has no --json flag (v2.0.0), so the
+# previous text-parsing approach was brittle to CLI format changes.
+# `inverseRelations` returns relations pointing AT this issue; we filter to
+# type=="blocks" client-side via jq, since the IssueRelationConnection has no
+# server-side filter parameter. Default page size is 50 (no pagination
+# loop — orchestrator queues realistically have far fewer blockers per issue).
 linear_get_issue_blockers() {
   local issue_id="$1"
+  local raw
+  raw="$(linear api --variable "issueId=$issue_id" <<'GRAPHQL'
+query($issueId: String!) {
+  issue(id: $issueId) {
+    inverseRelations(first: 50) {
+      nodes {
+        type
+        issue {
+          identifier
+          branchName
+          state { name }
+        }
+      }
+    }
+  }
+}
+GRAPHQL
+)" || { printf 'linear_get_issue_blockers: failed to query relations for %s\n' "$issue_id" >&2; return 1; }
 
-  # Get the relations text output; extract "blocked-by" entries from the Incoming section
-  local relations_text
-  relations_text="$(linear issue relation list "$issue_id")" \
-    || { printf 'linear_get_issue_blockers: failed to list relations for %s\n' "$issue_id" >&2; return 1; }
-
-  # Parse blocker IDs from text output — this is the only available option.
-  # linear issue view --json does NOT include relations (verified: linear CLI v2.0.0).
-  # linear issue relation list --json is not supported ("Unknown option '--json'").
-  # Expected text format:
-  #   Incoming:
-  #     ENG-XXX blocked-by ENG-YYY: Title
-  # tokens: 0=ENG-XXX  1=blocked-by  2=ENG-YYY:  (colon attached)
-  # Revisit if CLI format changes.
-  local blocker_ids=()
-  local in_incoming=0
-  while IFS= read -r line; do
-    if [[ "$line" == "Incoming:"* ]]; then
-      in_incoming=1
-      continue
-    fi
-    # Any non-indented line (or blank) after Incoming: ends the section
-    if [[ $in_incoming -eq 1 ]]; then
-      if [[ -z "$line" || "$line" != "  "* ]]; then
-        in_incoming=0
-        continue
-      fi
-      # Line is indented: "  ENG-XXX blocked-by ENG-YYY: Title"
-      read -r -a tokens <<< "$line"
-      # tokens[0]=ENG-XXX, tokens[1]=blocked-by, tokens[2]=ENG-YYY:
-      if [[ "${tokens[1]:-}" == "blocked-by" ]]; then
-        # Strip trailing colon from blocker id
-        local blocker_id="${tokens[2]%:}"
-        blocker_ids+=("$blocker_id")
-      fi
-    fi
-  done <<< "$relations_text"
-
-  if [[ ${#blocker_ids[@]} -eq 0 ]]; then
-    printf '[]'
-    return 0
-  fi
-
-  # Fetch state and branch for each blocker, build JSON array
-  local json_entries=()
-  local bid view_json state branch
-  for bid in "${blocker_ids[@]}"; do
-    view_json="$(linear issue view "$bid" --json --no-comments)" \
-      || { printf 'linear_get_issue_blockers: failed to view %s\n' "$bid" >&2; return 1; }
-    state="$(printf '%s' "$view_json" | jq -r '.state.name')"
-    branch="$(printf '%s' "$view_json" | jq -r '.branchName')"
-    json_entries+=("$(jq -n --arg id "$bid" --arg state "$state" --arg branch "$branch" \
-      '{"id": $id, "state": $state, "branch": $branch}')")
-  done
-
-  # Join entries with comma into a JSON array (IFS join is safe; elements are already valid JSON)
-  local joined
-  local IFS=', '
-  joined="${json_entries[*]}"
-  printf '[%s]' "$joined"
+  printf '%s' "$raw" | jq -c '
+    [ .data.issue.inverseRelations.nodes[]
+      | select(.type == "blocks")
+      | { id: .issue.identifier, state: .issue.state.name, branch: .issue.branchName }
+    ]
+  '
 }
 
 # Get the Linear-generated branch name for an issue.

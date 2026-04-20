@@ -5,8 +5,21 @@ set -euo pipefail
 # Input:  $1 = issue ID; env vars RALPH_REVIEW_STATE, RALPH_APPROVED_STATE from config.sh.
 # Output: "main" | "<branch>" | "INTEGRATION <branch1> <branch2> ..."
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Auto-source config if not already exported. See orchestrator.sh for rationale.
+if [[ -z "${RALPH_PROJECT:-}" ]]; then
+  CONFIG_FILE="${RALPH_CONFIG:-$SCRIPT_DIR/../config.json}"
+  if [[ ! -f "$CONFIG_FILE" ]]; then
+    echo "dag_base: config not found at $CONFIG_FILE — set RALPH_CONFIG or create config.json" >&2
+    exit 1
+  fi
+  # shellcheck source=lib/config.sh
+  source "$SCRIPT_DIR/lib/config.sh" "$CONFIG_FILE"
+fi
+
 # shellcheck source=lib/linear.sh
-source "$(dirname "$0")/lib/linear.sh"
+source "$SCRIPT_DIR/lib/linear.sh"
 
 issue_id="$1"
 

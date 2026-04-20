@@ -23,13 +23,28 @@ source_config() {
   run source_config "$EXAMPLE_CONFIG"
 
   [ "$status" -eq 0 ]
-  [[ "$output" == *"RALPH_PROJECT=Agent Config"* ]]
-  [[ "$output" == *"RALPH_APPROVED_STATE=Approved"* ]]
-  [[ "$output" == *"RALPH_REVIEW_STATE=In Review"* ]]
-  [[ "$output" == *"RALPH_FAILED_LABEL=ralph-failed"* ]]
-  [[ "$output" == *"RALPH_WORKTREE_BASE=.worktrees"* ]]
-  [[ "$output" == *"RALPH_MODEL=opus"* ]]
-  [[ "$output" == *"RALPH_STDOUT_LOG=ralph-output.log"* ]]
+  # bats only fails the test on the LAST command's exit status, so a series
+  # of bare [[ ]] assertions silently passes if only the final one is true.
+  # Loop with explicit `return 1` to make every assertion count.
+  local expected=(
+    "RALPH_PROJECT=Agent Config"
+    "RALPH_APPROVED_STATE=Approved"
+    "RALPH_IN_PROGRESS_STATE=In Progress"
+    "RALPH_REVIEW_STATE=In Review"
+    "RALPH_DONE_STATE=Done"
+    "RALPH_FAILED_LABEL=ralph-failed"
+    "RALPH_WORKTREE_BASE=.worktrees"
+    "RALPH_MODEL=opus"
+    "RALPH_STDOUT_LOG=ralph-output.log"
+  )
+  local needle
+  for needle in "${expected[@]}"; do
+    if [[ "$output" != *"$needle"* ]]; then
+      echo "missing expected env export: $needle" >&2
+      return 1
+    fi
+  done
+
   # Capture RALPH_PROMPT_TEMPLATE directly to verify multi-line value is intact
   prompt="$(bash -c 'source "$1" "$2" && printf "%s" "$RALPH_PROMPT_TEMPLATE"' _ "$CONFIG_SH" "$EXAMPLE_CONFIG")"
   [[ "$prompt" == *"prepare-for-review"* ]]

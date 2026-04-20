@@ -12,9 +12,9 @@
 # top-level `set` commands mutates the caller's shell options.
 #
 # Exports:
-#   RALPH_PROJECT, RALPH_APPROVED_STATE, RALPH_REVIEW_STATE,
-#   RALPH_FAILED_LABEL, RALPH_WORKTREE_BASE, RALPH_MODEL,
-#   RALPH_STDOUT_LOG, RALPH_PROMPT_TEMPLATE
+#   RALPH_PROJECT, RALPH_APPROVED_STATE, RALPH_IN_PROGRESS_STATE,
+#   RALPH_REVIEW_STATE, RALPH_DONE_STATE, RALPH_FAILED_LABEL,
+#   RALPH_WORKTREE_BASE, RALPH_MODEL, RALPH_STDOUT_LOG, RALPH_PROMPT_TEMPLATE
 
 _config_load() {
   local config_file="$1"
@@ -23,7 +23,9 @@ _config_load() {
   local -a keys=(
     "RALPH_PROJECT:project"
     "RALPH_APPROVED_STATE:approved_state"
+    "RALPH_IN_PROGRESS_STATE:in_progress_state"
     "RALPH_REVIEW_STATE:review_state"
+    "RALPH_DONE_STATE:done_state"
     "RALPH_FAILED_LABEL:failed_label"
     "RALPH_WORKTREE_BASE:worktree_base"
     "RALPH_MODEL:model"

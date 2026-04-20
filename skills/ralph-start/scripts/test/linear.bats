@@ -101,16 +101,12 @@ call_fn() {
 }
 
 # ---------------------------------------------------------------------------
-# 2. linear_get_issue_blockers — parses relation list, fetches state+branch
+# 2. linear_get_issue_blockers — single GraphQL call via `linear api`,
+#    filters inverseRelations to type=="blocks" client-side via jq.
 # ---------------------------------------------------------------------------
 @test "linear_get_issue_blockers returns empty array when no blocked-by relations" {
-  # Stub: relation list returns no incoming blocked-by
-  STUB_OUTPUT="Relations for ENG-20: Some title
-
-Outgoing:
-  ENG-20 related ENG-30: Other
-
-"
+  # GraphQL response with no nodes — issue has no inverseRelations
+  STUB_OUTPUT='{"data":{"issue":{"inverseRelations":{"nodes":[]}}}}'
   export STUB_OUTPUT
 
   run call_fn linear_get_issue_blockers ENG-20
@@ -119,65 +115,60 @@ Outgoing:
   [ "$output" = "[]" ]
 }
 
-@test "linear_get_issue_blockers returns JSON array of blockers" {
-  # We need the stub to behave differently for `relation list` vs `issue view`.
-  # Override STUB_OUTPUT to be empty (won't work for multi-call).
-  # Write a smarter stub.
-  cat > "$STUB_DIR/linear" <<'STUB'
-#!/usr/bin/env bash
-printf '%q ' "$@" >> "$STUB_ARGS_FILE"
-printf '\n' >> "$STUB_ARGS_FILE"
-if [[ "$*" == *"relation list"* ]]; then
-  printf 'Relations for ENG-21: Title\n\nIncoming:\n  ENG-21 blocked-by ENG-15: Blocker\n'
-elif [[ "$*" == *"view ENG-15"* ]]; then
-  printf '{"identifier": "ENG-15", "branchName": "eng-15-blocker-title", "state": {"name": "Done"}}'
-fi
-STUB
-  chmod +x "$STUB_DIR/linear"
+@test "linear_get_issue_blockers filters out non-blocks relation types" {
+  # GraphQL response includes related/duplicate relations — these must be filtered out
+  STUB_OUTPUT='{"data":{"issue":{"inverseRelations":{"nodes":[
+    {"type":"related","issue":{"identifier":"ENG-30","branchName":"eng-30","state":{"name":"Done"}}},
+    {"type":"duplicate","issue":{"identifier":"ENG-31","branchName":"eng-31","state":{"name":"Done"}}}
+  ]}}}}'
+  export STUB_OUTPUT
 
   run call_fn linear_get_issue_blockers ENG-21
 
   [ "$status" -eq 0 ]
-  [[ "$output" == *'"id": "ENG-15"'* ]]
-  [[ "$output" == *'"state": "Done"'* ]]
-  [[ "$output" == *'"branch": "eng-15-blocker-title"'* ]]
+  [ "$output" = "[]" ]
 }
 
-@test "linear_get_issue_blockers calls relation list with correct issue id" {
-  # Simple relation list call, no blockers
-  STUB_OUTPUT="Relations for ENG-22: Title
+@test "linear_get_issue_blockers returns JSON array of blockers" {
+  STUB_OUTPUT='{"data":{"issue":{"inverseRelations":{"nodes":[
+    {"type":"blocks","issue":{"identifier":"ENG-15","branchName":"eng-15-blocker-title","state":{"name":"Done"}}}
+  ]}}}}'
+  export STUB_OUTPUT
 
-"
+  run call_fn linear_get_issue_blockers ENG-21
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"id":"ENG-15"'* ]]
+  [[ "$output" == *'"state":"Done"'* ]]
+  [[ "$output" == *'"branch":"eng-15-blocker-title"'* ]]
+}
+
+@test "linear_get_issue_blockers calls linear api with the issue id as variable" {
+  STUB_OUTPUT='{"data":{"issue":{"inverseRelations":{"nodes":[]}}}}'
   export STUB_OUTPUT
 
   call_fn linear_get_issue_blockers ENG-22
 
-  grep -q "relation list ENG-22" "$STUB_ARGS_FILE"
+  grep -q "^api " "$STUB_ARGS_FILE"
+  grep -qF "issueId=ENG-22" "$STUB_ARGS_FILE"
 }
 
-@test "linear_get_issue_blockers calls issue view for each blocker" {
-  cat > "$STUB_DIR/linear" <<'STUB'
-#!/usr/bin/env bash
-printf '%q ' "$@" >> "$STUB_ARGS_FILE"
-printf '\n' >> "$STUB_ARGS_FILE"
-if [[ "$*" == *"relation list"* ]]; then
-  printf 'Relations for ENG-23: Title\n\nIncoming:\n  ENG-23 blocked-by ENG-16: A\n  ENG-23 blocked-by ENG-17: B\n'
-elif [[ "$*" == *"view ENG-16"* ]]; then
-  printf '{"identifier": "ENG-16", "branchName": "eng-16-a", "state": {"name": "In Progress"}}'
-elif [[ "$*" == *"view ENG-17"* ]]; then
-  printf '{"identifier": "ENG-17", "branchName": "eng-17-b", "state": {"name": "Done"}}'
-fi
-STUB
-  chmod +x "$STUB_DIR/linear"
+@test "linear_get_issue_blockers returns multiple blockers in a single call" {
+  STUB_OUTPUT='{"data":{"issue":{"inverseRelations":{"nodes":[
+    {"type":"blocks","issue":{"identifier":"ENG-16","branchName":"eng-16-a","state":{"name":"In Progress"}}},
+    {"type":"blocks","issue":{"identifier":"ENG-17","branchName":"eng-17-b","state":{"name":"Done"}}}
+  ]}}}}'
+  export STUB_OUTPUT
 
   run call_fn linear_get_issue_blockers ENG-23
 
   [ "$status" -eq 0 ]
-  grep -q "view ENG-16" "$STUB_ARGS_FILE"
-  grep -q "view ENG-17" "$STUB_ARGS_FILE"
-  # Output should be a JSON array with 2 entries
-  [[ "$output" == *'"id": "ENG-16"'* ]]
-  [[ "$output" == *'"id": "ENG-17"'* ]]
+  [[ "$output" == *'"id":"ENG-16"'* ]]
+  [[ "$output" == *'"id":"ENG-17"'* ]]
+
+  # Single linear api call, not one per blocker
+  local api_calls; api_calls="$(grep -c "^api " "$STUB_ARGS_FILE")"
+  [ "$api_calls" -eq 1 ]
 }
 
 # ---------------------------------------------------------------------------
