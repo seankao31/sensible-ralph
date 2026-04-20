@@ -97,16 +97,17 @@ worktree_create_with_integration() {
 # Compute the worktree path for an issue given its branch name.
 # Outputs: $REPO_ROOT/$RALPH_WORKTREE_BASE/<branch>
 # Requires $RALPH_WORKTREE_BASE exported (set by config.sh).
-# Detects REPO_ROOT via git rev-parse --show-toplevel.
-# NOTE: --show-toplevel returns the calling process's worktree root, not the
-# true repo root. Invoking from inside a linked worktree nests new worktrees
-# inside that worktree rather than at <true-repo>/.worktrees/<branch>. To get
-# the true repo root use --path-format=absolute --git-common-dir + dirname.
-# See SKILL.md Prerequisites: invoke /ralph-start from the main checkout root.
+# Resolves REPO_ROOT via --git-common-dir (the shared .git directory), so the
+# result is the same whether the caller's cwd is the main checkout, a linked
+# worktree, or a subdirectory of either. --show-toplevel would return the
+# calling worktree's own root and cause new worktrees to nest under it.
+# --path-format=absolute requires git >= 2.31.
 worktree_path_for_issue() {
   local branch="$1"
+  local common_git
+  common_git="$(git rev-parse --path-format=absolute --git-common-dir)" || return 1
   local repo_root
-  repo_root="$(git rev-parse --show-toplevel)" || return 1
+  repo_root="$(dirname "$common_git")"
   local base="${RALPH_WORKTREE_BASE#/}"   # strip leading slash
   base="${base%/}"                         # strip trailing slash
   printf '%s/%s/%s\n' "$repo_root" "$base" "$branch"

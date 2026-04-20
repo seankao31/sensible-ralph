@@ -28,7 +28,7 @@ teardown() {
 # ---------------------------------------------------------------------------
 call_fn() {
   local fn_name="$1"; shift
-  # Run from inside the repo so git rev-parse --show-toplevel resolves correctly
+  # Run from inside the repo so git commands have a repo context
   bash -c "cd '$REPO_DIR' && source '$WORKTREE_SH' && $fn_name $(printf '%q ' "$@")"
 }
 
@@ -172,6 +172,25 @@ call_fn_from() {
   [ "$status" -ne 0 ]
 
   rm -rf "$no_git_dir"
+}
+
+# ---------------------------------------------------------------------------
+# 5a. worktree_path_for_issue — must resolve the true repo root even when
+#     invoked from inside a linked worktree. `git rev-parse --show-toplevel`
+#     returns the calling worktree's own root, which would cause new worktrees
+#     to nest at <worktree>/.worktrees/<branch>. The function must anchor off
+#     the shared git common dir so the result is the same from any worktree.
+# ---------------------------------------------------------------------------
+@test "worktree_path_for_issue returns main repo path when invoked from a linked worktree" {
+  local linked_wt="$REPO_DIR/.worktrees/existing-wt"
+  git -C "$REPO_DIR" worktree add "$linked_wt" -b "existing-wt"
+
+  local expected="$REPO_DIR/$RALPH_WORKTREE_BASE/eng-99-new-feature"
+
+  run call_fn_from "$linked_wt" worktree_path_for_issue "eng-99-new-feature"
+
+  [ "$status" -eq 0 ]
+  [ "$output" = "$expected" ]
 }
 
 # ---------------------------------------------------------------------------

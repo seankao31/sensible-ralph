@@ -16,7 +16,6 @@ Dispatch the autonomous spec-queue: sort Approved Linear issues into a DAG-aware
 - `linear` CLI authenticated (`linear --version` succeeds).
 - `jq` available on PATH.
 - `config.json` present in the skill directory (copy from `config.example.json` and customize, or rely on the committed default). Required keys: `project`, `approved_state`, `in_progress_state`, `review_state`, `done_state`, `failed_label`, `worktree_base`, `model`, `stdout_log_filename`, `prompt_template`. The four state-name keys must match the actual workflow state names in your Linear workspace.
-- Invoke from the **main checkout root**, not from inside a worktree. `worktree_path_for_issue` keys off `git rev-parse --show-toplevel`, which returns a linked worktree's own root if you're inside one — new worktrees will then nest at `<worktree>/.worktrees/<branch>` instead of `<repo>/.worktrees/<branch>`.
 
 The orchestrator scripts have `#!/usr/bin/env bash` shebangs and source `lib/config.sh` internally, so you can run them from any shell (zsh, fish, sh, etc.). Set `RALPH_CONFIG=<path>` to override the default `agent-config/skills/ralph-start/config.json`.
 
