@@ -46,10 +46,13 @@ _blocker_is_resolved() {
 # (Todo, In Progress, etc.) or the chain contains a cycle.
 #
 # A blocker is "runnable in this run" iff it's already resolved (Done /
-# In Review) OR it's Approved AND its own blockers are recursively runnable.
-# The orchestrator only dispatches Approved issues, so blockers in any other
-# state (Triage, Backlog, Todo, In Progress, Canceled, Duplicate) will not
-# clear overnight and the chain is stuck.
+# In Review) OR it's Approved AND in this run's approved set
+# (_PREFLIGHT_APPROVED_SET, set in main below) AND its own blockers are
+# recursively runnable. An Approved blocker that's NOT in the run's queue
+# (ralph-failed-labeled, in another project, etc.) cannot clear overnight
+# and makes the chain stuck — without this membership check, a blocker that
+# state-look like Approved would appear runnable when in reality the
+# orchestrator will never dispatch it.
 #
 # Cycle detection uses a visited list. Cycles report stuck (return 1).
 # Recursion depth is bounded by the longest cycle-free path; Linear API
@@ -78,6 +81,9 @@ _chain_runnable() {
       continue
     fi
     if [[ "$b_state" == "$RALPH_APPROVED_STATE" ]]; then
+      if [[ "${_PREFLIGHT_APPROVED_SET:-}" != *" $b_id "* ]]; then
+        return 1
+      fi
       _chain_runnable "$b_id" "${visited[@]}" || return 1
       continue
     fi
@@ -110,6 +116,12 @@ if [[ -z "$approved_ids" ]]; then
   exit 0
 fi
 
+# Membership-test fixture for the approved set (space-delimited with leading
+# and trailing space so substring match `*" $id "*` works for any id).
+# Read by _chain_runnable to verify Approved blockers are actually queueable
+# in this run.
+_PREFLIGHT_APPROVED_SET=" $(printf '%s' "$approved_ids" | tr '\n' ' ') "
+
 while IFS= read -r issue_id; do
   [[ -z "$issue_id" ]] && continue
 
@@ -139,7 +151,10 @@ while IFS= read -r issue_id; do
   fi
 
   # --- Check 3: Stuck blocker chain ---
-  # An Approved blocker is stuck if its dependency chain cannot clear overnight.
+  # An Approved blocker is stuck if either:
+  #   - it's not in this run's approved set (not queueable here — ralph-failed
+  #     labeled, in another project, etc.); or
+  #   - its dependency chain has a blocker in a non-runnable state.
   # Recurses via _chain_runnable so deeper chains where the deepest issue is
   # already resolvable are correctly classified as not stuck.
   blocker_count="$(printf '%s' "$blockers_json" | jq 'length')"
@@ -151,6 +166,10 @@ while IFS= read -r issue_id; do
     # other anomaly checks (or simply not orchestrator-dispatchable). Resolved
     # blockers (Done/In Review) trivially can't be stuck.
     if [[ "$b_state" != "$RALPH_APPROVED_STATE" ]]; then
+      continue
+    fi
+    if [[ "$_PREFLIGHT_APPROVED_SET" != *" $b_id "* ]]; then
+      anomalies+=("[WARN] $issue_id: stuck blocker chain — blocker $b_id is Approved but not in this run's queue (likely ralph-failed-labeled or outside the configured project)")
       continue
     fi
     if ! _chain_runnable "$b_id" "$issue_id"; then

@@ -200,7 +200,11 @@ ENG-2"
 # previous one-level-deep stuck-chain check produced false positives here.
 # ---------------------------------------------------------------------------
 @test "deep approved chain bottoming out at Done is not stuck" {
-  export STUB_APPROVED_IDS="ENG-31"
+  # All three Approved nodes must be in the run's queue — otherwise the
+  # chain can't actually clear (Approved-but-not-queued is its own anomaly).
+  export STUB_APPROVED_IDS="ENG-31
+ENG-32
+ENG-33"
   # ENG-31 ← ENG-32 (Approved) ← ENG-33 (Approved) ← ENG-34 (Done)
   export STUB_BLOCKERS_ENG_31='[{"id":"ENG-32","state":"Approved","branch":"eng-32"}]'
   export STUB_BLOCKERS_ENG_32='[{"id":"ENG-33","state":"Approved","branch":"eng-33"}]'
@@ -211,6 +215,27 @@ ENG-2"
 
   [ "$status" -eq 0 ]
   [[ "$output" == *"all clear"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# 5d. An Approved blocker that is NOT in this run's approved set (e.g.
+# ralph-failed-labeled, or in another project) cannot clear overnight even
+# though its state is Approved. Codex P2: previously _chain_runnable trusted
+# the state alone and falsely cleared the chain.
+# ---------------------------------------------------------------------------
+@test "approved blocker not in this run's approved set is reported as stuck" {
+  export STUB_APPROVED_IDS="ENG-38"
+  # ENG-38 is blocked by ENG-39 (Approved) — but ENG-39 is NOT in
+  # STUB_APPROVED_IDS (would be excluded by linear_list_approved_issues).
+  export STUB_BLOCKERS_ENG_38='[{"id":"ENG-39","state":"Approved","branch":"eng-39"}]'
+  # ENG-39 has no own blockers (so it would be "runnable" if it were eligible)
+  export STUB_BLOCKERS_ENG_39='[]'
+  export STUB_DESC_CHARS=300
+
+  run_preflight
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"stuck"* ]]
 }
 
 # ---------------------------------------------------------------------------
@@ -315,7 +340,10 @@ ENG-60"
 #     → NOT stuck (will dispatch overnight)
 # ---------------------------------------------------------------------------
 @test "approved blocker whose own blockers are all In Review is not stuck" {
-  export STUB_APPROVED_IDS="ENG-90"
+  # Both ENG-90 and the Approved blocker ENG-45 must be in this run's queue;
+  # an Approved-but-not-queued blocker is itself stuck regardless of its chain.
+  export STUB_APPROVED_IDS="ENG-90
+ENG-45"
   # ENG-90's blocker is ENG-45, which is Approved
   export STUB_BLOCKERS_ENG_90='[{"id":"ENG-45","state":"Approved","branch":"eng-45"}]'
   # ENG-45's own blockers are all In Review — so NOT stuck
@@ -333,7 +361,9 @@ ENG-60"
 #     → NOT stuck (will dispatch on next run — it has no blockers holding it back)
 # ---------------------------------------------------------------------------
 @test "approved blocker with zero own blockers is not a stuck-chain anomaly" {
-  export STUB_APPROVED_IDS="ENG-Z"
+  # ENG-Q must be in the run's queue (otherwise Approved-but-not-queued).
+  export STUB_APPROVED_IDS="ENG-Z
+ENG-Q"
   # ENG-Z's blocker is ENG-Q, which is Approved but has no blockers of its own
   export STUB_BLOCKERS_ENG_Z='[{"id":"ENG-Q","state":"Approved","branch":"eng-q"}]'
   export STUB_BLOCKERS_ENG_Q='[]'

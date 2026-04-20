@@ -37,6 +37,10 @@ source "$SCRIPT_DIR/lib/linear.sh"
 approved_ids="$(linear_list_approved_issues)"
 [[ -z "$approved_ids" ]] && exit 0
 
+# Membership-test fixture for the approved set (space-delimited with leading
+# and trailing space so substring match `*" $id "*` works for any id).
+approved_set=" $(printf '%s' "$approved_ids" | tr '\n' ' ') "
+
 toposort_input="$(mktemp)"
 trap 'rm -f "$toposort_input"' EXIT
 
@@ -45,25 +49,40 @@ while IFS= read -r issue_id; do
 
   blockers_json="$(linear_get_issue_blockers "$issue_id")"
 
-  # Pickup-ready check: every blocker must be either resolved
-  # (Done / In Review) or Approved. Approved blockers ARE runnable in the
-  # same overnight session — toposort orders them so the parent dispatches
-  # first and reaches In Review, then dag_base picks up the child against
-  # the parent's branch. Any other state (Triage, Backlog, Todo, In Progress,
-  # Canceled, Duplicate) means the chain can't clear this run.
+  # Pickup-ready check: every blocker must be either resolved (Done /
+  # In Review) or Approved AND in this run's approved set. Approved
+  # blockers ARE runnable in the same overnight session when they're
+  # actually queued — toposort orders them so the parent dispatches first
+  # and reaches In Review, then dag_base picks up the child against the
+  # parent's branch. An Approved blocker that's NOT in the queue (e.g.
+  # ralph-failed-labeled, in another project) cannot clear this run, and
+  # toposort would silently treat it as "already done" — child would be
+  # dispatched against main with a stale parent dependency.
   pickup_ready=1
+  warning_emitted=0
   blocker_count="$(printf '%s' "$blockers_json" | jq 'length')"
   for (( i = 0; i < blocker_count; i++ )); do
     state="$(printf '%s' "$blockers_json" | jq -r ".[$i].state")"
-    if [[ "$state" != "$RALPH_DONE_STATE" \
-       && "$state" != "$RALPH_REVIEW_STATE" \
-       && "$state" != "$RALPH_APPROVED_STATE" ]]; then
+    blocker_id="$(printf '%s' "$blockers_json" | jq -r ".[$i].id")"
+    if [[ "$state" == "$RALPH_DONE_STATE" || "$state" == "$RALPH_REVIEW_STATE" ]]; then
+      continue
+    fi
+    if [[ "$state" == "$RALPH_APPROVED_STATE" ]]; then
+      if [[ "$approved_set" == *" $blocker_id "* ]]; then
+        continue
+      fi
+      printf 'build_queue: skipping %s — Approved blocker %s is not in this run (likely ralph-failed-labeled or outside the configured project)\n' "$issue_id" "$blocker_id" >&2
+      warning_emitted=1
       pickup_ready=0
       break
     fi
+    pickup_ready=0
+    break
   done
   if [[ "$pickup_ready" -eq 0 ]]; then
-    printf 'build_queue: skipping %s — blocker(s) not pickup-ready\n' "$issue_id" >&2
+    if [[ "$warning_emitted" -eq 0 ]]; then
+      printf 'build_queue: skipping %s — blocker(s) not pickup-ready\n' "$issue_id" >&2
+    fi
     continue
   fi
 

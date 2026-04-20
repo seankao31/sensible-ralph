@@ -141,3 +141,23 @@ ENG-3"
   [ "$status" -eq 0 ]
   [ "$output" = "ENG-5" ]
 }
+
+# ---------------------------------------------------------------------------
+# 6. Approved blocker NOT in this run's queue → child is skipped. Codex P1:
+#    a blocker can be Approved but excluded from linear_list_approved_issues
+#    (ralph-failed label, in a different project, etc.). Without this check,
+#    toposort silently treats the missing blocker as "already done" and the
+#    child dispatches against main even though its parent can't clear.
+# ---------------------------------------------------------------------------
+@test "child whose approved blocker is not in this run's approved set is skipped" {
+  # ENG-6 is the only issue in our project's Approved queue.
+  # ENG-99 is Approved but NOT listed (e.g. ralph-failed-labeled or in another project).
+  export STUB_APPROVED_IDS="ENG-6"
+  export STUB_BLOCKERS_ENG_6='[{"id":"ENG-99","state":"Approved","branch":"eng-99"}]'
+
+  run bash "$STUB_DIR/build_queue.sh"
+
+  [ "$status" -eq 0 ]
+  ! [[ "$output" == *"ENG-6"* ]]
+  [[ "$output" == *"skipping ENG-6"* ]] || [[ "$output" == *"not in this run"* ]] || [[ "$output" == *"not pickup-ready"* ]]
+}
