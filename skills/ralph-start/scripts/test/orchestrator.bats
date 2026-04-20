@@ -520,21 +520,26 @@ CLAUDESH
 }
 
 # ---------------------------------------------------------------------------
-# 11. I1: per-issue fault isolation — worktree creation failure does NOT abort loop
+# 11. I1: per-issue fault isolation — a pre-existing branch (local residue
+#     from a prior run, manual creation, etc.) does NOT abort the loop and
+#     does NOT taint downstream dependents. Linear is left untouched for the
+#     residue issue; downstream and independent issues dispatch normally.
 # ---------------------------------------------------------------------------
-@test "setup failure (branch already exists): outcome=setup_failed, descendants tainted, loop continues" {
+@test "branch already exists at start of run: outcome=local_residue, downstream NOT tainted, loop continues" {
   export STUB_CLAUDE_EXIT=0
   export STUB_CLAUDE_TRANSITION_STATE="In Review"
 
-  # Pre-create the branch for ENG-100 so `git worktree add -b eng-100` fails.
+  # Pre-create the branch for ENG-100 (local residue).
   git -C "$REPO_DIR" branch eng-100
 
-  # ENG-101 depends on ENG-100; ENG-102 is independent.
+  # ENG-101 depends on ENG-100; ENG-102 is independent. ENG-100 is "Approved"
+  # in ENG-101's blocker list (so dag_base for ENG-101 does not include
+  # ENG-100's branch — ENG-101 dispatches with base=main).
   export STUB_BLOCKERS_ENG_100='[]'
   export STUB_BLOCKERS_ENG_101='[{"id":"ENG-100","state":"Approved","branch":"eng-100"}]'
   export STUB_BLOCKERS_ENG_102='[]'
 
-  # Use the smart per-issue stub so ENG-102 transitions correctly.
+  # Use the smart per-issue stub so each dispatched issue transitions correctly.
   cat > "$STUB_DIR/claude" <<'CLAUDESH'
 #!/usr/bin/env bash
 printf '%q ' "$@" >> "$STUB_CLAUDE_ARGS_FILE"
@@ -560,30 +565,26 @@ CLAUDESH
 
   [ "$status" -eq 0 ]
 
-  # claude was invoked only for ENG-102 (ENG-100 failed setup, ENG-101 tainted)
+  # claude was invoked for ENG-101 and ENG-102 — ENG-100 was skipped (residue),
+  # ENG-101 was NOT tainted, ENG-102 was independent.
   local invocations; invocations="$(wc -l < "$STUB_CLAUDE_ARGS_FILE" | tr -d ' ')"
-  [ "$invocations" -eq 1 ]
+  [ "$invocations" -eq 2 ]
+  grep -qF "ENG-101" "$STUB_CLAUDE_ARGS_FILE"
   grep -qF "ENG-102" "$STUB_CLAUDE_ARGS_FILE"
   ! grep -qF "ENG-100:" "$STUB_CLAUDE_ARGS_FILE"
-  ! grep -qF "ENG-101:" "$STUB_CLAUDE_ARGS_FILE"
 
-  # ralph-failed label was added to ENG-100
-  grep -qF "add_label ENG-100 ralph-failed" "$STUB_LINEAR_CALLS_FILE"
+  # NO ralph-failed label for ENG-100 — local residue must not mutate Linear.
+  ! grep -q "add_label ENG-100" "$STUB_LINEAR_CALLS_FILE"
 
   # progress.json has three records
   local records; records="$(jq 'length' < "$REPO_DIR/progress.json")"
   [ "$records" -eq 3 ]
 
   local eng100_outcome; eng100_outcome="$(jq -r '.[] | select(.issue == "ENG-100") | .outcome' < "$REPO_DIR/progress.json")"
-  [ "$eng100_outcome" = "setup_failed" ]
-
-  # setup_failed record carries a step identifier
-  local eng100_step; eng100_step="$(jq -r '.[] | select(.issue == "ENG-100") | .failed_step' < "$REPO_DIR/progress.json")"
-  [ -n "$eng100_step" ]
-  [ "$eng100_step" != "null" ]
+  [ "$eng100_outcome" = "local_residue" ]
 
   local eng101_outcome; eng101_outcome="$(jq -r '.[] | select(.issue == "ENG-101") | .outcome' < "$REPO_DIR/progress.json")"
-  [ "$eng101_outcome" = "skipped" ]
+  [ "$eng101_outcome" = "in_review" ]
 
   local eng102_outcome; eng102_outcome="$(jq -r '.[] | select(.issue == "ENG-102") | .outcome' < "$REPO_DIR/progress.json")"
   [ "$eng102_outcome" = "in_review" ]
@@ -767,15 +768,21 @@ CLAUDESH
 }
 
 # ---------------------------------------------------------------------------
-# 16. P2: post-dispatch linear_get_issue_state failure does not abort the
-#     orchestrator; the issue is classified as exit_clean_no_review and the
-#     loop continues to the next issue.
+# 16. P2: post-dispatch linear_get_issue_state failure does NOT collapse to
+#     exit_clean_no_review (codex adversarial review, finding B). A transient
+#     state-read failure after a successful claude session would otherwise
+#     mislabel a true success as ralph-failed and taint downstream. Classify
+#     as unknown_post_state with NO label and NO descendant taint; operator
+#     disambiguates from progress.json + Linear UI.
 # ---------------------------------------------------------------------------
-@test "post-dispatch linear_get_issue_state fails: classified exit_clean_no_review, loop continues" {
+@test "post-dispatch linear_get_issue_state fails: classified unknown_post_state, no label, no taint, loop continues" {
   export STUB_CLAUDE_EXIT=0
   export STUB_CLAUDE_TRANSITION_STATE="In Review"
 
-  # Make the post-dispatch state fetch fail for ENG-150 but not ENG-151.
+  # Make the post-dispatch state fetch fail for ENG-150. Claude's stub still
+  # transitions the state (so the "real" state IS In Review) — the read path
+  # is the thing that fails, simulating a transient Linear API blip after
+  # a successful session.
   export STUB_GET_STATE_FAIL_ENG_150=1
   export STUB_BLOCKERS_ENG_150='[]'
   export STUB_BLOCKERS_ENG_151='[]'
@@ -810,10 +817,16 @@ CLAUDESH
   local invocations; invocations="$(wc -l < "$STUB_CLAUDE_ARGS_FILE" | tr -d ' ')"
   [ "$invocations" -eq 2 ]
 
-  # ENG-150: exit 0 + unknown state -> exit_clean_no_review + ralph-failed label
+  # ENG-150: state-fetch failure -> unknown_post_state, NO label, NO taint
   local eng150_outcome; eng150_outcome="$(jq -r '.[] | select(.issue == "ENG-150") | .outcome' < "$REPO_DIR/progress.json")"
-  [ "$eng150_outcome" = "exit_clean_no_review" ]
-  grep -qF "add_label ENG-150 ralph-failed" "$STUB_LINEAR_CALLS_FILE"
+  [ "$eng150_outcome" = "unknown_post_state" ]
+  ! grep -qF "add_label ENG-150 ralph-failed" "$STUB_LINEAR_CALLS_FILE"
+
+  # ENG-150 record carries dispatch metadata (branch, base, exit_code, duration)
+  local eng150_branch; eng150_branch="$(jq -r '.[] | select(.issue == "ENG-150") | .branch' < "$REPO_DIR/progress.json")"
+  [ "$eng150_branch" = "eng-150" ]
+  local eng150_exit; eng150_exit="$(jq -r '.[] | select(.issue == "ENG-150") | .exit_code' < "$REPO_DIR/progress.json")"
+  [ "$eng150_exit" = "0" ]
 
   # ENG-151: normal in_review path still works
   local eng151_outcome; eng151_outcome="$(jq -r '.[] | select(.issue == "ENG-151") | .outcome' < "$REPO_DIR/progress.json")"
@@ -821,6 +834,55 @@ CLAUDESH
 
   # Warning was emitted for the state-fetch failure
   [[ "$output" == *"failed to fetch post-dispatch state for ENG-150"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# 16b. unknown_post_state must NOT taint downstream dependents — a degraded
+#      read after a (possibly real) success should not block a chain.
+# ---------------------------------------------------------------------------
+@test "unknown_post_state does not taint downstream dependents" {
+  export STUB_CLAUDE_EXIT=0
+  export STUB_CLAUDE_TRANSITION_STATE="In Review"
+
+  # ENG-152 is blocked by ENG-150 — state fetch fails for ENG-150
+  export STUB_GET_STATE_FAIL_ENG_150=1
+  export STUB_BLOCKERS_ENG_150='[]'
+  export STUB_BLOCKERS_ENG_152='[{"id":"ENG-150","state":"Approved","branch":"eng-150"}]'
+
+  cat > "$STUB_DIR/claude" <<'CLAUDESH'
+#!/usr/bin/env bash
+printf '%q ' "$@" >> "$STUB_CLAUDE_ARGS_FILE"
+printf '\n' >> "$STUB_CLAUDE_ARGS_FILE"
+issue_id=""
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == "--name" ]]; then
+    shift
+    issue_id="${1%%:*}"
+    break
+  fi
+  shift
+done
+if [[ -n "${STUB_CLAUDE_TRANSITION_STATE:-}" && -n "$issue_id" ]]; then
+  printf '%s' "$STUB_CLAUDE_TRANSITION_STATE" > "$STUB_DIR/linear_state_$issue_id"
+fi
+exit 0
+CLAUDESH
+  chmod +x "$STUB_DIR/claude"
+
+  local q; q="$(write_queue ENG-150 ENG-152)"
+  run_orch "$q"
+
+  [ "$status" -eq 0 ]
+
+  # ENG-150 -> unknown_post_state
+  local eng150_outcome; eng150_outcome="$(jq -r '.[] | select(.issue == "ENG-150") | .outcome' < "$REPO_DIR/progress.json")"
+  [ "$eng150_outcome" = "unknown_post_state" ]
+
+  # ENG-152 was NOT skipped — it dispatched normally
+  local eng152_outcome; eng152_outcome="$(jq -r '.[] | select(.issue == "ENG-152") | .outcome' < "$REPO_DIR/progress.json")"
+  [ "$eng152_outcome" != "skipped" ]
+  local invocations; invocations="$(wc -l < "$STUB_CLAUDE_ARGS_FILE" | tr -d ' ')"
+  [ "$invocations" -eq 2 ]
 }
 
 # ---------------------------------------------------------------------------
@@ -925,17 +987,18 @@ CLAUDESH
 }
 
 # ---------------------------------------------------------------------------
-# 19. P1: when `git worktree add -b` fails because the branch already exists,
-#     cleanup MUST NOT delete that pre-existing branch (it may carry work
-#     from a prior incomplete run). `git worktree add -b` is atomic: if the
-#     worktree directory wasn't created, no new branch was created either.
+# 19. P1: when the target branch already exists at the start of a run, the
+#     orchestrator records a local_residue outcome and skips dispatch WITHOUT
+#     mutating Linear (no ralph-failed label, no descendant taint) — codex
+#     adversarial review, finding A. The pre-existing branch must survive
+#     unchanged (no destructive cleanup).
 # ---------------------------------------------------------------------------
-@test "worktree_create_at_base fails due to pre-existing branch: pre-existing branch preserved, no worktree created" {
+@test "branch already exists at start of run: outcome=local_residue, no Linear mutation, branch preserved" {
   export STUB_CLAUDE_EXIT=0
   export STUB_CLAUDE_TRANSITION_STATE="In Review"
 
   # Pre-create the branch with a commit that represents unsaved prior work.
-  # The branch's tip SHA must survive cleanup unchanged.
+  # The branch's tip SHA must survive unchanged.
   git -C "$REPO_DIR" branch eng-180
   git -C "$REPO_DIR" checkout eng-180 -q
   echo "prior work" > "$REPO_DIR/prior.txt"
@@ -951,33 +1014,37 @@ CLAUDESH
 
   [ "$status" -eq 0 ]
 
-  # claude was NOT invoked — setup failed at worktree_create_at_base
+  # claude was NOT invoked — pre-flight detected the residue
   local invocations; invocations="$(wc -l < "$STUB_CLAUDE_ARGS_FILE" | tr -d ' ')"
   [ "$invocations" -eq 0 ]
 
-  # progress.json records setup_failed with step=worktree_create_at_base
+  # progress.json records local_residue with the residue path and branch
   local outcome; outcome="$(jq -r '.[0].outcome' < "$REPO_DIR/progress.json")"
-  [ "$outcome" = "setup_failed" ]
-  local step; step="$(jq -r '.[0].failed_step' < "$REPO_DIR/progress.json")"
-  [ "$step" = "worktree_create_at_base" ]
+  [ "$outcome" = "local_residue" ]
+  local residue_branch; residue_branch="$(jq -r '.[0].residue_branch' < "$REPO_DIR/progress.json")"
+  [ "$residue_branch" = "eng-180" ]
+
+  # Linear was NOT mutated — no add_label call, no set_state call
+  ! grep -q "add_label ENG-180" "$STUB_LINEAR_CALLS_FILE"
+  ! grep -q "set_state ENG-180" "$STUB_LINEAR_CALLS_FILE"
 
   # No worktree directory was created at the target path
   [ ! -d "$REPO_DIR/.worktrees/eng-180" ]
 
-  # CRITICAL: the pre-existing branch STILL EXISTS — cleanup must not have
-  # touched it. If this fails, _cleanup_worktree destroyed unsaved work.
+  # CRITICAL: the pre-existing branch STILL EXISTS unchanged.
   git -C "$REPO_DIR" show-ref --verify --quiet "refs/heads/eng-180"
   local post_sha; post_sha="$(git -C "$REPO_DIR" rev-parse eng-180)"
   [ "$post_sha" = "$prior_sha" ]
 }
 
 # ---------------------------------------------------------------------------
-# 20. P1: when the target worktree path already exists before orchestrator
-#     runs (stale dir from a crashed run, manual mkdir, etc.), `git worktree
-#     add` fails without creating new state. Cleanup MUST NOT delete the
-#     pre-existing directory — only state this invocation created.
+# 20. P1: when the target worktree path already exists at the start of a run
+#     (stale dir from a crashed run, manual mkdir, etc.), the orchestrator
+#     records local_residue and skips dispatch WITHOUT mutating Linear or
+#     touching the pre-existing directory contents — codex adversarial
+#     review, finding A.
 # ---------------------------------------------------------------------------
-@test "worktree path pre-exists before run: pre-existing dir preserved (marker file intact)" {
+@test "worktree path pre-exists at start of run: outcome=local_residue, no Linear mutation, dir preserved" {
   export STUB_CLAUDE_EXIT=0
   export STUB_CLAUDE_TRANSITION_STATE="In Review"
 
@@ -993,21 +1060,73 @@ CLAUDESH
 
   [ "$status" -eq 0 ]
 
-  # claude was NOT invoked — setup failed at worktree_create_at_base
+  # claude was NOT invoked — pre-flight detected the residue
   local invocations; invocations="$(wc -l < "$STUB_CLAUDE_ARGS_FILE" | tr -d ' ')"
   [ "$invocations" -eq 0 ]
 
-  # progress.json records setup_failed with step=worktree_create_at_base
+  # progress.json records local_residue with the residue path
   local outcome; outcome="$(jq -r '.[0].outcome' < "$REPO_DIR/progress.json")"
-  [ "$outcome" = "setup_failed" ]
-  local step; step="$(jq -r '.[0].failed_step' < "$REPO_DIR/progress.json")"
-  [ "$step" = "worktree_create_at_base" ]
+  [ "$outcome" = "local_residue" ]
+  local residue_path; residue_path="$(jq -r '.[0].residue_path' < "$REPO_DIR/progress.json")"
+  [ "$residue_path" = "$REPO_DIR/.worktrees/eng-190" ]
+
+  # Linear was NOT mutated — no add_label call, no set_state call
+  ! grep -q "add_label ENG-190" "$STUB_LINEAR_CALLS_FILE"
+  ! grep -q "set_state ENG-190" "$STUB_LINEAR_CALLS_FILE"
 
   # CRITICAL: the pre-existing directory and its contents are UNTOUCHED.
   [ -d "$REPO_DIR/.worktrees/eng-190" ]
   [ -f "$REPO_DIR/.worktrees/eng-190/marker.txt" ]
   local marker_contents; marker_contents="$(cat "$REPO_DIR/.worktrees/eng-190/marker.txt")"
   [ "$marker_contents" = "do not destroy" ]
+}
+
+# ---------------------------------------------------------------------------
+# 20b. local_residue must NOT taint downstream dependents — operator will
+#      clean up the residue and re-run, at which point the normal dispatch
+#      path will execute.
+# ---------------------------------------------------------------------------
+@test "local_residue does not taint downstream dependents" {
+  export STUB_CLAUDE_EXIT=0
+  export STUB_CLAUDE_TRANSITION_STATE="In Review"
+
+  # ENG-192 is blocked by ENG-191; ENG-191's branch already exists (residue).
+  git -C "$REPO_DIR" branch eng-191
+  export STUB_BLOCKERS_ENG_191='[]'
+  export STUB_BLOCKERS_ENG_192='[{"id":"ENG-191","state":"Approved","branch":"eng-191"}]'
+
+  cat > "$STUB_DIR/claude" <<'CLAUDESH'
+#!/usr/bin/env bash
+printf '%q ' "$@" >> "$STUB_CLAUDE_ARGS_FILE"
+printf '\n' >> "$STUB_CLAUDE_ARGS_FILE"
+issue_id=""
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == "--name" ]]; then
+    shift
+    issue_id="${1%%:*}"
+    break
+  fi
+  shift
+done
+if [[ -n "${STUB_CLAUDE_TRANSITION_STATE:-}" && -n "$issue_id" ]]; then
+  printf '%s' "$STUB_CLAUDE_TRANSITION_STATE" > "$STUB_DIR/linear_state_$issue_id"
+fi
+exit 0
+CLAUDESH
+  chmod +x "$STUB_DIR/claude"
+
+  local q; q="$(write_queue ENG-191 ENG-192)"
+  run_orch "$q"
+
+  [ "$status" -eq 0 ]
+
+  # ENG-191 -> local_residue
+  local eng191_outcome; eng191_outcome="$(jq -r '.[] | select(.issue == "ENG-191") | .outcome' < "$REPO_DIR/progress.json")"
+  [ "$eng191_outcome" = "local_residue" ]
+
+  # ENG-192 was NOT skipped — taint did not propagate
+  local eng192_outcome; eng192_outcome="$(jq -r '.[] | select(.issue == "ENG-192") | .outcome' < "$REPO_DIR/progress.json")"
+  [ "$eng192_outcome" != "skipped" ]
 }
 
 # ---------------------------------------------------------------------------

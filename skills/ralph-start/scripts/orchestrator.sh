@@ -193,6 +193,57 @@ _record_setup_failure() {
   _progress_append "$record"
 }
 
+# Record a local_residue outcome WITHOUT mutating Linear. Used when the target
+# worktree path or branch already exists at the start of dispatch — the
+# residue is operator state (manual mkdir, prior crashed run, in-flight
+# branch) that this invocation did not create. We must not label the issue
+# ralph-failed (the issue itself is fine; only the local environment needs
+# manual cleanup) and must not taint descendants (operator will clean up and
+# re-run, at which point the normal dispatch path will execute).
+_record_local_residue() {
+  local issue_id="$1"
+  local residue_path="$2"
+  local residue_branch="$3"
+  local timestamp="$4"
+  local record
+  record="$(jq -n \
+    --arg issue "$issue_id" \
+    --arg outcome "local_residue" \
+    --arg path "$residue_path" \
+    --arg branch "$residue_branch" \
+    --arg ts "$timestamp" \
+    --arg run "$run_id" \
+    '{issue: $issue, outcome: $outcome, residue_path: $path, residue_branch: $branch, timestamp: $ts, run_id: $run}')"
+  _progress_append "$record"
+}
+
+# Record an unknown_post_state outcome WITHOUT mutating Linear. Used when
+# claude exited 0 but the post-dispatch Linear state fetch failed transiently.
+# We can't tell whether the session truly succeeded (transitioned to In Review)
+# or stopped short — collapsing to exit_clean_no_review on a degraded read
+# would falsely label a real success as failed and taint its descendants.
+# Operator inspects progress.json and the Linear UI to disambiguate.
+_record_unknown_post_state() {
+  local issue_id="$1"
+  local branch="$2"
+  local base="$3"
+  local exit_code="$4"
+  local duration="$5"
+  local timestamp="$6"
+  local record
+  record="$(jq -n \
+    --arg issue "$issue_id" \
+    --arg branch "$branch" \
+    --arg base "$base" \
+    --arg outcome "unknown_post_state" \
+    --argjson exit_code "$exit_code" \
+    --argjson duration "$duration" \
+    --arg ts "$timestamp" \
+    --arg run "$run_id" \
+    '{issue: $issue, branch: $branch, base: $base, outcome: $outcome, exit_code: $exit_code, duration_seconds: $duration, timestamp: $ts, run_id: $run}')"
+  _progress_append "$record"
+}
+
 # Best-effort cleanup after a post-worktree-creation setup failure. Without
 # this, a failed setup step (e.g. .ralph-base-sha write or linear_set_state)
 # leaves both the worktree directory and the branch in place, so the next
@@ -289,31 +340,36 @@ _dispatch_issue() {
     return 1
   fi
 
+  # Pre-flight: detect local residue from a prior crashed run, manual mkdir,
+  # or in-flight branch the operator created out-of-band. If either the target
+  # path or the target branch already exists at the start of this invocation,
+  # `git worktree add -b` will fail and we want to surface this as operator
+  # state needing manual cleanup — NOT as a real setup failure.
+  # _record_local_residue skips the ralph-failed label and descendant taint
+  # so a stale residue cannot mutate Linear state for an issue this invocation
+  # never actually touched (codex adversarial review, finding A).
+  if [[ -e "$path" ]] || git show-ref --verify --quiet "refs/heads/$branch"; then
+    set -e
+    printf 'orchestrator: pre-existing worktree path or branch for %s — skipping (no Linear mutation)\n' "$issue_id" >&2
+    _record_local_residue "$issue_id" "$path" "$branch" "$timestamp"
+    return 1
+  fi
+
   # Create the worktree per base type, capturing the branch's creation point
   # (main's SHA for integration, post-create HEAD otherwise) for the
   # .ralph-base-sha contract consumed by prepare-for-review (ENG-182).
   #
   # Worktree creation helpers can fail AFTER `git worktree add` has already
   # succeeded (e.g. a merge error mid-integration, or a later step that
-  # references the partial worktree). Cleanup on failure is guarded — the
-  # worktree may or may not have been created — but must run unconditionally
-  # so a stale branch/dir doesn't block the next run.
-  #
-  # Gate cleanup on whether the path pre-existed this invocation. If it did
-  # (stale dir from an earlier crashed run, manual mkdir, etc.) `git worktree
-  # add` fails without creating new state — running _cleanup_worktree would
-  # force-remove the operator's existing contents. Only clean up state this
-  # invocation created.
-  local path_existed_before=0
-  [[ -e "$path" ]] && path_existed_before=1
-
+  # references the partial worktree). Cleanup must run on failure so a stale
+  # branch/dir doesn't block the next run. We've already filtered out the
+  # pre-existing-path case above, so any state at $path here was created by
+  # this invocation and is safe to remove.
   if [[ "$base_out" == "main" ]]; then
     worktree_create_at_base "$path" "$branch" "main"
     if [[ $? -ne 0 ]]; then
       set -e
-      if [[ "$path_existed_before" -eq 0 ]]; then
-        _cleanup_worktree "$path" "$branch"
-      fi
+      _cleanup_worktree "$path" "$branch"
       _record_setup_failure "$issue_id" "worktree_create_at_base" "$timestamp"
       return 1
     fi
@@ -333,9 +389,7 @@ _dispatch_issue() {
     worktree_create_with_integration "$path" "$branch" "${parents[@]}"
     if [[ $? -ne 0 ]]; then
       set -e
-      if [[ "$path_existed_before" -eq 0 ]]; then
-        _cleanup_worktree "$path" "$branch"
-      fi
+      _cleanup_worktree "$path" "$branch"
       _record_setup_failure "$issue_id" "worktree_create_with_integration" "$timestamp"
       return 1
     fi
@@ -343,9 +397,7 @@ _dispatch_issue() {
     worktree_create_at_base "$path" "$branch" "$base_out"
     if [[ $? -ne 0 ]]; then
       set -e
-      if [[ "$path_existed_before" -eq 0 ]]; then
-        _cleanup_worktree "$path" "$branch"
-      fi
+      _cleanup_worktree "$path" "$branch"
       _record_setup_failure "$issue_id" "worktree_create_at_base" "$timestamp"
       return 1
     fi
@@ -397,13 +449,22 @@ _dispatch_issue() {
   local duration=$(( end_epoch - start_epoch ))
 
   # Classify using exit code AND Linear state (Q2 finding). A transient
-  # failure fetching the post-dispatch state must not abort the whole run,
-  # so we tolerate it and fall through to exit_clean_no_review (safest
-  # classification: label ralph-failed and taint downstream).
+  # failure fetching the post-dispatch state must NOT collapse to
+  # exit_clean_no_review — that would label a true success as ralph-failed
+  # whenever Linear's read path blips after a session that DID transition the
+  # issue (codex adversarial review, finding B). Instead, distinguish
+  # state-fetch failure from successful-fetch-with-non-review-state and emit
+  # a separate unknown_post_state outcome with no label/taint.
   local post_state=""
+  local state_fetch_ok=1
   if ! post_state="$(linear_get_issue_state "$issue_id" 2>/dev/null)"; then
-    printf 'orchestrator: failed to fetch post-dispatch state for %s; treating as no-transition\n' "$issue_id" >&2
-    post_state=""
+    printf 'orchestrator: failed to fetch post-dispatch state for %s — recording unknown_post_state (no label, no taint)\n' "$issue_id" >&2
+    state_fetch_ok=0
+  fi
+
+  if [[ "$claude_exit" -eq 0 && "$state_fetch_ok" -eq 0 ]]; then
+    _record_unknown_post_state "$issue_id" "$branch" "$base_out" "$claude_exit" "$duration" "$timestamp"
+    return 0
   fi
 
   local outcome record

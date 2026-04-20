@@ -93,9 +93,11 @@ The orchestrator runs foreground — the user should expect the session to block
 After the orchestrator returns:
 
 - **`progress.json`** at the repo root lists all dispatched/skipped issues with outcomes.
-- **In Review issues:** `cd` into the worktree, run a `claude --resume` if the session is still available, review code per the QA plan in the Linear comment, then invoke `/close-feature-branch` (project-local skill) or your project's merge ritual.
-- **`ralph-failed` issues:** `cd` into the worktree, read `<worktree>/<RALPH_STDOUT_LOG>` for the session's final output. Decide: retry (remove the `ralph-failed` label and re-queue), cancel the issue, or debug interactively.
-- **`setup_failed` issues:** orchestrator couldn't set up the worktree (branch lookup failed, dag_base returned garbage, etc.). Check the `failed_step` field in `progress.json`. Worktree cleanup has already run if the orchestrator created any state; a pre-existing path is left untouched for inspection.
+- **`in_review` issues:** `cd` into the worktree, run a `claude --resume` if the session is still available, review code per the QA plan in the Linear comment, then invoke `/close-feature-branch` (project-local skill) or your project's merge ritual.
+- **`failed` / `exit_clean_no_review` issues** (labeled `ralph-failed`, descendants tainted): `cd` into the worktree, read `<worktree>/<RALPH_STDOUT_LOG>` for the session's final output. Decide: retry (remove the `ralph-failed` label and re-queue), cancel the issue, or debug interactively.
+- **`setup_failed` issues** (labeled `ralph-failed`, descendants tainted): orchestrator couldn't set up the worktree (branch lookup failed, dag_base returned garbage, etc.). Check the `failed_step` field in `progress.json`. Worktree cleanup has already run for state this invocation created.
+- **`local_residue` issues** (Linear NOT mutated, descendants NOT tainted): the target worktree path or branch already existed at the start of dispatch — the orchestrator never touched it. Check the `residue_path` and `residue_branch` fields in `progress.json`, manually clean up the residue (commit or remove), then re-queue. Operator state (manual mkdir, prior crashed run, in-flight branch) is preserved unchanged.
+- **`unknown_post_state` issues** (Linear NOT mutated, descendants NOT tainted): claude exited 0 but the post-dispatch Linear state fetch failed transiently. Open the issue in Linear: if state is `In Review`, treat as success (no `ralph-failed` was applied); if it's still `In Progress`, treat as a soft failure and re-queue.
 
 ## Red flags / when to stop
 
