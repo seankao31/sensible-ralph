@@ -169,14 +169,54 @@ ENG-2"
 
 # ---------------------------------------------------------------------------
 # 5. Stuck blocker chain → exit 1, output contains "stuck"
-# A blocker is Approved but its own blockers are not all In Review/Done
+# Truly stuck: the chain bottoms out at a non-runnable state (Todo, etc. —
+# the orchestrator only picks up Approved issues, so anything other than
+# Done/In Review/Approved-with-runnable-blockers will NOT clear overnight).
 # ---------------------------------------------------------------------------
 @test "stuck blocker chain exits 1 with stuck in output" {
   export STUB_APPROVED_IDS="ENG-30"
-  # ENG-30's blocker is ENG-15, which is Approved (not yet In Review/Done)
+  # ENG-30's blocker is ENG-15, which is Approved
   export STUB_BLOCKERS_ENG_30='[{"id":"ENG-15","state":"Approved","branch":"eng-15"}]'
-  # ENG-15's own blocker ENG-9 is also Approved — so the chain is stuck
-  export STUB_BLOCKERS_ENG_15='[{"id":"ENG-9","state":"Approved","branch":"eng-9"}]'
+  # ENG-15's own blocker ENG-9 is in Todo — the orchestrator won't touch it,
+  # so the chain genuinely cannot dispatch overnight.
+  export STUB_BLOCKERS_ENG_15='[{"id":"ENG-9","state":"Todo","branch":"eng-9"}]'
+  export STUB_DESC_CHARS=300
+
+  run_preflight
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"stuck"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# 5b. Deep Approved chain that bottoms out at a Done blocker is NOT stuck —
+# the chain dispatches overnight in topological order. Codex review: the
+# previous one-level-deep stuck-chain check produced false positives here.
+# ---------------------------------------------------------------------------
+@test "deep approved chain bottoming out at Done is not stuck" {
+  export STUB_APPROVED_IDS="ENG-31"
+  # ENG-31 ← ENG-32 (Approved) ← ENG-33 (Approved) ← ENG-34 (Done)
+  export STUB_BLOCKERS_ENG_31='[{"id":"ENG-32","state":"Approved","branch":"eng-32"}]'
+  export STUB_BLOCKERS_ENG_32='[{"id":"ENG-33","state":"Approved","branch":"eng-33"}]'
+  export STUB_BLOCKERS_ENG_33='[{"id":"ENG-34","state":"Done","branch":"eng-34"}]'
+  export STUB_DESC_CHARS=300
+
+  run_preflight
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"all clear"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# 5c. Cycle in the blocker graph reported as stuck (not infinite loop) —
+# recursive stuck-chain check must terminate even if blockers cycle.
+# ---------------------------------------------------------------------------
+@test "cycle in approved blocker chain is reported as stuck (no infinite loop)" {
+  export STUB_APPROVED_IDS="ENG-35"
+  # ENG-35 ← ENG-36 ← ENG-37 ← ENG-36 (cycle)
+  export STUB_BLOCKERS_ENG_35='[{"id":"ENG-36","state":"Approved","branch":"eng-36"}]'
+  export STUB_BLOCKERS_ENG_36='[{"id":"ENG-37","state":"Approved","branch":"eng-37"}]'
+  export STUB_BLOCKERS_ENG_37='[{"id":"ENG-36","state":"Approved","branch":"eng-36"}]'
   export STUB_DESC_CHARS=300
 
   run_preflight

@@ -153,6 +153,21 @@ call_fn() {
   grep -qF "issueId=ENG-22" "$STUB_ARGS_FILE"
 }
 
+@test "linear_get_issue_blockers fails loud if Linear truncates the relation page" {
+  # Simulate Linear returning hasNextPage=true (issue has > 250 inverseRelations).
+  # Silent truncation would make downstream consumers (preflight, build_queue,
+  # dag_base) work from an incomplete dependency set — refuse instead.
+  STUB_OUTPUT='{"data":{"issue":{"inverseRelations":{"pageInfo":{"hasNextPage":true},"nodes":[
+    {"type":"blocks","issue":{"identifier":"ENG-100","branchName":"eng-100","state":{"name":"Done"}}}
+  ]}}}}'
+  export STUB_OUTPUT
+
+  run call_fn linear_get_issue_blockers ENG-99
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"truncation"* ]] || [[ "$output" == *"more than 250"* ]]
+}
+
 @test "linear_get_issue_blockers returns multiple blockers in a single call" {
   STUB_OUTPUT='{"data":{"issue":{"inverseRelations":{"nodes":[
     {"type":"blocks","issue":{"identifier":"ENG-16","branchName":"eng-16-a","state":{"name":"In Progress"}}},

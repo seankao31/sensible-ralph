@@ -36,22 +36,30 @@ linear_list_approved_issues() {
 
 # Get blockers for an issue.
 # Outputs a JSON array: [{"id":"ENG-X","state":"Done","branch":"eng-x-slug"}, ...]
-# Issues with no blocked-by relations output: []
+# Issues with no blocked-by relations output: [].
 #
 # Uses `linear api` to query the GraphQL endpoint directly. The CLI's
 # `issue relation list` subcommand has no --json flag (v2.0.0), so the
 # previous text-parsing approach was brittle to CLI format changes.
 # `inverseRelations` returns relations pointing AT this issue; we filter to
 # type=="blocks" client-side via jq, since the IssueRelationConnection has no
-# server-side filter parameter. Default page size is 50 (no pagination
-# loop — orchestrator queues realistically have far fewer blockers per issue).
+# server-side filter parameter.
+#
+# Pagination: requests first: 250 (well above realistic blocker counts) and
+# checks pageInfo.hasNextPage. If truncation occurred, returns non-zero with
+# a clear error — silent truncation would let downstream consumers (preflight,
+# build_queue, dag_base) work from an incomplete dependency set and misjudge
+# stuck-chains, base-branch selection, and taint propagation. 250 blockers on
+# a single issue is implausible in practice; failing loud is the right
+# default for the unrealistic case.
 linear_get_issue_blockers() {
   local issue_id="$1"
   local raw
   raw="$(linear api --variable "issueId=$issue_id" <<'GRAPHQL'
 query($issueId: String!) {
   issue(id: $issueId) {
-    inverseRelations(first: 50) {
+    inverseRelations(first: 250) {
+      pageInfo { hasNextPage }
       nodes {
         type
         issue {
@@ -65,6 +73,13 @@ query($issueId: String!) {
 }
 GRAPHQL
 )" || { printf 'linear_get_issue_blockers: failed to query relations for %s\n' "$issue_id" >&2; return 1; }
+
+  local has_next_page
+  has_next_page="$(printf '%s' "$raw" | jq -r '.data.issue.inverseRelations.pageInfo.hasNextPage')"
+  if [[ "$has_next_page" == "true" ]]; then
+    printf 'linear_get_issue_blockers: %s has more than 250 inverse relations — silent truncation refused. Investigate before re-running.\n' "$issue_id" >&2
+    return 1
+  fi
 
   printf '%s' "$raw" | jq -c '
     [ .data.issue.inverseRelations.nodes[]

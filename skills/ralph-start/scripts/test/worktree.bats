@@ -187,7 +187,7 @@ call_fn_from() {
 # ---------------------------------------------------------------------------
 # 8. worktree_create_with_integration — first parent conflict stops second merge
 # ---------------------------------------------------------------------------
-@test "worktree_create_with_integration stops at first conflict; second parent not merged" {
+@test "worktree_create_with_integration multi-parent conflict fails fast (does not silently drop later parents)" {
   # Parent A: conflicts with main on conflict.txt
   git -C "$REPO_DIR" checkout -b "eng-30-conflict-a"
   echo "parent A version" > "$REPO_DIR/conflict.txt"
@@ -200,7 +200,8 @@ call_fn_from() {
   git -C "$REPO_DIR" add conflict.txt
   git -C "$REPO_DIR" commit -m "main adds conflict.txt"
 
-  # Parent B: adds a unique file — would be present if incorrectly merged
+  # Parent B: adds a unique file — must NOT be merged (conflict aborted) but
+  # the agent must NOT be silently dispatched against an integration missing it
   git -C "$REPO_DIR" checkout -b "eng-31-parent-b"
   echo "content from parent B" > "$REPO_DIR/file-b-unique.txt"
   git -C "$REPO_DIR" add file-b-unique.txt
@@ -209,11 +210,11 @@ call_fn_from() {
 
   local wt_path="$REPO_DIR/.worktrees/two-parent-conflict"
 
-  # Must return 0 (conflict left in-place is expected) AND not merge parent B
+  # Multi-parent conflict must fail fast — agent can't be expected to discover
+  # parents that were never merged and never signaled (silent drop is the bug).
   run call_fn worktree_create_with_integration "$wt_path" "two-parent-conflict" "eng-30-conflict-a" "eng-31-parent-b"
 
-  [ "$status" -eq 0 ]
-  [ -d "$wt_path" ]
-  # Second parent's unique file must NOT be present — it was correctly skipped
-  [ ! -f "$wt_path/file-b-unique.txt" ]
+  [ "$status" -ne 0 ]
+  [[ "$output" =~ "merge conflict" ]] || [[ "$output" =~ "eng-30-conflict-a" ]]
+  # Worktree dir was created by `git worktree add` — orchestrator's _cleanup_worktree handles teardown
 }

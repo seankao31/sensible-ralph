@@ -39,6 +39,51 @@ _blocker_is_resolved() {
   [[ "$state" == "$RALPH_REVIEW_STATE" || "$state" == "$RALPH_DONE_STATE" ]]
 }
 
+# Recursive check: returns 0 if every blocker reachable from $issue_id can
+# clear in this orchestrator run, 1 if any blocker is in a non-runnable state
+# (Todo, In Progress, etc.) or the chain contains a cycle.
+#
+# A blocker is "runnable in this run" iff it's already resolved (Done /
+# In Review) OR it's Approved AND its own blockers are recursively runnable.
+# The orchestrator only dispatches Approved issues, so blockers in any other
+# state (Triage, Backlog, Todo, In Progress, Canceled, Duplicate) will not
+# clear overnight and the chain is stuck.
+#
+# Cycle detection uses a visited list. Cycles report stuck (return 1).
+# Recursion depth is bounded by the longest cycle-free path; Linear API
+# calls dominate runtime.
+_chain_runnable() {
+  local issue_id="$1"
+  shift
+  local visited=("$@")
+
+  local v
+  for v in "${visited[@]}"; do
+    [[ "$v" == "$issue_id" ]] && return 1
+  done
+  visited+=("$issue_id")
+
+  local blockers_json
+  blockers_json="$(linear_get_issue_blockers "$issue_id")" || return 1
+  local count
+  count="$(printf '%s' "$blockers_json" | jq 'length')"
+
+  local i b_state b_id
+  for (( i = 0; i < count; i++ )); do
+    b_state="$(printf '%s' "$blockers_json" | jq -r ".[$i].state")"
+    b_id="$(printf '%s' "$blockers_json" | jq -r ".[$i].id")"
+    if _blocker_is_resolved "$b_state"; then
+      continue
+    fi
+    if [[ "$b_state" == "$RALPH_APPROVED_STATE" ]]; then
+      _chain_runnable "$b_id" "${visited[@]}" || return 1
+      continue
+    fi
+    return 1
+  done
+  return 0
+}
+
 # Fetch the non-whitespace character count for an issue's description.
 # Calls: linear issue view <id> --json --no-comments
 _desc_nonws_chars() {
@@ -92,30 +137,22 @@ while IFS= read -r issue_id; do
   fi
 
   # --- Check 3: Stuck blocker chain ---
-  # A blocker is Approved (not In Review/Done) AND its own blockers are not all In Review/Done.
-  # This means the chain won't dispatch overnight.
+  # An Approved blocker is stuck if its dependency chain cannot clear overnight.
+  # Recurses via _chain_runnable so deeper chains where the deepest issue is
+  # already resolvable are correctly classified as not stuck.
   blocker_count="$(printf '%s' "$blockers_json" | jq 'length')"
   for (( i = 0; i < blocker_count; i++ )); do
     b_state="$(printf '%s' "$blockers_json" | jq -r ".[$i].state")"
     b_id="$(printf '%s' "$blockers_json" | jq -r ".[$i].id")"
 
-    # Only Approved blockers can be stuck — In Progress/Todo are actively worked, not stuck
+    # Only Approved blockers can be stuck — In Progress/Todo etc. are reported by
+    # other anomaly checks (or simply not orchestrator-dispatchable). Resolved
+    # blockers (Done/In Review) trivially can't be stuck.
     if [[ "$b_state" != "$RALPH_APPROVED_STATE" ]]; then
       continue
     fi
-    # Blocker is Approved — check if its own blockers are all resolved
-    b_own_blockers="$(linear_get_issue_blockers "$b_id")"
-    b_own_count="$(printf '%s' "$b_own_blockers" | jq 'length')"
-    stuck=0
-    for (( j = 0; j < b_own_count; j++ )); do
-      own_state="$(printf '%s' "$b_own_blockers" | jq -r ".[$j].state")"
-      if ! _blocker_is_resolved "$own_state"; then
-        stuck=1
-        break
-      fi
-    done
-    if [[ "$stuck" -eq 1 ]]; then
-      anomalies+=("[WARN] $issue_id: stuck blocker chain — blocker $b_id is Approved with unresolved blockers of its own")
+    if ! _chain_runnable "$b_id" "$issue_id"; then
+      anomalies+=("[WARN] $issue_id: stuck blocker chain — blocker $b_id is Approved with unrunnable transitive blockers")
     fi
   done
 

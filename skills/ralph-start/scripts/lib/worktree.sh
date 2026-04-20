@@ -14,9 +14,19 @@ worktree_create_at_base() {
   git worktree add "$path" -b "$branch" "$base"
 }
 
-# Create a worktree for integration (multiple parent branches in review).
+# Create a worktree for integration (one or more parent branches in review).
 # Creates the worktree at main, then sequentially merges each parent branch.
-# On merge conflict: leaves conflicts in-place — the dispatched agent resolves them.
+# Conflict handling depends on parent count:
+#   - Single parent: leaves conflicts in-place — the dispatched agent resolves
+#     them. The agent's prompt template tells it to handle conflicts before
+#     implementing the feature.
+#   - Multi-parent: fails fast with `git merge --abort`. After a conflict on
+#     parent N, git refuses subsequent merges (MERGING state). Returning 0
+#     would leave the worktree with parent N's conflicts but parents N+1, N+2,
+#     ... silently NOT merged — the dispatched agent has no signal that those
+#     parents exist, so it would resolve N's conflicts and dispatch against an
+#     incomplete integration. Failing fast forces the operator to resolve the
+#     scope conflict (in main, or by re-sequencing parents) before dispatch.
 # $1: path      — absolute path where the worktree should be created
 # $2: branch    — new branch name
 # $3+: parents  — parent branches to merge sequentially
@@ -24,6 +34,7 @@ worktree_create_with_integration() {
   local path="$1" branch="$2"
   shift 2
   local parents=("$@")
+  local parent_count="${#parents[@]}"
 
   # Validate all parent refs before creating any state
   for parent in "${parents[@]}"; do
@@ -41,8 +52,14 @@ worktree_create_with_integration() {
     local unmerged
     unmerged="$(git -C "$path" diff --name-only --diff-filter=U)"
     if [[ -n "$unmerged" ]]; then
-      # Conflicts in-place as intended. No further parents can merge until agent resolves.
-      return 0
+      if [[ "$parent_count" -eq 1 ]]; then
+        # Single parent: leave conflicts in place for the agent to resolve
+        return 0
+      fi
+      # Multi-parent: abort and fail. Subsequent parents can't be silently dropped.
+      git -C "$path" merge --abort 2>/dev/null || true
+      printf 'worktree_create_with_integration: multi-parent merge conflict on %s — cannot continue (subsequent parents would be silently dropped). Resolve in main or re-sequence parents.\n' "$parent" >&2
+      return 1
     else
       printf 'worktree_create_with_integration: merge failed for parent %s\n' "$parent" >&2
       return 1
