@@ -101,6 +101,73 @@ call_fn() {
 }
 
 # ---------------------------------------------------------------------------
+# 1b. linear_list_initiative_projects — expand an initiative name to its
+#     member project names via `linear api` GraphQL. Used by config.sh when
+#     .ralph.json carries an `initiative` key instead of a `projects` list.
+# ---------------------------------------------------------------------------
+@test "linear_list_initiative_projects returns newline-joined project names" {
+  STUB_OUTPUT='{"data":{"initiatives":{"nodes":[{"name":"AI Collab","projects":{"pageInfo":{"hasNextPage":false},"nodes":[{"name":"Agent Config"},{"name":"I Said Yes"}]}}]}}}'
+  export STUB_OUTPUT
+
+  run call_fn linear_list_initiative_projects "AI Collab"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Agent Config"* ]]
+  [[ "$output" == *"I Said Yes"* ]]
+}
+
+@test "linear_list_initiative_projects passes the initiative name as GraphQL variable" {
+  STUB_OUTPUT='{"data":{"initiatives":{"nodes":[{"name":"X","projects":{"pageInfo":{"hasNextPage":false},"nodes":[{"name":"P1"}]}}]}}}'
+  export STUB_OUTPUT
+
+  call_fn linear_list_initiative_projects X
+
+  grep -q "^api " "$STUB_ARGS_FILE"
+  grep -qF "initiativeName=X" "$STUB_ARGS_FILE"
+}
+
+@test "linear_list_initiative_projects fails when no initiative matches" {
+  STUB_OUTPUT='{"data":{"initiatives":{"nodes":[]}}}'
+  export STUB_OUTPUT
+
+  run call_fn linear_list_initiative_projects "Does Not Exist"
+
+  [ "$status" -ne 0 ]
+  if [[ "$output" != *"no initiative"* ]]; then
+    echo "expected 'no initiative' in error, got: $output" >&2
+    return 1
+  fi
+}
+
+@test "linear_list_initiative_projects fails when multiple initiatives match" {
+  STUB_OUTPUT='{"data":{"initiatives":{"nodes":[{"name":"Dup","projects":{"pageInfo":{"hasNextPage":false},"nodes":[{"name":"A"}]}},{"name":"Dup","projects":{"pageInfo":{"hasNextPage":false},"nodes":[{"name":"B"}]}}]}}}'
+  export STUB_OUTPUT
+
+  run call_fn linear_list_initiative_projects Dup
+
+  [ "$status" -ne 0 ]
+  if [[ "$output" != *"multiple initiatives"* ]]; then
+    echo "expected 'multiple initiatives' in error, got: $output" >&2
+    return 1
+  fi
+}
+
+@test "linear_list_initiative_projects fails loud if projects page is truncated" {
+  # A Linear initiative with >50 projects would silently truncate; preflight
+  # and build_queue would then work on an incomplete scope.
+  STUB_OUTPUT='{"data":{"initiatives":{"nodes":[{"name":"Big","projects":{"pageInfo":{"hasNextPage":true},"nodes":[{"name":"P1"}]}}]}}}'
+  export STUB_OUTPUT
+
+  run call_fn linear_list_initiative_projects Big
+
+  [ "$status" -ne 0 ]
+  if [[ "$output" != *"truncation"* ]] && [[ "$output" != *"more than 50"* ]]; then
+    echo "expected truncation error, got: $output" >&2
+    return 1
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # 2. linear_get_issue_blockers — single GraphQL call via `linear api`,
 #    filters inverseRelations to type=="blocks" client-side via jq.
 # ---------------------------------------------------------------------------

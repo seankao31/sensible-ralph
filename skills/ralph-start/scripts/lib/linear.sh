@@ -6,12 +6,13 @@
 #   RALPH_PROJECT, RALPH_APPROVED_STATE, RALPH_FAILED_LABEL
 #
 # Functions:
-#   linear_list_approved_issues  — list Approved issue IDs (one per line)
-#   linear_get_issue_blockers    — get blockers as JSON array
-#   linear_get_issue_branch      — get Linear-generated branch name for an issue
-#   linear_set_state             — move an issue to a named workflow state
-#   linear_add_label             — add a label additively (preserves existing labels)
-#   linear_comment               — post a comment on an issue
+#   linear_list_approved_issues     — list Approved issue IDs (one per line)
+#   linear_list_initiative_projects — expand an initiative name to its project names
+#   linear_get_issue_blockers       — get blockers as JSON array
+#   linear_get_issue_branch         — get Linear-generated branch name for an issue
+#   linear_set_state                — move an issue to a named workflow state
+#   linear_add_label                — add a label additively (preserves existing labels)
+#   linear_comment                  — post a comment on an issue
 
 # List issue IDs in the configured project with state name matching
 # $RALPH_APPROVED_STATE, excluding any issues labeled $RALPH_FAILED_LABEL.
@@ -32,6 +33,62 @@ linear_list_approved_issues() {
          (.labels.nodes | map(.name) | index($failed_label)) == null
        )
      | .identifier'
+}
+
+# Expand an initiative name to the list of its member project names.
+# Outputs: one project name per line (newline-joined).
+#
+# Used by config.sh when .ralph.json carries `initiative: "..."` instead of
+# an explicit `projects` list. `linear issue query --initiative` does not
+# exist (CLI v2.0.0), so the resolution path is a GraphQL lookup via
+# `linear api`.
+#
+# Fails (non-zero) with a clear message for:
+#   - zero matching initiatives (misspelled name, etc.)
+#   - multiple matching initiatives (name isn't unique — ambiguous scope)
+#   - projects page truncated at first: 50 (silent truncation refused for
+#     the same reason as linear_get_issue_blockers: downstream consumers
+#     would work from an incomplete scope)
+linear_list_initiative_projects() {
+  local initiative_name="$1"
+  local raw
+  raw="$(linear api --variable "initiativeName=$initiative_name" <<'GRAPHQL'
+query($initiativeName: String!) {
+  initiatives(filter: { name: { eq: $initiativeName } }, first: 2) {
+    nodes {
+      name
+      projects(first: 50) {
+        pageInfo { hasNextPage }
+        nodes { name }
+      }
+    }
+  }
+}
+GRAPHQL
+)" || {
+    printf 'linear_list_initiative_projects: failed to query initiative %q\n' "$initiative_name" >&2
+    return 1
+  }
+
+  local match_count
+  match_count="$(printf '%s' "$raw" | jq '.data.initiatives.nodes | length')"
+  if [[ "$match_count" -eq 0 ]]; then
+    printf 'linear_list_initiative_projects: no initiative named %q\n' "$initiative_name" >&2
+    return 1
+  fi
+  if [[ "$match_count" -gt 1 ]]; then
+    printf 'linear_list_initiative_projects: multiple initiatives matched %q — rename one for uniqueness\n' "$initiative_name" >&2
+    return 1
+  fi
+
+  local has_next
+  has_next="$(printf '%s' "$raw" | jq -r '.data.initiatives.nodes[0].projects.pageInfo.hasNextPage')"
+  if [[ "$has_next" == "true" ]]; then
+    printf 'linear_list_initiative_projects: initiative %q has more than 50 projects — silent truncation refused\n' "$initiative_name" >&2
+    return 1
+  fi
+
+  printf '%s' "$raw" | jq -r '.data.initiatives.nodes[0].projects.nodes[].name'
 }
 
 # Get blockers for an issue.

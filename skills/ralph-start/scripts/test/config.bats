@@ -253,3 +253,79 @@ EOF
     return 1
   fi
 }
+
+# ---------------------------------------------------------------------------
+# 11. .ralph.json with `initiative` key → config.sh expands via
+#     linear_list_initiative_projects (sourced from lib/linear.sh) and
+#     exports the resolved project list as RALPH_PROJECTS.
+# ---------------------------------------------------------------------------
+@test ".ralph.json initiative expands via linear to RALPH_PROJECTS" {
+  cat > "$TEST_REPO_ROOT/.ralph.json" <<'EOF'
+{
+  "initiative": "AI Collab"
+}
+EOF
+
+  # Stub `linear` in PATH to return a controlled GraphQL response. The stub
+  # returns two projects for any `linear api` call.
+  local stub_dir="$TEST_REPO_ROOT/_stub_bin"
+  mkdir -p "$stub_dir"
+  cat > "$stub_dir/linear" <<'STUB'
+#!/usr/bin/env bash
+printf '%s' '{"data":{"initiatives":{"nodes":[{"name":"AI Collab","projects":{"pageInfo":{"hasNextPage":false},"nodes":[{"name":"Agent Config"},{"name":"I Said Yes"}]}}]}}}'
+STUB
+  chmod +x "$stub_dir/linear"
+
+  run bash -c '
+    cd "$1"
+    export PATH="$2:$PATH"
+    source "$3" "$4" || exit $?
+    for var in $(compgen -v RALPH_); do
+      printf "%s=%s\n" "$var" "${!var}"
+    done
+  ' _ "$TEST_REPO_ROOT" "$stub_dir" "$CONFIG_SH" "$EXAMPLE_CONFIG"
+
+  [ "$status" -eq 0 ]
+  if [[ "$output" != *"Agent Config"* ]]; then
+    echo "RALPH_PROJECTS missing Agent Config, got: $output" >&2
+    return 1
+  fi
+  if [[ "$output" != *"I Said Yes"* ]]; then
+    echo "RALPH_PROJECTS missing I Said Yes, got: $output" >&2
+    return 1
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# 12. Initiative that resolves to zero projects → hard error
+# ---------------------------------------------------------------------------
+@test "initiative resolving to zero projects exits 1" {
+  cat > "$TEST_REPO_ROOT/.ralph.json" <<'EOF'
+{
+  "initiative": "Empty"
+}
+EOF
+
+  local stub_dir="$TEST_REPO_ROOT/_stub_bin"
+  mkdir -p "$stub_dir"
+  # The linear_list_initiative_projects truncation guard depends on pageInfo;
+  # an initiative with zero projects still returns a valid initiative node
+  # with an empty projects list.
+  cat > "$stub_dir/linear" <<'STUB'
+#!/usr/bin/env bash
+printf '%s' '{"data":{"initiatives":{"nodes":[{"name":"Empty","projects":{"pageInfo":{"hasNextPage":false},"nodes":[]}}]}}}'
+STUB
+  chmod +x "$stub_dir/linear"
+
+  run bash -c '
+    cd "$1"
+    export PATH="$2:$PATH"
+    source "$3" "$4"
+  ' _ "$TEST_REPO_ROOT" "$stub_dir" "$CONFIG_SH" "$EXAMPLE_CONFIG" 2>&1
+
+  [ "$status" -ne 0 ]
+  if [[ "$output" != *"zero projects"* ]]; then
+    echo "expected 'zero projects' in error, got: $output" >&2
+    return 1
+  fi
+}

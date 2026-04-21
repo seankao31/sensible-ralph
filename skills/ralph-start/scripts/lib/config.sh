@@ -131,10 +131,15 @@ _config_load_scope() {
       return 1
     fi
   else
-    # Initiative expansion is implemented in a follow-up commit (calls
-    # linear_list_initiative_projects from lib/linear.sh).
-    echo "config: 'initiative' expansion not yet implemented" >&2
-    return 1
+    # Initiative case — expand via linear_list_initiative_projects (sourced
+    # from lib/linear.sh at the top of _config_load).
+    local initiative
+    initiative="$(jq -r '.initiative' "$scope_file")"
+    projects_newline="$(linear_list_initiative_projects "$initiative")" || return 1
+    if [[ -z "$projects_newline" ]]; then
+      echo "config: initiative '$initiative' resolves to zero projects" >&2
+      return 1
+    fi
   fi
 
   export RALPH_PROJECTS="$projects_newline"
@@ -142,6 +147,15 @@ _config_load_scope() {
 
 _config_load() {
   local config_file="$1"
+
+  # Source linear.sh (sibling in lib/) so _config_load_scope can call
+  # linear_list_initiative_projects when .ralph.json uses the initiative
+  # shorthand. Sourcing is idempotent — entry-point scripts that source
+  # linear.sh separately are unaffected.
+  local _config_lib_dir
+  _config_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  # shellcheck source=linear.sh
+  source "$_config_lib_dir/linear.sh"
 
   _config_load_workflow "$config_file" || return 1
 
