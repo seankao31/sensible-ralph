@@ -167,6 +167,7 @@ Nothing else in the v2 contract changes. The state machine, the pickup rule, the
 | `agent-config/docs/playbooks/ralph-v2-usage.md` | Revise "When to run" and the single-project scope language |
 | `agent-config/docs/specs/2026-04-17-ralph-loop-v2-design.md` | Contract-summary note about v2 single-project limit updated to reference this design |
 | `.ralph.json` at chezmoi repo root (new) | `{ "projects": ["Agent Config", "Machine Config"] }` |
+| `.chezmoiignore` (chezmoi source repo only) | Add `.ralph.json` so chezmoi does not apply it as a user dotfile — this file is repo-scope config, not a `$HOME` dotfile |
 | `agent-config/skills/ralph-start/test/…` | Existing tests updated; new tests for scope resolution and multi-project queue building |
 
 ## Coexistence with in-flight work
