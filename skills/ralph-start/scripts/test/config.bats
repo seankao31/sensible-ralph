@@ -58,12 +58,14 @@ source_config() {
   tmpdir="$(mktemp -d)"
   local bad_config="$tmpdir/bad_config.json"
 
-  # Write a config that omits the 'model' key
+  # Write a config that omits only the 'model' key
   cat > "$bad_config" <<'EOF'
 {
   "project": "Agent Config",
   "approved_state": "Approved",
+  "in_progress_state": "In Progress",
   "review_state": "In Review",
+  "done_state": "Done",
   "failed_label": "ralph-failed",
   "worktree_base": ".worktrees",
   "stdout_log_filename": "ralph-output.log"
@@ -72,7 +74,10 @@ EOF
 
   run bash -c "source '$CONFIG_SH' '$bad_config'" 2>&1
   [ "$status" -eq 1 ]
-  [[ "$output" == *"model"* ]]
+  if [[ "$output" != *"model"* ]]; then
+    echo "expected 'model' in error output, got: $output" >&2
+    return 1
+  fi
 
   rm -rf "$tmpdir"
 }
