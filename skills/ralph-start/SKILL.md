@@ -15,9 +15,31 @@ Dispatch the autonomous spec-queue: sort Approved Linear issues into a DAG-aware
 
 - `linear` CLI authenticated (`linear --version` succeeds).
 - `jq` available on PATH.
-- `config.json` present in the skill directory (copy from `config.example.json` and customize, or rely on the committed default). Required keys: `project`, `approved_state`, `in_progress_state`, `review_state`, `done_state`, `failed_label`, `worktree_base`, `model`, `stdout_log_filename`. The four state-name keys must match the actual workflow state names in your Linear workspace.
+- Global workflow `config.json` present in the skill directory (copy from `config.example.json` and customize, or rely on the committed default). Required keys: `approved_state`, `in_progress_state`, `review_state`, `done_state`, `failed_label`, `worktree_base`, `model`, `stdout_log_filename`. The four state-name keys must match the actual workflow state names in your Linear workspace.
+- Per-repo `.ralph.json` at the repo root declaring the run's scope — see next section.
 
 The orchestrator scripts have `#!/usr/bin/env bash` shebangs and source `lib/config.sh` internally, so you can run them from any shell (zsh, fish, sh, etc.). Set `RALPH_CONFIG=<path>` to override the default `agent-config/skills/ralph-start/config.json`.
+
+## Scope resolution
+
+Which Linear projects this run drains is declared in `<repo-root>/.ralph.json` (auto-discovered via `git rev-parse --git-common-dir`, so it resolves the same from the main checkout or any linked worktree). Two shapes, either resolves to a project list at load time:
+
+```jsonc
+// Explicit — one or more projects
+{ "projects": ["Agent Config", "Machine Config"] }
+
+// Shorthand — Linear initiative name, expanded to its member projects on every invocation
+{ "initiative": "AI Collaboration Toolkit" }
+```
+
+Rules (all hard errors at load time, no silent fallbacks):
+
+- `.ralph.json` must exist at the repo root. Missing file halts with a message pointing at the expected path.
+- Exactly one of `projects` or `initiative` must be set. Both-set or neither-set fails.
+- `projects` must be non-empty; `initiative` must resolve to at least one project.
+- Project names are checked against Linear at query time (not pre-validated at load), so a misspelled name surfaces as an empty approved-issues list plus Linear's unknown-project error.
+
+Blockers across any in-scope project resolve automatically — a Machine Config issue blocked by an Agent Config issue in this run's queue is pickup-ready. A blocker whose project is *outside* the scope triggers the **out-of-scope blocker** preflight anomaly with a pointer back to this file.
 
 ## Workflow (run in order)
 
