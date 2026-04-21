@@ -1,0 +1,61 @@
+---
+name: ralph-implement
+description: Dispatched by the ralph orchestrator to implement a single Linear issue autonomously inside a pre-created worktree. Do NOT auto-invoke.
+disable-model-invocation: true
+argument-hint: <issue-id>
+allowed-tools: Skill, Bash, Read, Glob, Grep, Write, Edit
+---
+
+# Ralph Implement
+
+The workflow a single `claude -p` session runs when dispatched by the ralph orchestrator. Invoked with the Linear issue ID as the sole argument:
+
+```
+/ralph-implement ENG-NNN
+```
+
+The agent receives the issue ID as the invocation argument and exposes it as `$ISSUE_ID`. If the argument is missing, stop and exit without invoking `/prepare-for-review`.
+
+The orchestrator has already `cd`-ed into the worktree, created the branch at the correct DAG base, written `.ralph-base-sha`, and transitioned the issue to `In Progress` before invoking. The steps below run inside that worktree.
+
+## Step 1: Read the PRD
+
+```bash
+linear issue view "$ISSUE_ID" --json | jq -r .description
+```
+
+The issue description is the spec. Treat it as the source of requirements.
+
+## Step 2: Check for unresolved merge conflicts
+
+```bash
+git status --short
+```
+
+If the orchestrator pre-merged a parent branch into this worktree, the merge may have left conflicts. Resolve them before implementing the feature. Use `git log --all --oneline` and `git diff` to reason about each parent.
+
+## Step 3: Implement per the PRD
+
+Follow agent-config conventions: TDD (via `superpowers:test-driven-development`), `superpowers:systematic-debugging` on failures, smallest reasonable changes. The PRD drives the scope.
+
+## Step 4: Verify tests pass
+
+All tests must pass before handoff. If not, fix them — do not suppress, skip, or delete.
+
+## Step 5: Invoke `/prepare-for-review` (conditional)
+
+If Steps 3–4 succeeded, invoke `/prepare-for-review`. That skill runs the doc sweep, decisions capture, codex review, posts the handoff comment, and transitions Linear to `In Review`.
+
+If any step failed, do NOT invoke `/prepare-for-review`. Leave the Linear issue in `In Progress`. The orchestrator's post-dispatch state check classifies this as `exit_clean_no_review` (labels `ralph-failed`, taints downstream issues) — that's the correct operator signal.
+
+## Red flags / when to stop
+
+Stop the session WITHOUT invoking `/prepare-for-review` if:
+
+- The `$ISSUE_ID` argument is missing.
+- The PRD is empty or clearly malformed.
+- Merge conflicts from pre-merged parents can't be resolved confidently.
+- Tests fail and can't be fixed within the session.
+- The `linear` CLI is unreachable (can't read the PRD).
+
+Never invoke `/prepare-for-review` to "complete" a session that didn't actually succeed. The skill itself guards against this, but act on the red flags here first — the `exit_clean_no_review` outcome is the correct signal.
