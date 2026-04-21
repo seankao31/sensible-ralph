@@ -387,7 +387,7 @@ Linear CLI calls are inline in `orchestrator.sh` and `/run-queue`. YAGNI on the 
 Operations:
 
 - **Query** pickup-ready issues: `linear issue query --state Approved --project "$PROJECT" ...`.
-- **Read blockers**: `linear issue view $ID --json | jq '.relations'`.
+- **Read blockers**: `linear_get_issue_blockers "$ID"` (in `scripts/lib/linear.sh`) — uses `linear api` (GraphQL); `linear issue view --json` does not expose relations.
 - **State transitions**:
   - Orchestrator: `Approved → In Progress` at dispatch.
   - Session (via `/prepare-for-review` → `linear-workflow`): `In Progress → In Review` on success.
