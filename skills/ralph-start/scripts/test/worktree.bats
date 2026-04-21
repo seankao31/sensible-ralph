@@ -193,6 +193,19 @@ call_fn_from() {
   [ "$output" = "$expected" ]
 }
 
+@test "worktree_path_for_issue returns main repo path when invoked from a subdir of a linked worktree" {
+  local linked_wt="$REPO_DIR/.worktrees/existing-wt"
+  git -C "$REPO_DIR" worktree add "$linked_wt" -b "existing-wt-subdir"
+  mkdir -p "$linked_wt/nested/deep"
+
+  local expected="$REPO_DIR/$RALPH_WORKTREE_BASE/eng-99-new-feature"
+
+  run call_fn_from "$linked_wt/nested/deep" worktree_path_for_issue "eng-99-new-feature"
+
+  [ "$status" -eq 0 ]
+  [ "$output" = "$expected" ]
+}
+
 # ---------------------------------------------------------------------------
 # 5b. worktree_create_with_integration — accept parent that exists only as
 #     a remote-tracking ref (cross-machine usage: branches fetched from origin

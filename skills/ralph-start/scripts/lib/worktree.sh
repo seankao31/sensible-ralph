@@ -94,22 +94,33 @@ worktree_create_with_integration() {
   done
 }
 
+# Resolve the true repo root (main checkout path) regardless of cwd.
+# Returns the same path whether the caller's cwd is the main checkout, a
+# linked worktree, or a subdirectory of either — --git-common-dir points at
+# the shared .git directory, and its parent is the main checkout root.
+# --path-format=absolute ensures an absolute path; without it git may return
+# a relative ".git" when cwd is the repo root, making dirname return ".".
+# Requires git >= 2.31.
+#
+# Known limitation: assumes the conventional "<root>/.git" layout. Repos
+# using --separate-git-dir or checked out as git submodules have their
+# gitdir at an unrelated location, and dirname would resolve to that
+# unrelated parent rather than the working tree root. Ralph-start is a
+# skill scoped to this repo (a standard checkout), so this case is not
+# supported.
+_resolve_repo_root() {
+  local common_git
+  common_git="$(git rev-parse --path-format=absolute --git-common-dir)" || return 1
+  dirname "$common_git"
+}
+
 # Compute the worktree path for an issue given its branch name.
 # Outputs: $REPO_ROOT/$RALPH_WORKTREE_BASE/<branch>
 # Requires $RALPH_WORKTREE_BASE exported (set by config.sh).
-# Resolves REPO_ROOT via --git-common-dir (the shared .git directory), so the
-# result is the same whether the caller's cwd is the main checkout, a linked
-# worktree, or a subdirectory of either. --show-toplevel would return the
-# calling worktree's own root and cause new worktrees to nest under it.
-# --path-format=absolute ensures an absolute path — without it, git may return
-# a relative ".git" when cwd is the repo root, making dirname return ".".
-# Requires git >= 2.31.
 worktree_path_for_issue() {
   local branch="$1"
-  local common_git
-  common_git="$(git rev-parse --path-format=absolute --git-common-dir)" || return 1
   local repo_root
-  repo_root="$(dirname "$common_git")"
+  repo_root="$(_resolve_repo_root)" || return 1
   local base="${RALPH_WORKTREE_BASE#/}"   # strip leading slash
   base="${base%/}"                         # strip trailing slash
   printf '%s/%s/%s\n' "$repo_root" "$base" "$branch"

@@ -200,6 +200,14 @@ run_orch() {
   run bash -c "cd '$REPO_DIR' && '$STUB_DIR/scripts/orchestrator.sh' '$queue_file'"
 }
 
+# Like run_orch but invokes orchestrator from a caller-specified working
+# directory. Used to verify cwd-agnostic behaviors (e.g. progress.json is
+# anchored to the repo root, not $PWD).
+run_orch_from() {
+  local cwd="$1" queue_file="$2"
+  run bash -c "cd '$cwd' && '$STUB_DIR/scripts/orchestrator.sh' '$queue_file'"
+}
+
 # Read progress.json records (jq-friendly). progress.json lives in $REPO_DIR.
 progress_json() {
   cat "$REPO_DIR/progress.json"
@@ -1285,4 +1293,30 @@ CLAUDESH
   local leftover_count
   leftover_count="$(find "$REPO_DIR" -maxdepth 1 -name 'progress.json.*' -type f | wc -l | tr -d ' ')"
   [ "$leftover_count" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# 24. progress.json must land at the repo root, not $PWD. Invoking from a
+#     subdirectory or a linked worktree would otherwise bury the audit log
+#     in a transient location (linked worktrees are created and removed by
+#     ralph itself) and silently discard recovery state.
+# ---------------------------------------------------------------------------
+@test "progress.json anchored to repo root when orchestrator invoked from subdirectory" {
+  export STUB_CLAUDE_EXIT=0
+  export STUB_CLAUDE_TRANSITION_STATE="In Review"
+  export STUB_CLAUDE_ISSUE_ID="ENG-10"
+
+  local subdir="$REPO_DIR/nested/deep"
+  mkdir -p "$subdir"
+
+  local q; q="$(write_queue ENG-10)"
+  run_orch_from "$subdir" "$q"
+
+  [ "$status" -eq 0 ]
+
+  # progress.json lives at the repo root, not in the invocation subdirectory
+  [ -f "$REPO_DIR/progress.json" ]
+  [ ! -f "$subdir/progress.json" ]
+  local count; count="$(jq 'length' < "$REPO_DIR/progress.json")"
+  [ "$count" -eq 1 ]
 }

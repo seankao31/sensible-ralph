@@ -10,8 +10,8 @@ set -euo pipefail
 # append a per-issue record to progress.json.
 #
 # Input contract: $1 is a file path containing one issue ID per line,
-# pre-sorted by toposort.sh. progress.json is written to the caller's
-# cwd (typically the repo root).
+# pre-sorted by toposort.sh. progress.json is written to the repo root
+# (resolved via lib/worktree.sh::_resolve_repo_root), independent of cwd.
 #
 # Required env: RALPH_IN_PROGRESS_STATE, RALPH_REVIEW_STATE, RALPH_FAILED_LABEL,
 #               RALPH_WORKTREE_BASE, RALPH_MODEL, RALPH_STDOUT_LOG,
@@ -88,7 +88,9 @@ fi
 # Not a supported scenario — `/ralph-start` is single-invocation by design.
 _progress_append() {
   local record="$1"
-  local progress_file="$PWD/progress.json"
+  local repo_root
+  repo_root="$(_resolve_repo_root)" || return 1
+  local progress_file="$repo_root/progress.json"
   local tmp; tmp="$(mktemp "${progress_file}.XXXXXX")"
   if [[ -s "$progress_file" ]]; then
     jq --argjson rec "$record" '. + [$rec]' "$progress_file" > "$tmp"
