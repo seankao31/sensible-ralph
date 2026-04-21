@@ -497,18 +497,16 @@ That's the entire input contract. Everything downstream (branch name, worktree p
 
 ENG-177 and ENG-178 are already filed as upstream-tool experiments; they consume the contract defined here.
 
-## Open questions (to resolve at implementation time)
+## Open questions (resolved during implementation)
 
-1. **Auto-mode CLI flag for `claude -p`.** Exact flag name, semantics, and what it auto-approves vs. blocks on needs verification against current Claude Code CLI docs.
+All five open questions below were resolved as ENG-184 landed. Resolutions are preserved inline so a reader of this spec can trace the design's uncertain branches without cross-referencing the plan/progress docs.
 
-2. **Permission-prompt deadlock in auto mode.** If the agent blocks on a permission prompt with no human present, the session hangs. Resolution options:
-   - (a) Timeout on session duration (e.g., 2× expected) → fail the spec → `ralph-failed`.
-   - (b) A session-level permission-policy file broadening auto-approvals for autonomous runs.
-   - (c) Accept rare blocking; `ralph-failed` covers the aftermath but throughput suffers.
-   - Decision deferred to implementation; needs live testing.
+1. **Auto-mode CLI flag for `claude -p`.** **Resolved:** `claude --permission-mode auto`. `claude auto-mode defaults` prints the built-in classifier rules as JSON. Reference: https://code.claude.com/docs/en/permission-modes#eliminate-prompts-with-auto-mode.
 
-3. **Session persistence horizon.** If the user reviews a month-old In Review issue, is `claude --resume` still available? Claude Code's session GC policy is unknown. Design should not *require* session resume for review — the diff + Linear QA comment + worktree context must be enough on their own. Session resume is a convenience, not a requirement.
+2. **Permission-prompt deadlock in auto mode.** **Resolved empirically (ENG-184):** `--permission-mode auto` *refuses and continues* rather than blocking. A prohibited operation surfaces as a tool-result denial; the session reports and exits 0 with the work incomplete. Implication: exit code alone does NOT imply success — the orchestrator classifies by exit code AND post-dispatch Linear state. The `exit_clean_no_review` outcome (see Component 2's outcome model) captures the "exit 0 but never reached In Review" case, labels the issue `ralph-failed`, and taints descendants — same treatment as a non-zero exit.
 
-4. **`/run-queue` naming.** The v1 name emphasizes "one invocation = one queue." Alternatives: `/run-loop`, `/dispatch-approved`, `/ralph-start`. Not blocking, but worth revisiting when implementing.
+3. **Session persistence horizon.** **Resolved:** `~/.claude/projects/` persists conversation history indefinitely with no GC; `claude --resume` remains available for any prior session. `progress.json` needs no expiration guards. The review-time diff + Linear QA comment + worktree context are still the primary review inputs; session resume is a convenience that happens to always be available.
 
-5. **Integration-merge cleanup.** The merge is done *inside* B's real worktree (not a throwaway one), so no cleanup is needed for v2. If B's branch is merged to main, parent merges are absorbed; if abandoned, the worktree is removed with normal worktree hygiene.
+4. **`/run-queue` naming.** **Resolved:** `/ralph-start`. Skill lives at `agent-config/skills/ralph-start/`. The "start" framing emphasizes the user's action (kick off an overnight run) over the loop's internal queue semantics.
+
+5. **Integration-merge cleanup.** **Resolved:** No cleanup needed — the merge happens inside B's real worktree (not a throwaway one). If B ships, parent merges are absorbed into main; if B is abandoned, normal worktree hygiene removes it.
