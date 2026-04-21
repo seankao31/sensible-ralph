@@ -134,7 +134,7 @@ ENG-205 asks whether `progress.json` should become `progress-<run_id>.json` or m
 | Resource | Location | Why two-repo concurrency is safe |
 |---|---|---|
 | `progress.json` | Orchestrator cwd, anchored to repo root by `_resolve_repo_root` (ENG-202) | Two repos → two different parents → disjoint files |
-| `ordered_queue.txt` | Same | Same |
+| `ordered_queue.txt` | Caller's cwd (currently not anchored via `_resolve_repo_root`; ENG-215 should anchor it to the repo root for consistency with `progress.json`) | Two repos → disjoint files when each session is invoked from its repo root |
 | `.worktrees/<branch>` | `<repo>/.worktrees/<branch>` via `worktree_path_for_issue` | Two repos → disjoint trees |
 | Linear state writes | Keyed by issue ID (unique workspace-wide) | No collision by construction |
 | Branch names | Linear's `<team>-<id>-<slug>` — globally unique | No collision |
