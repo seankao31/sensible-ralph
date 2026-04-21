@@ -14,9 +14,17 @@ The workflow a single `claude -p` session runs when dispatched by the ralph orch
 /ralph-implement ENG-NNN
 ```
 
-The agent receives the issue ID as the invocation argument and exposes it as `$ISSUE_ID`. If the argument is missing, stop and exit without invoking `/prepare-for-review`.
-
 The orchestrator has already `cd`-ed into the worktree, created the branch at the correct DAG base, written `.ralph-base-sha`, and transitioned the issue to `In Progress` before invoking. The steps below run inside that worktree.
+
+## Setup: Assign the issue ID
+
+Before running any of the steps below, assign the invocation argument to a shell variable so subsequent commands can reference it:
+
+```bash
+ISSUE_ID="<the argument you received, e.g. ENG-206>"
+```
+
+If the argument is missing or empty, stop and exit without invoking `/prepare-for-review`.
 
 ## Step 1: Read the PRD
 
