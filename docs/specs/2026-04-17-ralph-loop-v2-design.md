@@ -27,6 +27,8 @@ The autonomous session consumes **one artifact**: the PRD written into the Linea
 
 ### 2. Minimal prompt template; trust CLAUDE.md and skill descriptions
 
+> **Superseded by ENG-206** — see `2026-04-21-ralph-implement-skill-design.md`. The prompt template described below was replaced by a dispatched skill, `ralph-implement`, in April 2026. The rationale and tradeoffs captured here remain useful as a point-in-time record.
+
 The prompt template given to each `claude -p` invocation:
 
 ```

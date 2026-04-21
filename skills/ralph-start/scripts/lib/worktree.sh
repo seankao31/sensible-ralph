@@ -33,7 +33,7 @@ worktree_create_at_base() {
 # Creates the worktree at main, then sequentially merges each parent branch.
 # Conflict handling depends on parent count:
 #   - Single parent: leaves conflicts in-place — the dispatched agent resolves
-#     them. The agent's prompt template tells it to handle conflicts before
+#     them. The `ralph-implement` skill tells it to handle conflicts before
 #     implementing the feature.
 #   - Multi-parent: fails fast with `git merge --abort`. After a conflict on
 #     parent N, git refuses subsequent merges (MERGING state). Returning 0
