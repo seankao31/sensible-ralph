@@ -399,37 +399,35 @@ Operations:
 
 Human-readable run summary. Not used by the orchestrator for resumption (queues are fresh each run).
 
+Each orchestrator invocation appends one record per issue to a flat JSON array at the repo root. Records from the same run share a `run_id` (ISO 8601 UTC timestamp captured once at orchestrator start); consumers group by `run_id` for per-run analysis. The flat layout (rather than a nested `{"runs":[{...}]}` wrapper) keeps append-only writes trivial to implement atomically via `jq ... | mv` and keeps the schema stable across orchestrator versions.
+
 ```json
-{
-    "runs": [
-        {
-            "run_id": "2026-04-17T22:30:00+08:00",
-            "dispatched": [
-                {
-                    "issue": "ENG-190",
-                    "branch": "eng-190-foo",
-                    "base": "main",
-                    "worktree": ".worktrees/eng-190-foo",
-                    "session": "ENG-190: foo",
-                    "outcome": "in_review",
-                    "exit_code": 0,
-                    "duration_seconds": 2710
-                },
-                {
-                    "issue": "ENG-191",
-                    "branch": "eng-191-bar",
-                    "base": "eng-190-foo",
-                    "outcome": "in_review",
-                    "exit_code": 0
-                }
-            ],
-            "skipped": [
-                {"issue": "ENG-192", "reason": "downstream of failed ENG-191"}
-            ]
-        }
-    ]
-}
+[
+    {
+        "issue": "ENG-190",
+        "branch": "eng-190-foo",
+        "base": "main",
+        "outcome": "in_review",
+        "exit_code": 0,
+        "duration_seconds": 2710,
+        "timestamp": "2026-04-17T22:30:00Z",
+        "run_id": "2026-04-17T22:30:00Z"
+    },
+    {
+        "issue": "ENG-192",
+        "outcome": "skipped",
+        "timestamp": "2026-04-17T22:45:00Z",
+        "run_id": "2026-04-17T22:30:00Z"
+    }
+]
 ```
+
+Outcome-specific fields carried on each record:
+
+- `in_review`, `exit_clean_no_review`, `failed`, `unknown_post_state`: `branch`, `base`, `exit_code`, `duration_seconds`.
+- `setup_failed`: `failed_step` (the setup step that failed — `linear_get_issue_branch`, `dag_base`, `worktree_create_at_base`, `write_base_sha`, `linear_set_state`, etc.).
+- `local_residue`: `residue_path`, `residue_branch`.
+- `skipped`: no extra fields — `issue`, `outcome`, `timestamp`, `run_id` only.
 
 No parent-HEAD tracking — staleness detection is a post-commit-hook concern, not the orchestrator's.
 
