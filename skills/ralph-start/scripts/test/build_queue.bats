@@ -90,10 +90,10 @@ teardown() {
 
 # ---------------------------------------------------------------------------
 # 3. Approved issue blocked by Approved issue: BOTH emitted in dependency
-#    order (parent first). Codex P1: previously the child was silently
-#    dropped because the pickup-ready check only accepted Done/In Review
-#    blockers, but the rest of the orchestrator stack treats Approved chains
-#    as runnable in one overnight session (preflight stuck-chain logic).
+#    order (parent first). Rule 3b (Decision 6): an Approved blocker that is
+#    also in this run's queue counts as resolved at queue-build time because
+#    toposort guarantees the parent dispatches first and reaches In Review
+#    before the child's turn.
 # ---------------------------------------------------------------------------
 @test "approved-blocked-by-approved chain emits parent then child" {
   export STUB_APPROVED_IDS="ENG-2
