@@ -227,14 +227,16 @@ Each dispatched `claude -p` invocation runs in **auto mode** (Opus 4.7's autonom
 │    │   ├─ Missing PRD on Approved issues             │
 │    │   └─ Circular/stuck dependencies                │
 │    ├─ Query: state=Approved, no ralph-failed,        │
-│    │         blockers ⊆ {Done, In Review}            │
+│    │         every blocker Done / In Review / same-  │
+│    │         run Approved (Decision 6 rule 3)        │
 │    ├─ Topological sort                               │
 │    ├─ Show dispatch plan; confirm                    │
 │    └─ For each ready spec (sequential):              │
 │        ├─ dag_base() → main | parent | integration   │
 │        ├─ git worktree add .worktrees/<branch>       │
 │        ├─ For integration: sequential git merges     │
-│        │   (leave conflicts in-place; agent resolves)│
+│        │   single-parent conflict → agent resolves   │
+│        │   multi-parent conflict → abort + taint     │
 │        ├─ Linear: Approved → In Progress             │
 │        ├─ (cd $worktree && claude -p --name auto)    │
 │        │   • Session reads PRD from Linear           │
