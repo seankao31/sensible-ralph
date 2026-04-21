@@ -5,7 +5,7 @@ set -euo pipefail
 # missing/trivial PRD. Scans all Approved issues and reports anomalies.
 # Exits non-zero if any anomalies found so the operator can fix before dispatch.
 #
-# Requires RALPH_PROJECT, RALPH_APPROVED_STATE, RALPH_FAILED_LABEL,
+# Requires RALPH_PROJECTS, RALPH_APPROVED_STATE, RALPH_FAILED_LABEL,
 # RALPH_REVIEW_STATE, RALPH_DONE_STATE exported (source lib/config.sh first).
 #
 # Performance: makes O(M * K) Linear CLI calls where M = number of Approved issues,

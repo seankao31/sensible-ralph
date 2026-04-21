@@ -86,12 +86,12 @@ The content hash catches in-place edits (and branch switches in the same worktre
 
 Loading order:
 
-1. Resolve repo root via `_resolve_repo_root`.
+1. Resolve working-tree root via `git rev-parse --show-toplevel` (see Decision 2 rationale for the `--show-toplevel` vs `--git-common-dir` distinction).
 2. Load global `config.json` → exports workflow-level `RALPH_*` minus `RALPH_PROJECT`.
 3. Load `<repo>/.ralph.json` → resolves scope (expanding `initiative` via Linear if present) → exports `RALPH_PROJECTS` as a newline-joined string. The newline-joined pattern matches existing bash 3.2 conventions in the scripts; a real array isn't portable across `source` boundaries on macOS's default bash.
-4. Update `RALPH_CONFIG_LOADED` with the tuple.
+4. Update `RALPH_CONFIG_LOADED` with the triple `"<global>|<repo-root>|<sha1-of-ralph.json>"`.
 
-Entry-point scripts (`ralph-start/SKILL.md` step invocations) re-source when either component of the tuple differs from their target. This is the only mechanical change to the existing anti-bleed-through logic.
+Entry-point scripts re-source when any component of the triple differs from their target. The sha1 component catches in-place scope edits (e.g., branch switches in the same worktree). This is the only mechanical change to the existing anti-bleed-through logic.
 
 **Validation at load (all hard errors — no silent fallbacks):**
 
@@ -151,7 +151,7 @@ What changes for callers and operators:
 - **Each ralph-hosting repo** has a committed `<repo-root>/.ralph.json` with either `projects: [...]` or `initiative: "..."`.
 - **`linear_list_approved_issues`, `preflight_scan.sh`, `build_queue.sh`** exported surface is unchanged — callers still consume an issue-ID list. Internal query shape changes.
 - **`RALPH_PROJECTS`** replaces `RALPH_PROJECT` in the exported env-var set.
-- **`RALPH_CONFIG_LOADED`** becomes a tuple `"<global>|<repo-root>"`.
+- **`RALPH_CONFIG_LOADED`** becomes the triple `"<global>|<repo-root>|<sha1-of-ralph.json>"`.
 
 Nothing else in the v2 contract changes. The state machine, the pickup rule, the pre-flight anomaly policy, the outcome model, the orchestrator's DAG handling, `/prepare-for-review`, and `/close-feature-branch` are all untouched.
 
