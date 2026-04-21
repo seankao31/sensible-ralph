@@ -101,7 +101,9 @@ worktree_create_with_integration() {
 # result is the same whether the caller's cwd is the main checkout, a linked
 # worktree, or a subdirectory of either. --show-toplevel would return the
 # calling worktree's own root and cause new worktrees to nest under it.
-# --path-format=absolute requires git >= 2.31.
+# --path-format=absolute ensures an absolute path — without it, git may return
+# a relative ".git" when cwd is the repo root, making dirname return ".".
+# Requires git >= 2.31.
 worktree_path_for_issue() {
   local branch="$1"
   local common_git
