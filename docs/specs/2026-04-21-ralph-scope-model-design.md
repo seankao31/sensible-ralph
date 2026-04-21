@@ -108,7 +108,7 @@ Today one `linear issue query --project "$RALPH_PROJECT"` call. New: one call pe
 
 **Blocker resolution (`linear_get_issue_blockers`):**
 
-Already returns all blockers regardless of project membership (via GraphQL `inverseRelations`). No change to routing logic; ENG-215 must extend the `inverseRelations` fields to include `project { id name }` per blocker so the out-of-scope-blocker anomaly path can name the project in its error message.
+Already returns all blockers regardless of project membership (via GraphQL `inverseRelations`). No change to routing logic; the implementation must extend the `inverseRelations` fields to include `project { id name }` per blocker so the out-of-scope-blocker anomaly path can name the project in its error message.
 
 **Chain runnability (`preflight_scan.sh::_chain_runnable`, `build_queue.sh`):**
 
@@ -134,7 +134,7 @@ ENG-205 asks whether `progress.json` should become `progress-<run_id>.json` or m
 | Resource | Location | Why two-repo concurrency is safe |
 |---|---|---|
 | `progress.json` | Orchestrator cwd, anchored to repo root by `_resolve_repo_root` (ENG-202) | Two repos → two different parents → disjoint files |
-| `ordered_queue.txt` | Caller's cwd (currently not anchored via `_resolve_repo_root`; ENG-215 should anchor it to the repo root for consistency with `progress.json`) | Two repos → disjoint files when each session is invoked from its repo root |
+| `ordered_queue.txt` | Caller's cwd (currently not anchored via `_resolve_repo_root`; the implementation should anchor it to the repo root for consistency with `progress.json`) | Two repos → disjoint files when each session is invoked from its repo root |
 | `.worktrees/<branch>` | `<repo>/.worktrees/<branch>` via `worktree_path_for_issue` | Two repos → disjoint trees |
 | Linear state writes | Keyed by issue ID (unique workspace-wide) | No collision by construction |
 | Branch names | Linear's `<team>-<id>-<slug>` — globally unique | No collision |
@@ -172,14 +172,14 @@ Nothing else in the v2 contract changes. The state machine, the pickup rule, the
 
 ## Coexistence with in-flight work
 
-**ENG-206 (In Progress)** — replaces `prompt_template` in `config.json` with a dedicated prompt file or dispatched skill. Orthogonal to this design (does not touch `project`), but both rewrite `config.json` / `lib/config.sh`. Sequence via explicit `blocked-by: ENG-206` on this design's implementation ticket so the DAG order is visible to ralph itself.
+**ENG-206 (In Progress)** — replaces `prompt_template` in `config.json` with a dedicated prompt file or dispatched skill. Orthogonal to this design (does not touch `project`), but both rewrite `config.json` / `lib/config.sh`. Sequence via explicit `blocked-by: ENG-206` on ENG-205 so the DAG order is visible to ralph itself.
 
 **ENG-203 (Triage)** — cross-project blockers within one initiative. Fully subsumed by Decision 4 under the project-list scope. Cancel with a comment pointing at this design + the implementation ticket.
 
-## Follow-up tickets to file after approval
+## Post-approval actions
 
-1. **Implement ralph scope model** — one implementation ticket covering all changes above (subsumes ENG-203). `blocked-by: ENG-206`.
-2. **Close ENG-203 as subsumed** — comment linking to this design and the implementation ticket.
+1. **Implementation proceeds under ENG-205** — design and implementation share this ticket; implementation work picks up on a new branch once ENG-206 lands. ENG-205 is `blocked-by: ENG-206`.
+2. **Close ENG-203 as subsumed** — comment linking to this design.
 
 ## Open questions (deferred to implementation)
 
