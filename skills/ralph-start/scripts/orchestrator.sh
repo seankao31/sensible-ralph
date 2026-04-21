@@ -14,8 +14,7 @@ set -euo pipefail
 # (resolved via lib/worktree.sh::_resolve_repo_root), independent of cwd.
 #
 # Required env: RALPH_IN_PROGRESS_STATE, RALPH_REVIEW_STATE, RALPH_FAILED_LABEL,
-#               RALPH_WORKTREE_BASE, RALPH_MODEL, RALPH_STDOUT_LOG,
-#               RALPH_PROMPT_TEMPLATE.
+#               RALPH_WORKTREE_BASE, RALPH_MODEL, RALPH_STDOUT_LOG.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -445,11 +444,10 @@ _dispatch_issue() {
 
   set -e
 
-  # Render prompt
-  local prompt="${RALPH_PROMPT_TEMPLATE//\$ISSUE_ID/$issue_id}"
-  prompt="${prompt//\$ISSUE_TITLE/$title}"
-  prompt="${prompt//\$BRANCH_NAME/$branch}"
-  prompt="${prompt//\$WORKTREE_PATH/$path}"
+  # Dispatch prompt: invoke ralph-implement with the issue ID.
+  # The agent reads title from Linear, branch from git, and runs in the
+  # worktree as cwd — none of those need substituting here.
+  local prompt="/ralph-implement $issue_id"
 
   # Dispatch claude from the worktree cwd, tee-ing output to the log file
   # without letting tee mask claude's exit code.

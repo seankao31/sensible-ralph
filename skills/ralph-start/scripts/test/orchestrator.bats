@@ -32,7 +32,6 @@ setup() {
   export RALPH_WORKTREE_BASE=".worktrees"
   export RALPH_MODEL="opus"
   export RALPH_STDOUT_LOG="ralph-output.log"
-  export RALPH_PROMPT_TEMPLATE='Issue: $ISSUE_ID Title: $ISSUE_TITLE Branch: $BRANCH_NAME Path: $WORKTREE_PATH'
   # Touch a dummy config and point RALPH_CONFIG at it. The marker carries the
   # resolved config path so we use the same canonicalization (cd && pwd) the
   # entry script uses, otherwise the gate would re-source.
@@ -239,6 +238,10 @@ progress_json() {
   [ -f "$wt_path/.ralph-base-sha" ]
   local sha; sha="$(cat "$wt_path/.ralph-base-sha")"
   [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+
+  # claude was invoked with /ralph-implement as the dispatch prompt
+  # (printf '%q' escapes the space as '\ ' in the args file)
+  grep -qF '/ralph-implement\ ENG-10' "$STUB_CLAUDE_ARGS_FILE"
 
   # progress.json has exactly one in_review record
   [ -f "$REPO_DIR/progress.json" ]
