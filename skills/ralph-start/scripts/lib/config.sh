@@ -1,27 +1,34 @@
 #!/usr/bin/env bash
-# Config loader: parse config.json with jq, export RALPH_* env vars.
+# Config loader: parse config.json (workflow fields) and <repo>/.ralph.json
+# (scope fields), export RALPH_* env vars.
 # Usage: source scripts/lib/config.sh /path/to/config.json
+#
+# Scope (RALPH_PROJECTS) lives in a per-repo `.ralph.json` at the repo root
+# and is auto-discovered via `git rev-parse --git-common-dir`. Workflow fields
+# (state names, labels, worktree base, model, log filename) live in the global
+# config.json passed as the first argument.
 #
 # Must be sourced from bash (bash 3.2+): uses ${!arr[@]} (variable-name
 # indirection for indexed arrays) and `local -a`, both of which are
 # bash-specific. Sourcing from zsh produces `bad substitution` at the
-# ${!staged_names[@]} expansion in _config_load.
+# ${!staged_names[@]} expansion in _config_load_workflow.
 #
 # All callers in this codebase run with `set -euo pipefail` already active;
 # this file must NOT call `set` at the top level, as sourcing a file with
 # top-level `set` commands mutates the caller's shell options.
 #
 # Exports:
-#   RALPH_PROJECT, RALPH_APPROVED_STATE, RALPH_IN_PROGRESS_STATE,
-#   RALPH_REVIEW_STATE, RALPH_DONE_STATE, RALPH_FAILED_LABEL,
-#   RALPH_WORKTREE_BASE, RALPH_MODEL, RALPH_STDOUT_LOG
+#   RALPH_APPROVED_STATE, RALPH_IN_PROGRESS_STATE, RALPH_REVIEW_STATE,
+#   RALPH_DONE_STATE, RALPH_FAILED_LABEL, RALPH_WORKTREE_BASE, RALPH_MODEL,
+#   RALPH_STDOUT_LOG — from config.json
+#   RALPH_PROJECTS (newline-joined) — from <repo>/.ralph.json
+#   RALPH_CONFIG_LOADED — tuple "<global-config-abs-path>|<repo-root-abs-path>"
 
-_config_load() {
+_config_load_workflow() {
   local config_file="$1"
 
   # Map of: RALPH_VAR_NAME → json_key
   local -a keys=(
-    "RALPH_PROJECT:project"
     "RALPH_APPROVED_STATE:approved_state"
     "RALPH_IN_PROGRESS_STATE:in_progress_state"
     "RALPH_REVIEW_STATE:review_state"
@@ -69,16 +76,90 @@ _config_load() {
     printf -v "${staged_names[$i]}" '%s' "${staged_values[$i]}"
     export "${staged_names[$i]}"
   done
+}
 
-  # Dedicated marker that proves _config_load ran to completion AND records
-  # which config file produced the current RALPH_* values. Entry-point scripts
-  # compare this against the config path they would otherwise load — if the
-  # paths differ (e.g. the operator sourced another repo's config earlier in
-  # the same shell), the entry-point re-sources the correct file. Storing the
-  # path (vs. just =1) prevents cross-repo Linear-project bleed-through.
+# Resolve the true repo root (main checkout path) regardless of cwd.
+# Uses --git-common-dir so worktrees resolve to the main checkout — see
+# lib/worktree.sh::_resolve_repo_root for the full rationale; this is an
+# inline duplicate because config.sh must work before worktree.sh is sourced.
+_config_resolve_repo_root() {
+  local common_git
+  common_git="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 1
+  dirname "$common_git"
+}
+
+# Load <repo>/.ralph.json, validate, export RALPH_PROJECTS (newline-joined).
+#
+# Validation (all hard errors — no silent fallbacks; .ralph.json missing or
+# malformed means the operator is in the wrong repo or forgot to create it):
+#   - file missing
+#   - both `projects` and `initiative` set
+#   - neither set
+#   - `projects` empty list
+#   - `initiative` present (expansion TODO in follow-up)
+_config_load_scope() {
+  local repo_root="$1"
+  local scope_file="$repo_root/.ralph.json"
+
+  if [[ ! -f "$scope_file" ]]; then
+    echo "config: .ralph.json not found at '$scope_file' — create it with {\"projects\": [...]} or {\"initiative\": \"...\"}" >&2
+    return 1
+  fi
+
+  local has_projects has_initiative
+  has_projects="$(jq -r 'has("projects")' "$scope_file")" || {
+    echo "config: failed to parse '$scope_file'" >&2
+    return 1
+  }
+  has_initiative="$(jq -r 'has("initiative")' "$scope_file")"
+
+  if [[ "$has_projects" == "true" && "$has_initiative" == "true" ]]; then
+    echo "config: .ralph.json has both 'projects' and 'initiative' — pick one" >&2
+    return 1
+  fi
+
+  if [[ "$has_projects" != "true" && "$has_initiative" != "true" ]]; then
+    echo "config: .ralph.json must set either 'projects' or 'initiative'" >&2
+    return 1
+  fi
+
+  local projects_newline
+  if [[ "$has_projects" == "true" ]]; then
+    projects_newline="$(jq -r '.projects[]' "$scope_file")"
+    if [[ -z "$projects_newline" ]]; then
+      echo "config: .ralph.json 'projects' list is empty" >&2
+      return 1
+    fi
+  else
+    # Initiative expansion is implemented in a follow-up commit (calls
+    # linear_list_initiative_projects from lib/linear.sh).
+    echo "config: 'initiative' expansion not yet implemented" >&2
+    return 1
+  fi
+
+  export RALPH_PROJECTS="$projects_newline"
+}
+
+_config_load() {
+  local config_file="$1"
+
+  _config_load_workflow "$config_file" || return 1
+
+  local repo_root
+  repo_root="$(_config_resolve_repo_root)" || {
+    echo "config: could not resolve repo root (not in a git repo?)" >&2
+    return 1
+  }
+
+  _config_load_scope "$repo_root" || return 1
+
+  # Tuple marker: entry-point scripts re-source when either the global config
+  # path OR the repo root differs (a stale marker from another repo's session
+  # must not suppress loading this repo's config). See orchestrator.sh for the
+  # auto-source gate.
   local resolved_config
   resolved_config="$(cd "$(dirname "$config_file")" && pwd)/$(basename "$config_file")"
-  export RALPH_CONFIG_LOADED="$resolved_config"
+  export RALPH_CONFIG_LOADED="${resolved_config}|${repo_root}"
 }
 
 _config_load "$1"
