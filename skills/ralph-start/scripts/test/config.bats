@@ -45,9 +45,9 @@ source_config() {
     fi
   done
 
-  # Capture RALPH_PROMPT_TEMPLATE directly to verify multi-line value is intact
-  prompt="$(bash -c 'source "$1" "$2" && printf "%s" "$RALPH_PROMPT_TEMPLATE"' _ "$CONFIG_SH" "$EXAMPLE_CONFIG")"
-  [[ "$prompt" == *"prepare-for-review"* ]]
+  # RALPH_PROMPT_TEMPLATE is no longer exported — the workflow lives in the
+  # ralph-implement skill (ENG-206).
+  [[ "$output" != *"RALPH_PROMPT_TEMPLATE="* ]]
 }
 
 # ---------------------------------------------------------------------------
@@ -66,8 +66,7 @@ source_config() {
   "review_state": "In Review",
   "failed_label": "ralph-failed",
   "worktree_base": ".worktrees",
-  "stdout_log_filename": "ralph-output.log",
-  "prompt_template": "some prompt"
+  "stdout_log_filename": "ralph-output.log"
 }
 EOF
 

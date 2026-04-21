@@ -14,7 +14,7 @@
 # Exports:
 #   RALPH_PROJECT, RALPH_APPROVED_STATE, RALPH_IN_PROGRESS_STATE,
 #   RALPH_REVIEW_STATE, RALPH_DONE_STATE, RALPH_FAILED_LABEL,
-#   RALPH_WORKTREE_BASE, RALPH_MODEL, RALPH_STDOUT_LOG, RALPH_PROMPT_TEMPLATE
+#   RALPH_WORKTREE_BASE, RALPH_MODEL, RALPH_STDOUT_LOG
 
 _config_load() {
   local config_file="$1"
@@ -30,7 +30,6 @@ _config_load() {
     "RALPH_WORKTREE_BASE:worktree_base"
     "RALPH_MODEL:model"
     "RALPH_STDOUT_LOG:stdout_log_filename"
-    "RALPH_PROMPT_TEMPLATE:prompt_template"
   )
 
   # Two-pass approach: collect all values first, then export all-or-nothing.
