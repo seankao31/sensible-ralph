@@ -61,8 +61,10 @@ STUB
   # path so dag_base.sh's auto-source gate skips loading config.sh.
   local dummy_config="$tmp_dir/dummy-config.json"
   touch "$dummy_config"
+  local _repo_root
+  _repo_root="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
   RALPH_CONFIG="$dummy_config" \
-    RALPH_CONFIG_LOADED="$(cd "$(dirname "$dummy_config")" && pwd)/$(basename "$dummy_config")" \
+    RALPH_CONFIG_LOADED="$(cd "$(dirname "$dummy_config")" && pwd)/$(basename "$dummy_config")|$_repo_root" \
     run bash "$tmp_dir/dag_base.sh" "$issue_id"
   rm -rf "$tmp_dir"
 }

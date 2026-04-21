@@ -12,7 +12,7 @@ setup() {
   STUB_DIR="$(mktemp -d)"
   export STUB_DIR
 
-  export RALPH_PROJECT="Agent Config"
+  export RALPH_PROJECTS="Agent Config"
   export RALPH_APPROVED_STATE="Approved"
   export RALPH_REVIEW_STATE="In Review"
   export RALPH_DONE_STATE="Done"
@@ -49,11 +49,13 @@ STUBLINEAR
   chmod +x "$STUB_DIR/linear"
   export PATH="$STUB_DIR:$PATH"
 
-  # Marker setup (script's auto-source gate)
+  # Marker setup (script's auto-source gate is a tuple "<config>|<repo-root>")
   local dummy="$STUB_DIR/dummy-config.json"
   touch "$dummy"
   export RALPH_CONFIG="$dummy"
-  export RALPH_CONFIG_LOADED="$(cd "$(dirname "$dummy")" && pwd)/$(basename "$dummy")"
+  local _repo_root
+  _repo_root="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
+  export RALPH_CONFIG_LOADED="$(cd "$(dirname "$dummy")" && pwd)/$(basename "$dummy")|$_repo_root"
 
   cp "$BUILD_QUEUE_SH" "$STUB_DIR/build_queue.sh"
   cp "$TOPOSORT_SH" "$STUB_DIR/toposort.sh"

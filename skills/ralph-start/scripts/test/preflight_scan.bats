@@ -14,17 +14,19 @@ setup() {
   export STUB_DIR
 
   # env vars that config.sh would export
-  export RALPH_PROJECT="Agent Config"
+  export RALPH_PROJECTS="Agent Config"
   export RALPH_APPROVED_STATE="Approved"
   export RALPH_FAILED_LABEL="ralph-failed"
   export RALPH_REVIEW_STATE="In Review"
   export RALPH_DONE_STATE="Done"
-  # Touch a dummy config and set the marker to the resolved path so the
+  # Touch a dummy config and set the marker to the resolved tuple so the
   # entry script's auto-source gate skips loading.
   local dummy="$STUB_DIR/dummy-config.json"
   touch "$dummy"
   export RALPH_CONFIG="$dummy"
-  export RALPH_CONFIG_LOADED="$(cd "$(dirname "$dummy")" && pwd)/$(basename "$dummy")"
+  local _repo_root
+  _repo_root="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
+  export RALPH_CONFIG_LOADED="$(cd "$(dirname "$dummy")" && pwd)/$(basename "$dummy")|$_repo_root"
 
   # Default stub values — override per test
   export STUB_APPROVED_IDS=""       # newline-separated issue IDs

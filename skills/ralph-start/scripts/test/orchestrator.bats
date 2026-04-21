@@ -23,7 +23,7 @@ setup() {
   git -C "$REPO_DIR" commit --allow-empty -m "init" -q
 
   # Env vars config.sh would export
-  export RALPH_PROJECT="Test Project"
+  export RALPH_PROJECTS="Test Project"
   export RALPH_APPROVED_STATE="Approved"
   export RALPH_IN_PROGRESS_STATE="In Progress"
   export RALPH_REVIEW_STATE="In Review"
@@ -33,12 +33,12 @@ setup() {
   export RALPH_MODEL="opus"
   export RALPH_STDOUT_LOG="ralph-output.log"
   # Touch a dummy config and point RALPH_CONFIG at it. The marker carries the
-  # resolved config path so we use the same canonicalization (cd && pwd) the
-  # entry script uses, otherwise the gate would re-source.
+  # tuple "<resolved-config>|<repo-root>" (ENG-205 scope gate); the
+  # orchestrator is invoked with cwd=REPO_DIR so repo-root resolves to that.
   local dummy="$STUB_DIR/dummy-config.json"
   touch "$dummy"
   export RALPH_CONFIG="$dummy"
-  export RALPH_CONFIG_LOADED="$(cd "$(dirname "$dummy")" && pwd)/$(basename "$dummy")"
+  export RALPH_CONFIG_LOADED="$(cd "$(dirname "$dummy")" && pwd)/$(basename "$dummy")|$REPO_DIR"
 
   # Claude invocation capture + state-transition trace
   export STUB_CLAUDE_ARGS_FILE="$STUB_DIR/claude_args"

@@ -3,7 +3,7 @@
 # This file is sourced (not executed); do NOT call `set` at the top level or `exit`.
 #
 # Callers must source lib/config.sh first to export:
-#   RALPH_PROJECT, RALPH_APPROVED_STATE, RALPH_FAILED_LABEL
+#   RALPH_PROJECTS (newline-joined), RALPH_APPROVED_STATE, RALPH_FAILED_LABEL
 #
 # Functions:
 #   linear_list_approved_issues     — list Approved issue IDs (one per line)
@@ -14,25 +14,34 @@
 #   linear_add_label                — add a label additively (preserves existing labels)
 #   linear_comment                  — post a comment on an issue
 
-# List issue IDs in the configured project with state name matching
-# $RALPH_APPROVED_STATE, excluding any issues labeled $RALPH_FAILED_LABEL.
-# Outputs one issue ID per line.
+# List issue IDs across the configured projects ($RALPH_PROJECTS, newline-
+# joined) with state name matching $RALPH_APPROVED_STATE, excluding issues
+# labeled $RALPH_FAILED_LABEL. Outputs one issue ID per line.
+#
+# Makes one `linear issue query` call per project and concatenates results.
+# Preserved over a single GraphQL query with a project-list filter because
+# the CLI already handles workspace + pagination semantics; duplicating that
+# in raw GraphQL adds drift risk for a modest round-trip saving (projects
+# per repo are few — typically 1-3).
 linear_list_approved_issues() {
-  local raw
-  raw="$(linear issue query --project "$RALPH_PROJECT" --all-teams --limit 0 --json)" || {
-    printf 'linear_list_approved_issues: failed to query issues\n' >&2
-    return 1
-  }
+  local project raw
+  while IFS= read -r project; do
+    [[ -z "$project" ]] && continue
+    raw="$(linear issue query --project "$project" --all-teams --limit 0 --json)" || {
+      printf 'linear_list_approved_issues: failed to query project %q\n' "$project" >&2
+      return 1
+    }
 
-  printf '%s' "$raw" | jq -r \
-    --arg state "$RALPH_APPROVED_STATE" \
-    --arg failed_label "$RALPH_FAILED_LABEL" \
-    '.nodes[]
-     | select(.state.name == $state)
-     | select(
-         (.labels.nodes | map(.name) | index($failed_label)) == null
-       )
-     | .identifier'
+    printf '%s' "$raw" | jq -r \
+      --arg state "$RALPH_APPROVED_STATE" \
+      --arg failed_label "$RALPH_FAILED_LABEL" \
+      '.nodes[]
+       | select(.state.name == $state)
+       | select(
+           (.labels.nodes | map(.name) | index($failed_label)) == null
+         )
+       | .identifier'
+  done <<< "$RALPH_PROJECTS"
 }
 
 # Expand an initiative name to the list of its member project names.

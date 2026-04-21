@@ -32,8 +32,11 @@ STUB
   # Prepend stub dir to PATH so our stub takes priority
   export PATH="$STUB_DIR:$PATH"
 
-  # Set required env vars (as config.sh would export them)
-  export RALPH_PROJECT="Agent Config"
+  # Set required env vars (as config.sh would export them).
+  # RALPH_PROJECTS is newline-joined; most tests use a single project (same
+  # as before the multi-project change), but the multi-project tests below
+  # override this.
+  export RALPH_PROJECTS="Agent Config"
   export RALPH_APPROVED_STATE="Approved"
   export RALPH_FAILED_LABEL="ralph-failed"
 }
@@ -98,6 +101,70 @@ call_fn() {
 
   [ "$status" -eq 0 ]
   [ -z "$output" ]
+}
+
+@test "linear_list_approved_issues queries each project in RALPH_PROJECTS" {
+  # Smart stub: emits different IDs depending on --project value so we can
+  # verify the union spans both projects.
+  cat > "$STUB_DIR/linear" <<'STUB'
+#!/usr/bin/env bash
+printf '%q ' "$@" >> "$STUB_ARGS_FILE"
+printf '\n' >> "$STUB_ARGS_FILE"
+project=""
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == "--project" ]]; then project="$2"; shift 2; else shift; fi
+done
+case "$project" in
+  "Agent Config") printf '%s' '{"nodes":[{"identifier":"ENG-100","state":{"name":"Approved"},"labels":{"nodes":[]}}]}' ;;
+  "Machine Config") printf '%s' '{"nodes":[{"identifier":"ENG-200","state":{"name":"Approved"},"labels":{"nodes":[]}}]}' ;;
+  *) printf '%s' '{"nodes":[]}' ;;
+esac
+STUB
+  chmod +x "$STUB_DIR/linear"
+
+  export RALPH_PROJECTS=$'Agent Config\nMachine Config'
+
+  run call_fn linear_list_approved_issues
+
+  [ "$status" -eq 0 ]
+  if [[ "$output" != *"ENG-100"* ]]; then
+    echo "missing ENG-100 from Agent Config, got: $output" >&2
+    return 1
+  fi
+  if [[ "$output" != *"ENG-200"* ]]; then
+    echo "missing ENG-200 from Machine Config, got: $output" >&2
+    return 1
+  fi
+  # Verify one call per project — two linear invocations total
+  local call_count; call_count="$(grep -c "^issue query" "$STUB_ARGS_FILE")"
+  [ "$call_count" -eq 2 ]
+}
+
+@test "linear_list_approved_issues fails if any project query fails" {
+  cat > "$STUB_DIR/linear" <<'STUB'
+#!/usr/bin/env bash
+printf '%q ' "$@" >> "$STUB_ARGS_FILE"
+printf '\n' >> "$STUB_ARGS_FILE"
+project=""
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == "--project" ]]; then project="$2"; shift 2; else shift; fi
+done
+if [[ "$project" == "Bad" ]]; then
+  exit 1
+fi
+printf '%s' '{"nodes":[]}'
+STUB
+  chmod +x "$STUB_DIR/linear"
+
+  export RALPH_PROJECTS=$'Agent Config\nBad'
+
+  run call_fn linear_list_approved_issues
+
+  [ "$status" -ne 0 ]
+  if [[ "$output" != *"Bad"* ]]; then
+    echo "expected failing project name 'Bad' in error, got: $output" >&2
+    return 1
+  fi
 }
 
 # ---------------------------------------------------------------------------
