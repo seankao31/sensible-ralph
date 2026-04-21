@@ -78,14 +78,16 @@ _config_load_workflow() {
   done
 }
 
-# Resolve the true repo root (main checkout path) regardless of cwd.
-# Uses --git-common-dir so worktrees resolve to the main checkout — see
-# lib/worktree.sh::_resolve_repo_root for the full rationale; this is an
-# inline duplicate because config.sh must work before worktree.sh is sourced.
+# Resolve the working tree root for .ralph.json discovery.
+#
+# Uses --show-toplevel (not --git-common-dir) so each worktree reads its OWN
+# committed .ralph.json. A branch that changes scope is edited in a worktree;
+# if this resolved to the main checkout, the worktree would read main's stale
+# scope and ignore the edit. This differs from lib/worktree.sh::_resolve_repo_root,
+# which uses --git-common-dir because progress.json and the .worktrees/ dir
+# are intentionally shared across worktrees.
 _config_resolve_repo_root() {
-  local common_git
-  common_git="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 1
-  dirname "$common_git"
+  git rev-parse --show-toplevel 2>/dev/null || return 1
 }
 
 # Load <repo>/.ralph.json, validate, export RALPH_PROJECTS (newline-joined).
@@ -167,13 +169,14 @@ _config_load() {
 
   _config_load_scope "$repo_root" || return 1
 
-  # Tuple marker: entry-point scripts re-source when either the global config
-  # path OR the repo root differs (a stale marker from another repo's session
-  # must not suppress loading this repo's config). See orchestrator.sh for the
-  # auto-source gate.
-  local resolved_config
+  # Tuple marker: entry-point scripts re-source when any of the three differ.
+  # The .ralph.json content hash catches in-place edits (or branch switches
+  # in the same worktree that change scope) — without it, the gate would
+  # trust the loaded RALPH_PROJECTS across a scope change with no signal.
+  local resolved_config scope_hash
   resolved_config="$(cd "$(dirname "$config_file")" && pwd)/$(basename "$config_file")"
-  export RALPH_CONFIG_LOADED="${resolved_config}|${repo_root}"
+  scope_hash="$(shasum -a 1 < "$repo_root/.ralph.json" | awk '{print $1}')"
+  export RALPH_CONFIG_LOADED="${resolved_config}|${repo_root}|${scope_hash}"
 }
 
 _config_load "$1"

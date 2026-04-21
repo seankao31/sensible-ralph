@@ -22,7 +22,7 @@ The orchestrator scripts have `#!/usr/bin/env bash` shebangs and source `lib/con
 
 ## Scope resolution
 
-Which Linear projects this run drains is declared in `<repo-root>/.ralph.json` (auto-discovered via `git rev-parse --git-common-dir`, so it resolves the same from the main checkout or any linked worktree). Two shapes, either resolves to a project list at load time:
+Which Linear projects this run drains is declared in `<repo-root>/.ralph.json` (auto-discovered via `git rev-parse --show-toplevel`, so each worktree reads its own committed version). Two shapes, either resolves to a project list at load time:
 
 ```jsonc
 // Explicit — one or more projects

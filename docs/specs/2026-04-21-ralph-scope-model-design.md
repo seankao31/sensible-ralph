@@ -69,18 +69,20 @@ Two files:
 
 - Scope is a repo fact; workflow is a workspace fact. Splitting matches reality — "which issues should ralph drain here?" is local to the repo; "what does *Approved* mean in Linear?" is global to the ENG team.
 - `.ralph.json` committed at the repo root means the scope travels with the repo. Cloning chezmoi on a new machine — or cloning any repo that adopts ralph — works with no central-registry setup.
-- Auto-detection is trivial: `_resolve_repo_root` (existing, worktree-safe via `--git-common-dir`, per ENG-202) + read `<root>/.ralph.json`. No path-keyed central file.
+- Auto-detection is trivial: `git rev-parse --show-toplevel` + read `<root>/.ralph.json`. No path-keyed central file. (Using `--show-toplevel` instead of `--git-common-dir` so each worktree reads its own committed `.ralph.json` — a branch that edits scope must see its own change, not the main checkout's stale copy. This differs from `progress.json`, which intentionally uses `--git-common-dir` for cross-worktree sharing.)
 - Duplicating workflow fields across every repo (the alternative of a per-repo file that holds both scope and workflow) would create drift surface every time a convention changes — e.g. renaming the `ralph-failed` label would touch every repo's config.
 
 **File-name rationale:** `.ralph.json` matches the `.eslintrc.json` / `.prettierrc.json` dotfile-config convention; the file is set-once-per-repo so discoverability matters less than unobtrusiveness. Namespace collision with other `ralph`-named tools (Geoffrey Huntley's loop pattern has the same name but no on-disk artifacts) is a known minor risk; renaming can happen later if it bites.
 
 ### 3. Config loading extends the existing anti-bleed-through guard
 
-Today, `lib/config.sh` exports `RALPH_CONFIG_LOADED=<global-config-path>` to let entry-point scripts detect a stale prior-shell invocation and re-source. With scope now living in the repo, the guard extends to a tuple:
+Today, `lib/config.sh` exports `RALPH_CONFIG_LOADED=<global-config-path>` to let entry-point scripts detect a stale prior-shell invocation and re-source. With scope now living in the repo, the guard extends to a triple:
 
 ```
-RALPH_CONFIG_LOADED = "<global-config-abs-path>|<repo-root-abs-path>"
+RALPH_CONFIG_LOADED = "<global-config-abs-path>|<repo-root-abs-path>|<sha1-of-ralph.json>"
 ```
+
+The content hash catches in-place edits (and branch switches in the same worktree that change scope) — without it, the gate would match path-wise and skip re-loading across a scope change, leaving stale `RALPH_PROJECTS` in the shell.
 
 Loading order:
 

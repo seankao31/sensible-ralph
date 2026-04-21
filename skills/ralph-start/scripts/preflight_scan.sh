@@ -22,9 +22,12 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
   exit 1
 fi
 RESOLVED_CONFIG="$(cd "$(dirname "$CONFIG_FILE")" && pwd)/$(basename "$CONFIG_FILE")"
-RESOLVED_REPO_ROOT="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || RESOLVED_REPO_ROOT=""
-[[ -n "$RESOLVED_REPO_ROOT" ]] && RESOLVED_REPO_ROOT="$(dirname "$RESOLVED_REPO_ROOT")"
-EXPECTED_LOADED_TUPLE="${RESOLVED_CONFIG}|${RESOLVED_REPO_ROOT}"
+RESOLVED_REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || RESOLVED_REPO_ROOT=""
+RESOLVED_SCOPE_HASH=""
+if [[ -n "$RESOLVED_REPO_ROOT" && -f "$RESOLVED_REPO_ROOT/.ralph.json" ]]; then
+  RESOLVED_SCOPE_HASH="$(shasum -a 1 < "$RESOLVED_REPO_ROOT/.ralph.json" | awk '{print $1}')"
+fi
+EXPECTED_LOADED_TUPLE="${RESOLVED_CONFIG}|${RESOLVED_REPO_ROOT}|${RESOLVED_SCOPE_HASH}"
 if [[ "${RALPH_CONFIG_LOADED:-}" != "$EXPECTED_LOADED_TUPLE" ]]; then
   # shellcheck source=lib/config.sh
   source "$SCRIPT_DIR/lib/config.sh" "$CONFIG_FILE"

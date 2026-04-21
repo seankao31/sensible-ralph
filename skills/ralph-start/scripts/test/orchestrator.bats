@@ -38,7 +38,11 @@ setup() {
   local dummy="$STUB_DIR/dummy-config.json"
   touch "$dummy"
   export RALPH_CONFIG="$dummy"
-  export RALPH_CONFIG_LOADED="$(cd "$(dirname "$dummy")" && pwd)/$(basename "$dummy")|$REPO_DIR"
+  local _scope_hash=""
+  if [[ -f "$REPO_DIR/.ralph.json" ]]; then
+    _scope_hash="$(shasum -a 1 < "$REPO_DIR/.ralph.json" | awk '{print $1}')"
+  fi
+  export RALPH_CONFIG_LOADED="$(cd "$(dirname "$dummy")" && pwd)/$(basename "$dummy")|$REPO_DIR|$_scope_hash"
 
   # Claude invocation capture + state-transition trace
   export STUB_CLAUDE_ARGS_FILE="$STUB_DIR/claude_args"

@@ -53,9 +53,13 @@ STUBLINEAR
   local dummy="$STUB_DIR/dummy-config.json"
   touch "$dummy"
   export RALPH_CONFIG="$dummy"
-  local _repo_root
-  _repo_root="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
-  export RALPH_CONFIG_LOADED="$(cd "$(dirname "$dummy")" && pwd)/$(basename "$dummy")|$_repo_root"
+  local _repo_root _scope_hash
+  _repo_root="$(git rev-parse --show-toplevel)"
+  _scope_hash=""
+  if [[ -f "$_repo_root/.ralph.json" ]]; then
+    _scope_hash="$(shasum -a 1 < "$_repo_root/.ralph.json" | awk '{print $1}')"
+  fi
+  export RALPH_CONFIG_LOADED="$(cd "$(dirname "$dummy")" && pwd)/$(basename "$dummy")|$_repo_root|$_scope_hash"
 
   cp "$BUILD_QUEUE_SH" "$STUB_DIR/build_queue.sh"
   cp "$TOPOSORT_SH" "$STUB_DIR/toposort.sh"
