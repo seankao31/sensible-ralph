@@ -115,9 +115,11 @@ An issue is **strictly pickup-ready** when **all** of:
 
 1. State is `Approved`.
 2. No `ralph-failed` label.
-3. All `blocked-by` issues are in `Done` OR `In Review`. **Canceled blockers are *not* counted as resolved.**
+3. Every `blocked-by` issue is either (a) in `Done` or `In Review`, OR (b) in `Approved` AND a member of this run's queue. **Canceled blockers are *not* counted as resolved.**
 
 **Why exclude Canceled:** Cancellation is a judgment call — something was deemed not worth doing. An issue whose parent was canceled shouldn't silently proceed; the dependency relationship may no longer be meaningful. The user's intervention is warranted.
+
+**Why same-run Approved blockers count:** A depth-N chain of Approved issues should run end-to-end in a single overnight session — otherwise only the chain root makes progress per run, defeating v2's stated goal of keeping chains moving. Rule 3b evaluates blocker state *anticipating post-dispatch transitions*: toposort guarantees an Approved parent dispatches before its child, and the parent's session transitions it to `In Review` via `/prepare-for-review` before the child's dispatch begins. By the time `dag_base` actually runs for the child, the parent is effectively `In Review`. An Approved blocker that is NOT in the run's queue (ralph-failed-labeled, in another project, or otherwise filtered out) cannot clear this run and does NOT satisfy rule 3b.
 
 **Pre-flight sanity scan** — before entering the dispatch loop, `/run-queue` looks for anomalies and asks the user to clarify before proceeding. Anomalies include:
 
@@ -137,6 +139,8 @@ When dispatching issue `B` whose blockers are `{A1, A2, ...}`:
 | No blockers, or all blockers merged (`Done`) | `main` |
 | One blocker in `In Review`, rest `Done` | That blocker's branch |
 | Multiple blockers in `In Review` | **Integration merge** (see below) |
+
+The table reads blocker state *at B's dispatch time*, not queue-construction time. An Approved-blocker-in-queue (rule 3b of Decision 6) has already transitioned to `In Review` by the time B is dispatched — toposort guarantees parents go first, and the parent's session runs `/prepare-for-review` before exiting. So the three rows above cover every pickup-ready case; no separate Approved-blocker row is needed.
 
 **Multi-parent integration merge:**
 
