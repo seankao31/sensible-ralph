@@ -183,11 +183,12 @@ ENG-2"
 # ---------------------------------------------------------------------------
 @test "stuck blocker chain exits 1 with stuck in output" {
   export STUB_APPROVED_IDS="ENG-30"
-  # ENG-30's blocker is ENG-15, which is Approved
-  export STUB_BLOCKERS_ENG_30='[{"id":"ENG-15","state":"Approved","branch":"eng-15"}]'
+  # ENG-30's blocker is ENG-15, which is Approved and in-scope (Agent Config)
+  # but not in this run's queue — likely ralph-failed-labeled.
+  export STUB_BLOCKERS_ENG_30='[{"id":"ENG-15","state":"Approved","branch":"eng-15","project":"Agent Config"}]'
   # ENG-15's own blocker ENG-9 is in Todo — the orchestrator won't touch it,
   # so the chain genuinely cannot dispatch overnight.
-  export STUB_BLOCKERS_ENG_15='[{"id":"ENG-9","state":"Todo","branch":"eng-9"}]'
+  export STUB_BLOCKERS_ENG_15='[{"id":"ENG-9","state":"Todo","branch":"eng-9","project":"Agent Config"}]'
   export STUB_DESC_CHARS=300
 
   run_preflight
@@ -227,9 +228,10 @@ ENG-33"
 # ---------------------------------------------------------------------------
 @test "approved blocker not in this run's approved set is reported as stuck" {
   export STUB_APPROVED_IDS="ENG-38"
-  # ENG-38 is blocked by ENG-39 (Approved) — but ENG-39 is NOT in
-  # STUB_APPROVED_IDS (would be excluded by linear_list_approved_issues).
-  export STUB_BLOCKERS_ENG_38='[{"id":"ENG-39","state":"Approved","branch":"eng-39"}]'
+  # ENG-38 is blocked by ENG-39 (Approved) in Agent Config (in scope), but
+  # ENG-39 is NOT in STUB_APPROVED_IDS (excluded by linear_list_approved_issues
+  # — e.g. ralph-failed-labeled).
+  export STUB_BLOCKERS_ENG_38='[{"id":"ENG-39","state":"Approved","branch":"eng-39","project":"Agent Config"}]'
   # ENG-39 has no own blockers (so it would be "runnable" if it were eligible)
   export STUB_BLOCKERS_ENG_39='[]'
   export STUB_DESC_CHARS=300
@@ -241,15 +243,46 @@ ENG-33"
 }
 
 # ---------------------------------------------------------------------------
+# 5d-2. Approved blocker in a project NOT in RALPH_PROJECTS → out-of-scope
+# anomaly. Distinguished from "in-scope but not queueable" because the fix
+# is different — the operator adds the project to .ralph.json or resolves
+# the relationship.
+# ---------------------------------------------------------------------------
+@test "approved blocker in out-of-scope project is reported as out-of-scope" {
+  export STUB_APPROVED_IDS="ENG-55"
+  # ENG-55 is blocked by ENG-56 (Approved) in project "Other", which is NOT
+  # in RALPH_PROJECTS (which only has "Agent Config" per setup).
+  export STUB_BLOCKERS_ENG_55='[{"id":"ENG-56","state":"Approved","branch":"eng-56","project":"Other"}]'
+  export STUB_BLOCKERS_ENG_56='[]'
+  export STUB_DESC_CHARS=300
+
+  run_preflight
+
+  [ "$status" -eq 1 ]
+  if [[ "$output" != *"out-of-scope"* ]]; then
+    echo "expected 'out-of-scope' in output, got: $output" >&2
+    return 1
+  fi
+  if [[ "$output" != *"Other"* ]]; then
+    echo "expected project name 'Other' in output, got: $output" >&2
+    return 1
+  fi
+  if [[ "$output" != *".ralph.json"* ]]; then
+    echo "expected '.ralph.json' hint in output, got: $output" >&2
+    return 1
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # 5c. Cycle in the blocker graph reported as stuck (not infinite loop) —
 # recursive stuck-chain check must terminate even if blockers cycle.
 # ---------------------------------------------------------------------------
 @test "cycle in approved blocker chain is reported as stuck (no infinite loop)" {
   export STUB_APPROVED_IDS="ENG-35"
-  # ENG-35 ← ENG-36 ← ENG-37 ← ENG-36 (cycle)
-  export STUB_BLOCKERS_ENG_35='[{"id":"ENG-36","state":"Approved","branch":"eng-36"}]'
-  export STUB_BLOCKERS_ENG_36='[{"id":"ENG-37","state":"Approved","branch":"eng-37"}]'
-  export STUB_BLOCKERS_ENG_37='[{"id":"ENG-36","state":"Approved","branch":"eng-36"}]'
+  # ENG-35 ← ENG-36 ← ENG-37 ← ENG-36 (cycle). All in-scope (Agent Config).
+  export STUB_BLOCKERS_ENG_35='[{"id":"ENG-36","state":"Approved","branch":"eng-36","project":"Agent Config"}]'
+  export STUB_BLOCKERS_ENG_36='[{"id":"ENG-37","state":"Approved","branch":"eng-37","project":"Agent Config"}]'
+  export STUB_BLOCKERS_ENG_37='[{"id":"ENG-36","state":"Approved","branch":"eng-36","project":"Agent Config"}]'
   export STUB_DESC_CHARS=300
 
   run_preflight

@@ -151,15 +151,50 @@ ENG-3"
 #    toposort silently treats the missing blocker as "already done" and the
 #    child dispatches against main even though its parent can't clear.
 # ---------------------------------------------------------------------------
-@test "child whose approved blocker is not in this run's approved set is skipped" {
+@test "child whose approved in-scope blocker is not in queue is skipped" {
   # ENG-6 is the only issue in our project's Approved queue.
-  # ENG-99 is Approved but NOT listed (e.g. ralph-failed-labeled or in another project).
+  # ENG-99 is Approved in-scope (Agent Config) but NOT listed — ralph-failed-labeled.
   export STUB_APPROVED_IDS="ENG-6"
-  export STUB_BLOCKERS_ENG_6='[{"id":"ENG-99","state":"Approved","branch":"eng-99"}]'
+  export STUB_BLOCKERS_ENG_6='[{"id":"ENG-99","state":"Approved","branch":"eng-99","project":"Agent Config"}]'
 
   run bash "$STUB_DIR/build_queue.sh"
 
   [ "$status" -eq 0 ]
   ! [[ "$output" == *"ENG-6"* ]]
-  [[ "$output" == *"skipping ENG-6"* ]] || [[ "$output" == *"not in this run"* ]] || [[ "$output" == *"not pickup-ready"* ]]
+  if [[ "$output" != *"skipping ENG-6"* ]]; then
+    echo "expected 'skipping ENG-6' in output, got: $output" >&2
+    return 1
+  fi
+  if [[ "$output" != *"in scope"* ]]; then
+    echo "expected 'in scope' discriminator in output, got: $output" >&2
+    return 1
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# 6b. A child whose approved blocker is in a project OUTSIDE RALPH_PROJECTS
+#     is skipped with a distinct out-of-scope message pointing at .ralph.json.
+# ---------------------------------------------------------------------------
+@test "child whose approved blocker is out-of-scope is skipped with scope message" {
+  # ENG-6 is the only Agent Config issue in the queue. ENG-99 is Approved in
+  # "Machine Config" which is NOT in RALPH_PROJECTS here ("Agent Config").
+  export STUB_APPROVED_IDS="ENG-6"
+  export STUB_BLOCKERS_ENG_6='[{"id":"ENG-99","state":"Approved","branch":"eng-99","project":"Machine Config"}]'
+
+  run bash "$STUB_DIR/build_queue.sh"
+
+  [ "$status" -eq 0 ]
+  ! [[ "$output" == *"ENG-6"* ]]   # ENG-6 not emitted on stdout
+  if [[ "$output" != *"outside this run's scope"* ]]; then
+    echo "expected out-of-scope phrase in output, got: $output" >&2
+    return 1
+  fi
+  if [[ "$output" != *".ralph.json"* ]]; then
+    echo "expected '.ralph.json' hint in output, got: $output" >&2
+    return 1
+  fi
+  if [[ "$output" != *"Machine Config"* ]]; then
+    echo "expected project name 'Machine Config' in output, got: $output" >&2
+    return 1
+  fi
 }

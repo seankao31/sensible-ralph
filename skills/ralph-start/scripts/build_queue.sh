@@ -37,6 +37,18 @@ fi
 # shellcheck source=lib/linear.sh
 source "$SCRIPT_DIR/lib/linear.sh"
 
+# Check whether a project name (exact match, whole line) is in RALPH_PROJECTS.
+# Returns 0 if in scope, 1 otherwise. Pure bash — RALPH_PROJECTS values can
+# contain spaces ("Agent Config"), so space-delimited substring match is
+# unsafe.
+_project_in_scope() {
+  local needle="$1" line
+  while IFS= read -r line; do
+    [[ "$line" == "$needle" ]] && return 0
+  done <<< "$RALPH_PROJECTS"
+  return 1
+}
+
 approved_ids="$(linear_list_approved_issues)"
 [[ -z "$approved_ids" ]] && exit 0
 
@@ -74,7 +86,12 @@ while IFS= read -r issue_id; do
       if [[ "$approved_set" == *" $blocker_id "* ]]; then
         continue
       fi
-      printf 'build_queue: skipping %s — Approved blocker %s is not in this run (likely ralph-failed-labeled or outside the configured project)\n' "$issue_id" "$blocker_id" >&2
+      blocker_project="$(printf '%s' "$blockers_json" | jq -r ".[$i].project")"
+      if _project_in_scope "$blocker_project"; then
+        printf "build_queue: skipping %s — Approved blocker %s in project '%s' is in scope but not queueable here (likely ralph-failed-labeled)\n" "$issue_id" "$blocker_id" "$blocker_project" >&2
+      else
+        printf "build_queue: skipping %s — Approved blocker %s is in project '%s', outside this run's scope. Add the project to .ralph.json or resolve the blocker relationship.\n" "$issue_id" "$blocker_id" "$blocker_project" >&2
+      fi
       warning_emitted=1
       pickup_ready=0
       break

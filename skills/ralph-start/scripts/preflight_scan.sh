@@ -44,6 +44,17 @@ _blocker_is_resolved() {
   [[ "$state" == "$RALPH_REVIEW_STATE" || "$state" == "$RALPH_DONE_STATE" ]]
 }
 
+# Check whether a project name (exact match, whole line) is in RALPH_PROJECTS.
+# Returns 0 if in scope, 1 otherwise. Pure bash — RALPH_PROJECTS values can
+# contain spaces ("Agent Config"), so substring match is unsafe.
+_project_in_scope() {
+  local needle="$1" line
+  while IFS= read -r line; do
+    [[ "$line" == "$needle" ]] && return 0
+  done <<< "$RALPH_PROJECTS"
+  return 1
+}
+
 # Recursive check: returns 0 if every blocker reachable from $issue_id can
 # clear in this orchestrator run, 1 if any blocker is in a non-runnable state
 # (Todo, In Progress, etc.) or the chain contains a cycle.
@@ -172,7 +183,12 @@ while IFS= read -r issue_id; do
       continue
     fi
     if [[ "$_PREFLIGHT_APPROVED_SET" != *" $b_id "* ]]; then
-      anomalies+=("[WARN] $issue_id: stuck blocker chain — blocker $b_id is Approved but not in this run's queue (likely ralph-failed-labeled or outside the configured project)")
+      b_project="$(printf '%s' "$blockers_json" | jq -r ".[$i].project")"
+      if _project_in_scope "$b_project"; then
+        anomalies+=("[WARN] $issue_id: stuck blocker chain — blocker $b_id is Approved in project '$b_project' (in scope) but not in this run's queue (likely ralph-failed-labeled)")
+      else
+        anomalies+=("[WARN] $issue_id: out-of-scope blocker — blocker $b_id is in project '$b_project', outside this run's scope. Add the project to .ralph.json or resolve the blocker relationship.")
+      fi
       continue
     fi
     if ! _chain_runnable "$b_id" "$issue_id"; then
