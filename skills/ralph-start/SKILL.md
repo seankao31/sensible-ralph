@@ -59,7 +59,7 @@ Ask the user to confirm (accept / skip specific issues / abort). Do NOT proceed 
 "$SKILL_DIR/scripts/orchestrator.sh" ordered_queue.txt
 ```
 
-The orchestrator processes the queue sequentially, creates worktrees, invokes `claude -p`, classifies outcomes (using Linear state transition AS WELL AS exit code — exit 0 alone does not imply success), propagates failure taint downstream, and appends per-issue records to `progress.json` in the caller's cwd.
+The orchestrator processes the queue sequentially, creates worktrees, invokes `claude -p`, classifies outcomes (using Linear state transition AS WELL AS exit code — exit 0 alone does not imply success), propagates failure taint downstream, and appends per-issue records to `progress.json` at the repo root (resolved via `git --git-common-dir` so the path is stable whether `/ralph-start` is invoked from the main checkout or a linked worktree).
 
 The orchestrator runs foreground — the user should expect the session to block until the queue completes or all remaining issues are tainted. Each issue's `claude -p` output is tee'd to `<worktree>/<RALPH_STDOUT_LOG>` for later inspection.
 
