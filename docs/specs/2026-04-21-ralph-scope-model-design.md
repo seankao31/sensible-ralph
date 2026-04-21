@@ -108,7 +108,7 @@ Today one `linear issue query --project "$RALPH_PROJECT"` call. New: one call pe
 
 **Blocker resolution (`linear_get_issue_blockers`):**
 
-Already returns all blockers regardless of project membership (via GraphQL `inverseRelations`). No change.
+Already returns all blockers regardless of project membership (via GraphQL `inverseRelations`). No change to routing logic; ENG-215 must extend the `inverseRelations` fields to include `project { id name }` per blocker so the out-of-scope-blocker anomaly path can name the project in its error message.
 
 **Chain runnability (`preflight_scan.sh::_chain_runnable`, `build_queue.sh`):**
 
