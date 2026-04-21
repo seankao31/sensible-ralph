@@ -265,7 +265,7 @@ STUB
 
 @test "linear_get_issue_blockers returns JSON array of blockers" {
   STUB_OUTPUT='{"data":{"issue":{"inverseRelations":{"nodes":[
-    {"type":"blocks","issue":{"identifier":"ENG-15","branchName":"eng-15-blocker-title","state":{"name":"Done"}}}
+    {"type":"blocks","issue":{"identifier":"ENG-15","branchName":"eng-15-blocker-title","state":{"name":"Done"},"project":{"id":"p1","name":"Agent Config"}}}
   ]}}}}'
   export STUB_OUTPUT
 
@@ -275,6 +275,21 @@ STUB
   [[ "$output" == *'"id":"ENG-15"'* ]]
   [[ "$output" == *'"state":"Done"'* ]]
   [[ "$output" == *'"branch":"eng-15-blocker-title"'* ]]
+  [[ "$output" == *'"project":"Agent Config"'* ]]
+}
+
+@test "linear_get_issue_blockers returns empty string project when blocker has no project" {
+  # Linear issues can be projectless; the field coerces to "" so downstream
+  # string comparisons don't need to special-case JSON null.
+  STUB_OUTPUT='{"data":{"issue":{"inverseRelations":{"nodes":[
+    {"type":"blocks","issue":{"identifier":"ENG-66","branchName":"eng-66","state":{"name":"Done"},"project":null}}
+  ]}}}}'
+  export STUB_OUTPUT
+
+  run call_fn linear_get_issue_blockers ENG-67
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"project":""'* ]]
 }
 
 @test "linear_get_issue_blockers calls linear api with the issue id as variable" {

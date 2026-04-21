@@ -101,7 +101,8 @@ GRAPHQL
 }
 
 # Get blockers for an issue.
-# Outputs a JSON array: [{"id":"ENG-X","state":"Done","branch":"eng-x-slug"}, ...]
+# Outputs a JSON array:
+#   [{"id":"ENG-X","state":"Done","branch":"eng-x-slug","project":"Agent Config"}, ...]
 # Issues with no blocked-by relations output: [].
 #
 # Uses `linear api` to query the GraphQL endpoint directly. The CLI's
@@ -110,6 +111,10 @@ GRAPHQL
 # `inverseRelations` returns relations pointing AT this issue; we filter to
 # type=="blocks" client-side via jq, since the IssueRelationConnection has no
 # server-side filter parameter.
+#
+# The project field feeds the out-of-scope-blocker anomaly path (ENG-205):
+# preflight/build_queue compare the blocker's project against RALPH_PROJECTS
+# to distinguish "in-scope but not queueable" from "outside this run's scope".
 #
 # Pagination: requests first: 250 (well above realistic blocker counts) and
 # checks pageInfo.hasNextPage. If truncation occurred, returns non-zero with
@@ -132,6 +137,7 @@ query($issueId: String!) {
           identifier
           branchName
           state { name }
+          project { id name }
         }
       }
     }
@@ -147,10 +153,18 @@ GRAPHQL
     return 1
   fi
 
+  # project may be null on Linear issues that aren't assigned to any project;
+  # jq's // "" preserves the null→"" coercion so downstream string-equality
+  # checks don't have to handle JSON null specially.
   printf '%s' "$raw" | jq -c '
     [ .data.issue.inverseRelations.nodes[]
       | select(.type == "blocks")
-      | { id: .issue.identifier, state: .issue.state.name, branch: .issue.branchName }
+      | {
+          id: .issue.identifier,
+          state: .issue.state.name,
+          branch: .issue.branchName,
+          project: (.issue.project.name // "")
+        }
     ]
   '
 }
