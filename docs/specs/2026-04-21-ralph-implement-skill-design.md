@@ -86,11 +86,18 @@ The orchestrator still computes `issue_id`, `title`, `branch`, `path` the same w
 - **Modified:** `agent-config/skills/ralph-start/config.json`
 - **Modified:** `agent-config/skills/ralph-start/config.example.json`
 - **Modified:** `agent-config/skills/ralph-start/SKILL.md` (prereqs list)
-- **Modified:** `agent-config/skills/ralph-start/scripts/lib/config.sh`
-- **Modified:** `agent-config/skills/ralph-start/scripts/orchestrator.sh`
+- **Modified:** `agent-config/skills/ralph-start/scripts/lib/config.sh` (drop key + header comment)
+- **Modified:** `agent-config/skills/ralph-start/scripts/lib/worktree.sh` (comment at line 36 mentioning "agent's prompt template")
+- **Modified:** `agent-config/skills/ralph-start/scripts/orchestrator.sh` (dispatch line + header comment listing required env vars)
 - **Modified:** `agent-config/skills/ralph-start/scripts/test/config.bats`
 - **Modified:** `agent-config/skills/ralph-start/scripts/test/orchestrator.bats`
+- **Modified:** `agent-config/skills/prepare-for-review/SKILL.md` — two prose references at lines 14 and 21 mention "prompt template"; reword to "`ralph-implement` skill" / "invocation argument."
 - **Note added to:** `agent-config/docs/specs/2026-04-17-ralph-loop-v2-design.md` — Decision 2 is superseded; add a brief pointer at the top of that section referencing ENG-206 and this design. The ralph v2 doc is a frozen-in-time decision record and is not rewritten.
+
+Not touched (historical / unrelated):
+- `agent-config/docs/specs/2026-04-15-spec-queue-orchestrator-design.md` — superseded v1 spec.
+- `agent-config/docs/plans/2026-04-18-ralph-v2-rollout.md` — frozen rollout plan for ralph v2.
+- `agent-config/superpowers-overrides/subagent-driven-development/SKILL.md` — "Prompt Templates" section header is generic, unrelated to ralph.
 
 ## Out of scope
 
