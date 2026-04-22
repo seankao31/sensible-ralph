@@ -466,12 +466,12 @@ spec-queue/
 └── config.example.json
 ```
 
-## Contract summary (for ENG-177 / ENG-178 consumption)
+## Contract summary
 
 Upstream tools (brainstorming, plan-writing) must produce:
 
 1. **A Linear issue** in the configured project, in state `Approved`.
-2. **A PRD written into the issue description.** Format is not rigidly prescribed — any markdown that gives Opus 4.7 enough context to implement without further human input. ENG-177 and ENG-178 experiment with the recommended shape.
+2. **A PRD written into the issue description.** Format is not rigidly prescribed — any markdown that gives Opus 4.7 enough context to implement without further human input. ENG-178 (rescoped 2026-04-22 to cover the full three-phase workflow evaluation) experiments with the recommended shape across idea → PRD, PRD → plan, and plan → code stages. Design doc: `agent-config/docs/specs/2026-04-22-ralph-v2-workflow-evaluation-design.md`.
 3. **Explicit `blocked-by` relations** for any prerequisite issues. The orchestrator uses these for DAG ordering and base-branch selection. **v2 scope limit:** blocker relations are resolved only within the configured project. Cross-project `blocked-by` edges are returned by Linear but fail the "Approved blocker must be in this run's queue" membership check, so cross-project parents appear stuck in preflight. Multi-project dispatch is designed and implemented under ENG-205 (see `2026-04-21-ralph-scope-model-design.md`); once that work lands, the scope is a project list (or initiative shorthand) declared in per-repo `.ralph.json`, and blockers within any in-scope project resolve automatically. ENG-203 was canceled as subsumed.
 
 That's the entire input contract. Everything downstream (branch name, worktree path, session name) is derived by the orchestrator from the Linear issue.
@@ -497,7 +497,7 @@ That's the entire input contract. Everything downstream (branch name, worktree p
 5. **Post-commit hook for stale-parent detection** — fires on parent branch amendment during review; labels any In-Review children with `stale-parent`. Not ralph-loop scope.
 6. **Project-local `close-feature-branch` skill** (per active project; example in chezmoi as reference).
 
-ENG-177 and ENG-178 are already filed as upstream-tool experiments; they consume the contract defined here.
+ENG-177 (canceled 2026-04-22) and ENG-178 (rescoped 2026-04-22) covered the upstream-tool experiments. Both are consolidated into the rescoped ENG-178 — see `agent-config/docs/specs/2026-04-22-ralph-v2-workflow-evaluation-design.md`.
 
 ## Open questions (resolved during implementation)
 
