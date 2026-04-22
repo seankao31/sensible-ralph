@@ -13,3 +13,78 @@ Run it before stepping away from the desk — typically end-of-day or before a l
 ## What to expect in the morning
 
 Inspect `progress.json` at the repo root — it lists every issue the orchestrator touched in this run, keyed by `run_id` (ISO 8601 UTC). Each record has an `outcome` field. **`in_review`** means the session completed cleanly and `/prepare-for-review` transitioned the issue (review the worktree, then invoke `/close-feature-branch ENG-NNN` from a fresh session at the main-checkout root to merge — not from inside the worktree). **`failed`** and **`exit_clean_no_review`** mean the issue is labeled `ralph-failed` and downstream dependents were tainted with **`skipped`** outcomes — `cd` into the worktree, read `<worktree>/ralph-output.log` for the session's final output, then decide whether to retry (remove the `ralph-failed` label and re-queue), cancel the issue, or debug interactively. **`setup_failed`** means the orchestrator never got as far as dispatching `claude -p` (branch lookup, dag_base, worktree creation step, etc., recorded in `failed_step`); cleanup ran for state this invocation created. Two outcomes leave Linear untouched and descendants un-tainted because the orchestrator can't tell that anything actually went wrong: **`local_residue`** means the target worktree path or branch already existed at the start of dispatch (operator state — manual mkdir, in-flight branch, prior crashed run); the residue is preserved untouched at `residue_path` / `residue_branch`, clean it up by hand and re-queue. **`unknown_post_state`** means claude exited 0 but the post-dispatch Linear state fetch failed transiently; open the issue in Linear and check whether the session actually reached In Review (success) or stopped short (re-queue). Triage `ralph-failed` and `local_residue` issues before kicking off the next ralph run, otherwise the same blockers will keep tainting (or no-op-skipping) their dependents on every dispatch.
+
+## Autonomous mode overrides
+
+Behavioral overrides for autonomous-mode sessions (a `claude -p` session
+dispatched by `/ralph-start`). For interactive mode, the rules in
+`agent-config/CLAUDE.md` apply as written. Rules in CLAUDE.md marked
+`(autonomous: see playbook)` are mapped here.
+
+### The escape hatch
+
+When you would normally STOP and ask Sean, do this instead: **post a Linear
+comment to the issue you're implementing describing what's blocking, then
+exit clean (no PR, no In Review transition).** The orchestrator records this
+as `exit_clean_no_review` in `progress.json`; Sean triages on the next pass.
+
+### Enumerated exit triggers
+
+Exit clean (per above) when you hit any of these:
+
+- **Architectural deviation** — a fundamentally different approach than the
+  spec described, or a cross-cutting change (auth, schema, build config) when
+  the spec was about a feature.
+- **Scope deviation** — adding or removing functionality vs what the spec
+  specified.
+- **Throwing away or rewriting an existing implementation** beyond what the
+  spec directs.
+- **Backward compatibility** — any backcompat shim or rename-with-alias.
+- **Spec contradicts the code** — the spec describes a state of the world
+  that doesn't match what's there, in a way you can't reconcile.
+- **Stuck** — same operation tried 3 times without progress, or ≥30 minutes
+  of compute on the same subgoal without convergence.
+- **Setup gap** — repo isn't initialized, uncommitted changes present, or
+  any precondition the orchestrator should have established but didn't.
+
+### Default to exit on uncertainty
+
+When you can't classify a decision as routine vs architectural, treat as
+architectural and exit clean. Wasted overnight cycles are cheaper than
+wrong-direction overnight cycles.
+
+### Per-rule mapping
+
+Rules in CLAUDE.md flagged with `(autonomous: see playbook)`:
+
+**Exit clean** (per the escape hatch above):
+
+- *Our relationship*: "speak up when you don't know" / "STOP and ask for
+  clarification" / "STOP and ask for help" / "We discuss architectural
+  decisions together"
+- *Proactiveness*: "Only pause to ask for confirmation when [list]" — every
+  condition in the list becomes an exit-clean condition.
+- *Writing code*: "NEVER throw away or rewrite implementations" / "approval
+  before backward compatibility"
+- *Version Control*: "STOP and ask permission to initialize" / "STOP and
+  ask how to handle uncommitted changes"
+- *Testing*: "raise the issue with Sean [for failing test deletion]"
+
+**Comment and continue:**
+
+- *Testing*: "warn Sean about [mocked-behavior tests]" — leave a Linear
+  comment noting the finding; continue with the spec's work (unless the
+  spec is about those tests).
+
+**Don't do it in autonomous mode:**
+
+- *Linear authorization*: "confirm before deleting issues or comments" —
+  never delete issues or comments in autonomous mode.
+
+### Things that still apply
+
+Linear authorization (edit descriptions, comment, change state, manage
+labels, file new issues, set relations on the dispatched issue and judged-
+relevant issues) applies fully — the escape hatch leans on this. Codex
+usage (codex-rescue, codex-review-gate) applies fully — `/prepare-for-review`'s
+codex gate runs from the autonomous session.
