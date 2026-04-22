@@ -96,7 +96,7 @@ The orchestrator still computes `issue_id`, `title`, `branch`, `path` the same w
 
 Not touched (historical / unrelated):
 - `agent-config/docs/specs/2026-04-15-spec-queue-orchestrator-design.md` — superseded v1 spec.
-- `agent-config/docs/plans/2026-04-18-ralph-v2-rollout.md` — frozen rollout plan for ralph v2.
+- `agent-config/docs/plans/2026-04-18-ralph-v2-rollout.md` — frozen rollout plan for ralph v2 (deleted after all tickets completed).
 - `agent-config/superpowers-overrides/subagent-driven-development/SKILL.md` — "Prompt Templates" section header is generic, unrelated to ralph.
 
 ## Out of scope
