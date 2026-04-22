@@ -54,7 +54,7 @@ For the case where an initiative's project membership genuinely matches a single
 **Resolution rules:**
 
 - `projects` present → used directly.
-- `initiative` present → expanded via `linear api` GraphQL (the CLI's `linear issue query` has no `--initiative` filter) to the list of member projects. Fresh lookup each invocation; no caching (see Open Questions).
+- `initiative` present → expanded via `linear api` GraphQL (the CLI's `linear issue query` has no `--initiative` filter) to the list of member projects. Expansion runs each time `config.sh` is sourced — see Decision 3 for the caching semantics, and Open Questions for the known staleness window.
 - Both fields present → hard error. The author must pick one expression.
 - Neither field present, or resolution yields an empty project list → hard error.
 
@@ -92,6 +92,8 @@ Loading order:
 4. Update `RALPH_CONFIG_LOADED` with the triple `"<global>|<repo-root>|<sha1-of-ralph.json>"`.
 
 Entry-point scripts re-source when any component of the triple differs from their target. The sha1 component catches in-place scope edits (e.g., branch switches in the same worktree). This is the only mechanical change to the existing anti-bleed-through logic.
+
+**Caching profile for initiative scope:** each entry-point subprocess started from the user's shell sources `config.sh` fresh (the user's shell does not propagate `RALPH_CONFIG_LOADED` back from children), so `preflight_scan.sh`, `build_queue.sh`, every preview-phase `dag_base.sh`, and `orchestrator.sh` each trigger one `linear_list_initiative_projects` call. Within a single subprocess chain — `orchestrator.sh` and the `dag_base.sh` subprocesses it spawns per issue — `RALPH_CONFIG_LOADED` is inherited and the gate skips re-source, so the orchestrator's in-flight run uses the project list captured at its startup. The staleness implication: if Linear initiative membership changes mid-orchestration, the running orchestrator does not pick it up until the next `/ralph-start`. Accepted as a known limitation — see Open Questions.
 
 **Validation at load (all hard errors — no silent fallbacks):**
 
@@ -187,6 +189,6 @@ Nothing else in the v2 contract changes. The state machine, the pickup rule, the
 
 1. **Pre-validation of `projects` against Linear at load time.** Would catch unknown project names earlier but adds a round-trip to every invocation. Current plan: skip; the existing "query fails cleanly on unknown project" path is sufficient. Revisit if the early failure proves too cryptic in practice.
 
-2. **Initiative expansion caching.** Fresh lookup each invocation keeps semantics simple and avoids staleness. If latency becomes a real concern at scale (≥5 projects, slow Linear API windows), add an opt-in cache with a short TTL — not before.
+2. **Initiative expansion freshness inside an orchestrator run.** As described in Decision 3, the reload gate lets `orchestrator.sh` and its per-issue `dag_base.sh` subprocesses share the initiative expansion captured at orchestrator startup — a Linear membership change during the run is invisible until the next `/ralph-start`. Accepted for now: mid-orchestration membership changes are rare; forcing re-expansion on every inherited subprocess would roughly double the initiative API traffic (from `N+3` calls per session to `2N+3`) for a scenario nobody has observed. If this staleness ever bites, the cheap fix is to unset `RALPH_CONFIG_LOADED` in `config.sh` on the initiative path so every subprocess re-expands.
 
 3. **Alternate file format (TOML / YAML) for `.ralph.json`.** JSON matches the existing `config.json` and `jq` tooling, and scope is a tiny data shape. If the file grows hard-to-edit fields later, reconsider.
