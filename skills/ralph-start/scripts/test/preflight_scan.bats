@@ -506,3 +506,38 @@ ENG-Q"
   [[ "$output" != *"stale-parent"* ]]
   [[ "$output" != *"RALPH_STALE_PARENT_LABEL"* ]]
 }
+
+# ---------------------------------------------------------------------------
+# 17. RALPH_FAILED_LABEL is required — if config exports it as an empty string
+#     (failed_label: "" in config.json), preflight must fail loud rather than
+#     silently skipping the check and returning 0. Regression for the adversarial
+#     review finding: the skip-when-empty guard is for optional labels only.
+# ---------------------------------------------------------------------------
+@test "empty RALPH_FAILED_LABEL is rejected as misconfigured, not silently skipped" {
+  export RALPH_FAILED_LABEL=""
+  export STUB_APPROVED_IDS=""
+
+  run_preflight
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"RALPH_FAILED_LABEL"* ]]
+  [[ "$output" == *"empty"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# 18. RALPH_FAILED_LABEL="0" must be treated as a real (non-empty) label name
+#     and checked against Linear, not silently skipped. Guard against the
+#     falsy-string edge case that the -z test does not have but is worth being
+#     explicit about.
+# ---------------------------------------------------------------------------
+@test "RALPH_FAILED_LABEL of '0' is treated as a real label name, not skipped" {
+  export RALPH_FAILED_LABEL="0"
+  export STUB_LABEL_EXISTS_0=0   # label "0" exists
+  export STUB_APPROVED_IDS=""
+
+  run_preflight
+
+  # Should pass (label exists) — key assertion: it was checked, not skipped
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"all clear"* ]]
+}

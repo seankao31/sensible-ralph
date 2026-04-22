@@ -14,35 +14,63 @@
 #   preflight_labels_check — verify each configured label name exists in Linear.
 #
 # Return:
-#   0 — every configured label exists (or the config key is unset/empty).
-#   1 — one or more labels are missing, or a query error occurred. Per-label
-#       diagnostics are printed to stderr before returning.
+#   0 — every required label exists and every present optional label exists.
+#   1 — a required label var is empty, one or more labels are missing, or a
+#       query error occurred. Per-label diagnostics printed to stderr.
 #
-# Design note: the list of label env vars is hardcoded rather than inferred
-# from a RALPH_*_LABEL naming convention. The convention would let any stray
-# RALPH_*_LABEL (e.g., a future non-label field named with that suffix)
-# accidentally become a label check; an explicit list keeps the set of
-# "things that must exist in Linear" auditable.
+# Design note: the lists are hardcoded rather than inferred from a RALPH_*_LABEL
+# naming convention. The convention would let any stray RALPH_*_LABEL (e.g., a
+# future non-label field named with that suffix) accidentally become a label
+# check; explicit lists keep the set of "things that must exist in Linear"
+# auditable.
 preflight_labels_check() {
-  # Configured-label env vars, in registration order. Add a new entry when a
-  # new workflow label is introduced in config.sh (e.g. $RALPH_NEW_LABEL).
-  # Values that are unset or empty are skipped — the label is not configured
-  # in this workspace's workflow, so its existence is not required here.
-  local -a label_vars=(
+  # Required label env vars — must be set AND non-empty. An empty value means
+  # config is misconfigured (failed_label: "" etc.). Fail immediately rather
+  # than silently skipping the check and returning 0 (the bug Codex caught:
+  # the skip-when-empty guard is for optional labels only).
+  local -a required_vars=(
     RALPH_FAILED_LABEL
+  )
+  # Optional label env vars — skip if unset or empty. These are wired by
+  # other tickets (RALPH_STALE_PARENT_LABEL by ENG-208); unset means the
+  # feature is not yet active in this workspace, not that it's misconfigured.
+  local -a optional_vars=(
     RALPH_STALE_PARENT_LABEL
   )
 
   local -a missing=()
   local query_failed=0
   local var name rc
-  for var in "${label_vars[@]}"; do
+
+  for var in "${required_vars[@]}"; do
     name="${!var:-}"
-    [[ -z "$name" ]] && continue
+    if [[ -z "$name" ]]; then
+      printf 'preflight: %s is empty or unset — set a non-empty label name in config.json before running.\n' \
+        "$var" >&2
+      return 1
+    fi
 
     # `|| rc=$?` both suppresses errexit and captures the rc. Avoids the
     # set +e/set -e dance, which leaks errexit state back to callers that
     # sourced us with errexit off.
+    rc=0
+    linear_label_exists "$name" || rc=$?
+
+    case "$rc" in
+      0) ;;
+      1) missing+=("$var=$name") ;;
+      *)
+        printf 'preflight: failed to query Linear for label %q (configured as %s) — aborting\n' \
+          "$name" "$var" >&2
+        query_failed=1
+        ;;
+    esac
+  done
+
+  for var in "${optional_vars[@]}"; do
+    name="${!var:-}"
+    [[ -z "$name" ]] && continue
+
     rc=0
     linear_label_exists "$name" || rc=$?
 
