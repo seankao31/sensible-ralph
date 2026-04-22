@@ -353,8 +353,8 @@ STUB
 
 @test "linear_get_issue_blocks filters out non-blocks relation types" {
   STUB_OUTPUT='{"data":{"issue":{"relations":{"nodes":[
-    {"type":"related","issue":{"identifier":"ENG-71","branchName":"eng-71","state":{"name":"Done"}}},
-    {"type":"duplicate","issue":{"identifier":"ENG-72","branchName":"eng-72","state":{"name":"Done"}}}
+    {"type":"related","relatedIssue":{"identifier":"ENG-71","branchName":"eng-71","state":{"name":"Done"}}},
+    {"type":"duplicate","relatedIssue":{"identifier":"ENG-72","branchName":"eng-72","state":{"name":"Done"}}}
   ]}}}}'
   export STUB_OUTPUT
 
@@ -365,8 +365,12 @@ STUB
 }
 
 @test "linear_get_issue_blocks returns JSON array of blocked issues" {
+  # relatedIssue (not issue) is the "other side" for outgoing relations —
+  # see lib/linear.sh docstring. A stub emitting .issue instead of
+  # .relatedIssue would make the real helper return the querying issue's
+  # identifier and let the schema bug slip through the test suite.
   STUB_OUTPUT='{"data":{"issue":{"relations":{"nodes":[
-    {"type":"blocks","issue":{"identifier":"ENG-74","branchName":"eng-74-child","state":{"name":"In Review"},"project":{"id":"p1","name":"Agent Config"}}}
+    {"type":"blocks","relatedIssue":{"identifier":"ENG-74","branchName":"eng-74-child","state":{"name":"In Review"},"project":{"id":"p1","name":"Agent Config"}}}
   ]}}}}'
   export STUB_OUTPUT
 
@@ -381,7 +385,7 @@ STUB
 
 @test "linear_get_issue_blocks returns empty string project when blocked issue has no project" {
   STUB_OUTPUT='{"data":{"issue":{"relations":{"nodes":[
-    {"type":"blocks","issue":{"identifier":"ENG-76","branchName":"eng-76","state":{"name":"In Review"},"project":null}}
+    {"type":"blocks","relatedIssue":{"identifier":"ENG-76","branchName":"eng-76","state":{"name":"In Review"},"project":null}}
   ]}}}}'
   export STUB_OUTPUT
 
@@ -403,7 +407,7 @@ STUB
 
 @test "linear_get_issue_blocks fails loud if Linear truncates the relation page" {
   STUB_OUTPUT='{"data":{"issue":{"relations":{"pageInfo":{"hasNextPage":true},"nodes":[
-    {"type":"blocks","issue":{"identifier":"ENG-80","branchName":"eng-80","state":{"name":"Done"}}}
+    {"type":"blocks","relatedIssue":{"identifier":"ENG-80","branchName":"eng-80","state":{"name":"Done"}}}
   ]}}}}'
   export STUB_OUTPUT
 
@@ -415,8 +419,8 @@ STUB
 
 @test "linear_get_issue_blocks returns multiple blocked issues in a single call" {
   STUB_OUTPUT='{"data":{"issue":{"relations":{"nodes":[
-    {"type":"blocks","issue":{"identifier":"ENG-81","branchName":"eng-81-a","state":{"name":"In Review"}}},
-    {"type":"blocks","issue":{"identifier":"ENG-82","branchName":"eng-82-b","state":{"name":"In Progress"}}}
+    {"type":"blocks","relatedIssue":{"identifier":"ENG-81","branchName":"eng-81-a","state":{"name":"In Review"}}},
+    {"type":"blocks","relatedIssue":{"identifier":"ENG-82","branchName":"eng-82-b","state":{"name":"In Progress"}}}
   ]}}}}'
   export STUB_OUTPUT
 

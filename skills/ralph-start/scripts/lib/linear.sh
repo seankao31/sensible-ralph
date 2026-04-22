@@ -182,8 +182,14 @@ GRAPHQL
 # parent's review amendments landed.
 #
 # Symmetric with linear_get_issue_blockers — same GraphQL plumbing, same
-# 250-cap fail-loud-on-truncation policy. The only differences are:
+# 250-cap fail-loud-on-truncation policy. The key differences are:
 #   - uses `issue.relations` (outgoing) rather than `inverseRelations`.
+#   - reads `relatedIssue` for the "other side." In Linear's schema,
+#     IssueRelation.issue is the source (this query's anchor issue) and
+#     IssueRelation.relatedIssue is the target. For inverseRelations, the
+#     source IS the other side (the blocker pointing at me), so blockers
+#     read .issue; for outgoing relations the direction flips, so blocks
+#     must read .relatedIssue to get the child being blocked.
 #   - client-side filter is still `.type == "blocks"`.
 linear_get_issue_blocks() {
   local issue_id="$1"
@@ -195,7 +201,7 @@ query($issueId: String!) {
       pageInfo { hasNextPage }
       nodes {
         type
-        issue {
+        relatedIssue {
           identifier
           branchName
           state { name }
@@ -219,10 +225,10 @@ GRAPHQL
     [ .data.issue.relations.nodes[]
       | select(.type == "blocks")
       | {
-          id: .issue.identifier,
-          state: .issue.state.name,
-          branch: .issue.branchName,
-          project: (.issue.project.name // "")
+          id: .relatedIssue.identifier,
+          state: .relatedIssue.state.name,
+          branch: .relatedIssue.branchName,
+          project: (.relatedIssue.project.name // "")
         }
     ]
   '
