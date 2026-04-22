@@ -121,14 +121,15 @@ _chain_runnable() {
 }
 
 # Fetch the non-whitespace character count for an issue's description.
-# Calls: linear issue view <id> --json --no-comments
+# Whitespace stripping + length happen in a single jq pass rather than in
+# bash: ${var//[[:space:]]/} on bash 3.2 (macOS default) is O(n²)-ish on
+# multi-KB strings — a real 17 KB Linear description stalls for ~4 minutes
+# per call, which multiplies across every Approved issue in preflight.
+# Calls: linear issue view <id> --json --no-comments.
 _desc_nonws_chars() {
   local issue_id="$1"
-  local view_json desc stripped
-  view_json="$(linear issue view "$issue_id" --json --no-comments)"
-  desc="$(printf '%s' "$view_json" | jq -r '.description // ""')"
-  stripped="${desc//[[:space:]]/}"
-  printf '%d' "${#stripped}"
+  linear issue view "$issue_id" --json --no-comments \
+    | jq -r '(.description // "") | gsub("\\s"; "") | length'
 }
 
 # ---------------------------------------------------------------------------

@@ -70,14 +70,17 @@ linear_label_exists() {
 }
 LINEARSH
 
-  # Write a stub `linear` binary for description fetching
+  # Write a stub `linear` binary for description fetching.
   # preflight_scan.sh calls: linear issue view <id> --json --no-comments
-  # The stub returns JSON whose .description field has STUB_DESC_<ISSUEID>
-  # non-whitespace characters (we embed the actual chars).
+  # The stub returns JSON whose .description field has:
+  #   - STUB_DESC_<ISSUEID> (fallback STUB_DESC_CHARS, default 300)
+  #     non-whitespace 'x' characters;
+  #   - STUB_DESC_WHITESPACE_CHARS_<ISSUEID> (fallback
+  #     STUB_DESC_WHITESPACE_CHARS, default 0) trailing space characters —
+  #     exercised by the pattern-sub-perf regression test.
   cat > "$STUB_DIR/linear" <<'STUBLINEAR'
 #!/usr/bin/env bash
-# Stub for `linear issue view <id> --json --no-comments`
-# Returns JSON with a description padded to STUB_DESC_<ISSUEID> non-ws chars.
+# Stub for `linear issue view <id> --json --no-comments`.
 issue_id=""
 for arg in "$@"; do
   if [[ "$arg" == ENG-* ]]; then
@@ -86,13 +89,15 @@ for arg in "$@"; do
   fi
 done
 
-var_name="STUB_DESC_$(printf '%s' "$issue_id" | tr '-' '_')"
-# Fall back to STUB_DESC_CHARS if per-issue override not set
-char_count="${!var_name:-${STUB_DESC_CHARS:-300}}"
+chars_var="STUB_DESC_$(printf '%s' "$issue_id" | tr '-' '_')"
+char_count="${!chars_var:-${STUB_DESC_CHARS:-300}}"
 
-# Build a description with exactly $char_count non-whitespace chars
-desc="$(printf 'x%.0s' $(seq 1 "$char_count"))"
-printf '{"description": "%s"}' "$desc"
+ws_var="STUB_DESC_WHITESPACE_CHARS_$(printf '%s' "$issue_id" | tr '-' '_')"
+ws_count="${!ws_var:-${STUB_DESC_WHITESPACE_CHARS:-0}}"
+
+desc_x="$(head -c "$char_count" /dev/zero | tr '\0' 'x')"
+desc_ws="$(head -c "$ws_count" /dev/zero | tr '\0' ' ')"
+printf '{"description": "%s%s"}' "$desc_x" "$desc_ws"
 STUBLINEAR
   chmod +x "$STUB_DIR/linear"
   export PATH="$STUB_DIR:$PATH"
@@ -538,6 +543,29 @@ ENG-Q"
   run_preflight
 
   # Should pass (label exists) — key assertion: it was checked, not skipped
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"all clear"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# 19. Performance regression: whitespace-stripping in _desc_nonws_chars must
+#     not stall on long Linear descriptions. Bash 3.2's ${var//[[:space:]]/}
+#     is O(n²)-ish and stalls for minutes on multi-KB strings (confirmed ~250s
+#     on a 17 KB real Linear description). The fix strips whitespace and
+#     counts length in a single jq pass. A `timeout` cap catches any return
+#     to the bash pattern-sub approach.
+# ---------------------------------------------------------------------------
+@test "long whitespace-heavy description does not stall per-issue scan" {
+  if ! command -v timeout >/dev/null 2>&1; then
+    skip "timeout(1) not available — install coreutils to run this regression test"
+  fi
+  export STUB_APPROVED_IDS="ENG-99"
+  export STUB_BLOCKERS_ENG_99="[]"
+  export STUB_DESC_CHARS=300
+  export STUB_DESC_WHITESPACE_CHARS_ENG_99=10000
+
+  run timeout 15 bash "$STUB_DIR/preflight_scan.sh"
+
   [ "$status" -eq 0 ]
   [[ "$output" == *"all clear"* ]]
 }
