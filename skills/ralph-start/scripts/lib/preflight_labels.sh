@@ -30,13 +30,12 @@ preflight_labels_check() {
   # the skip-when-empty guard is for optional labels only).
   local -a required_vars=(
     RALPH_FAILED_LABEL
-  )
-  # Optional label env vars — skip if unset or empty. These are wired by
-  # other tickets (RALPH_STALE_PARENT_LABEL by ENG-208); unset means the
-  # feature is not yet active in this workspace, not that it's misconfigured.
-  local -a optional_vars=(
     RALPH_STALE_PARENT_LABEL
   )
+  # Optional label env vars — skip if unset or empty. None today; kept as a
+  # named list for future additions that may be feature-flagged (applied only
+  # when a workspace opts in by setting the corresponding config key).
+  local -a optional_vars=()
 
   local -a missing=()
   local query_failed=0
@@ -67,7 +66,9 @@ preflight_labels_check() {
     esac
   done
 
-  for var in "${optional_vars[@]}"; do
+  # `${arr[@]+"${arr[@]}"}` expands to nothing when the array is empty,
+  # sidestepping bash 3.2's unbound-variable fault under `set -u`.
+  for var in ${optional_vars[@]+"${optional_vars[@]}"}; do
     name="${!var:-}"
     [[ -z "$name" ]] && continue
 

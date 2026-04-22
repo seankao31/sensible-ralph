@@ -336,6 +336,101 @@ STUB
 }
 
 # ---------------------------------------------------------------------------
+# 2b. linear_get_issue_blocks — mirror of linear_get_issue_blockers but for
+#     OUTGOING `blocks` relations (issue.relations, not inverseRelations).
+#     Same output shape so callers can consume either helper with the same jq
+#     pipelines. ENG-208's stale-parent check is the motivating consumer.
+# ---------------------------------------------------------------------------
+@test "linear_get_issue_blocks returns empty array when no outgoing block relations" {
+  STUB_OUTPUT='{"data":{"issue":{"relations":{"nodes":[]}}}}'
+  export STUB_OUTPUT
+
+  run call_fn linear_get_issue_blocks ENG-70
+
+  [ "$status" -eq 0 ]
+  [ "$output" = "[]" ]
+}
+
+@test "linear_get_issue_blocks filters out non-blocks relation types" {
+  STUB_OUTPUT='{"data":{"issue":{"relations":{"nodes":[
+    {"type":"related","issue":{"identifier":"ENG-71","branchName":"eng-71","state":{"name":"Done"}}},
+    {"type":"duplicate","issue":{"identifier":"ENG-72","branchName":"eng-72","state":{"name":"Done"}}}
+  ]}}}}'
+  export STUB_OUTPUT
+
+  run call_fn linear_get_issue_blocks ENG-73
+
+  [ "$status" -eq 0 ]
+  [ "$output" = "[]" ]
+}
+
+@test "linear_get_issue_blocks returns JSON array of blocked issues" {
+  STUB_OUTPUT='{"data":{"issue":{"relations":{"nodes":[
+    {"type":"blocks","issue":{"identifier":"ENG-74","branchName":"eng-74-child","state":{"name":"In Review"},"project":{"id":"p1","name":"Agent Config"}}}
+  ]}}}}'
+  export STUB_OUTPUT
+
+  run call_fn linear_get_issue_blocks ENG-75
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"id":"ENG-74"'* ]]
+  [[ "$output" == *'"state":"In Review"'* ]]
+  [[ "$output" == *'"branch":"eng-74-child"'* ]]
+  [[ "$output" == *'"project":"Agent Config"'* ]]
+}
+
+@test "linear_get_issue_blocks returns empty string project when blocked issue has no project" {
+  STUB_OUTPUT='{"data":{"issue":{"relations":{"nodes":[
+    {"type":"blocks","issue":{"identifier":"ENG-76","branchName":"eng-76","state":{"name":"In Review"},"project":null}}
+  ]}}}}'
+  export STUB_OUTPUT
+
+  run call_fn linear_get_issue_blocks ENG-77
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"project":""'* ]]
+}
+
+@test "linear_get_issue_blocks calls linear api with the issue id as variable" {
+  STUB_OUTPUT='{"data":{"issue":{"relations":{"nodes":[]}}}}'
+  export STUB_OUTPUT
+
+  call_fn linear_get_issue_blocks ENG-78
+
+  grep -q "^api " "$STUB_ARGS_FILE"
+  grep -qF "issueId=ENG-78" "$STUB_ARGS_FILE"
+}
+
+@test "linear_get_issue_blocks fails loud if Linear truncates the relation page" {
+  STUB_OUTPUT='{"data":{"issue":{"relations":{"pageInfo":{"hasNextPage":true},"nodes":[
+    {"type":"blocks","issue":{"identifier":"ENG-80","branchName":"eng-80","state":{"name":"Done"}}}
+  ]}}}}'
+  export STUB_OUTPUT
+
+  run call_fn linear_get_issue_blocks ENG-79
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"truncation"* ]] || [[ "$output" == *"more than 250"* ]]
+}
+
+@test "linear_get_issue_blocks returns multiple blocked issues in a single call" {
+  STUB_OUTPUT='{"data":{"issue":{"relations":{"nodes":[
+    {"type":"blocks","issue":{"identifier":"ENG-81","branchName":"eng-81-a","state":{"name":"In Review"}}},
+    {"type":"blocks","issue":{"identifier":"ENG-82","branchName":"eng-82-b","state":{"name":"In Progress"}}}
+  ]}}}}'
+  export STUB_OUTPUT
+
+  run call_fn linear_get_issue_blocks ENG-83
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"id":"ENG-81"'* ]]
+  [[ "$output" == *'"id":"ENG-82"'* ]]
+
+  local api_calls; api_calls="$(grep -c "^api " "$STUB_ARGS_FILE")"
+  [ "$api_calls" -eq 1 ]
+}
+
+# ---------------------------------------------------------------------------
 # 3. linear_get_issue_branch — calls issue view, returns branchName
 # ---------------------------------------------------------------------------
 @test "linear_get_issue_branch calls issue view with --json --no-comments" {

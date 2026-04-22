@@ -56,6 +56,7 @@ source_config() {
     "RALPH_REVIEW_STATE=In Review"
     "RALPH_DONE_STATE=Done"
     "RALPH_FAILED_LABEL=ralph-failed"
+    "RALPH_STALE_PARENT_LABEL=stale-parent"
     "RALPH_WORKTREE_BASE=.worktrees"
     "RALPH_MODEL=opus"
     "RALPH_STDOUT_LOG=ralph-output.log"
@@ -99,6 +100,7 @@ source_config() {
   "review_state": "In Review",
   "done_state": "Done",
   "failed_label": "ralph-failed",
+  "stale_parent_label": "stale-parent",
   "worktree_base": ".worktrees",
   "stdout_log_filename": "ralph-output.log"
 }

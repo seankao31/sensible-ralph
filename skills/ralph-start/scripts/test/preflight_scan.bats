@@ -17,6 +17,7 @@ setup() {
   export RALPH_PROJECTS="Agent Config"
   export RALPH_APPROVED_STATE="Approved"
   export RALPH_FAILED_LABEL="ralph-failed"
+  export RALPH_STALE_PARENT_LABEL="stale-parent"
   export RALPH_REVIEW_STATE="In Review"
   export RALPH_DONE_STATE="Done"
   # Touch a dummy config and set the marker to the resolved tuple so the
@@ -506,20 +507,20 @@ ENG-Q"
 }
 
 # ---------------------------------------------------------------------------
-# 16. $RALPH_STALE_PARENT_LABEL is UNSET (ENG-208 not yet landed on this
-#     deploy). The helper must skip that slot silently and NOT fail preflight
-#     — unset means "not configured for this workspace", not "missing prereq".
+# 16. $RALPH_STALE_PARENT_LABEL is required (ENG-208 made the config key
+#     required in config.sh's keys array). An empty or unset value now means
+#     misconfiguration — preflight must fail loud, matching the RALPH_FAILED_LABEL
+#     empty-guard behavior.
 # ---------------------------------------------------------------------------
-@test "unset stale_parent_label is skipped silently" {
-  unset RALPH_STALE_PARENT_LABEL
+@test "empty RALPH_STALE_PARENT_LABEL is rejected as misconfigured" {
+  export RALPH_STALE_PARENT_LABEL=""
   export STUB_APPROVED_IDS=""
 
   run_preflight
 
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"all clear"* ]]
-  [[ "$output" != *"stale-parent"* ]]
-  [[ "$output" != *"RALPH_STALE_PARENT_LABEL"* ]]
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"RALPH_STALE_PARENT_LABEL"* ]]
+  [[ "$output" == *"empty"* ]]
 }
 
 # ---------------------------------------------------------------------------

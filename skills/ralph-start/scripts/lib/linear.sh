@@ -8,7 +8,8 @@
 # Functions:
 #   linear_list_approved_issues     — list Approved issue IDs (one per line)
 #   linear_list_initiative_projects — expand an initiative name to its project names
-#   linear_get_issue_blockers       — get blockers as JSON array
+#   linear_get_issue_blockers       — get inverse (blocked-by) relations as JSON array
+#   linear_get_issue_blocks         — get outgoing (blocks) relations as JSON array
 #   linear_get_issue_branch         — get Linear-generated branch name for an issue
 #   linear_set_state                — move an issue to a named workflow state
 #   linear_add_label                — add a label additively (preserves existing labels)
@@ -159,6 +160,63 @@ GRAPHQL
   # checks don't have to handle JSON null specially.
   printf '%s' "$raw" | jq -c '
     [ .data.issue.inverseRelations.nodes[]
+      | select(.type == "blocks")
+      | {
+          id: .issue.identifier,
+          state: .issue.state.name,
+          branch: .issue.branchName,
+          project: (.issue.project.name // "")
+        }
+    ]
+  '
+}
+
+# Get outgoing `blocks` relations for an issue (issues this one blocks).
+# Output shape is identical to linear_get_issue_blockers so callers can
+# consume either helper with the same jq pipelines:
+#   [{"id":"ENG-X","state":"In Review","branch":"eng-x-slug","project":"Agent Config"}, ...]
+# Issues with no outgoing `blocks` relations output: [].
+#
+# Consumer: ENG-208's close-feature-branch Step 3.5 walks these at the parent's
+# close time to detect In-Review children that were dispatched before the
+# parent's review amendments landed.
+#
+# Symmetric with linear_get_issue_blockers — same GraphQL plumbing, same
+# 250-cap fail-loud-on-truncation policy. The only differences are:
+#   - uses `issue.relations` (outgoing) rather than `inverseRelations`.
+#   - client-side filter is still `.type == "blocks"`.
+linear_get_issue_blocks() {
+  local issue_id="$1"
+  local raw
+  raw="$(linear api --variable "issueId=$issue_id" <<'GRAPHQL'
+query($issueId: String!) {
+  issue(id: $issueId) {
+    relations(first: 250) {
+      pageInfo { hasNextPage }
+      nodes {
+        type
+        issue {
+          identifier
+          branchName
+          state { name }
+          project { id name }
+        }
+      }
+    }
+  }
+}
+GRAPHQL
+)" || { printf 'linear_get_issue_blocks: failed to query relations for %s\n' "$issue_id" >&2; return 1; }
+
+  local has_next_page
+  has_next_page="$(printf '%s' "$raw" | jq -r '.data.issue.relations.pageInfo.hasNextPage')"
+  if [[ "$has_next_page" == "true" ]]; then
+    printf 'linear_get_issue_blocks: %s has more than 250 outgoing relations — silent truncation refused. Investigate before re-running.\n' "$issue_id" >&2
+    return 1
+  fi
+
+  printf '%s' "$raw" | jq -c '
+    [ .data.issue.relations.nodes[]
       | select(.type == "blocks")
       | {
           id: .issue.identifier,

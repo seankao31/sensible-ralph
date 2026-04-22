@@ -4,6 +4,7 @@
   "review_state": "In Review",
   "done_state": "Done",
   "failed_label": "ralph-failed",
+  "stale_parent_label": "stale-parent",
   "worktree_base": ".worktrees",
   "model": "opus",
   "stdout_log_filename": "ralph-output.log"

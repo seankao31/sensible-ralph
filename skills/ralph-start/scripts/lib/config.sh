@@ -19,8 +19,8 @@
 #
 # Exports:
 #   RALPH_APPROVED_STATE, RALPH_IN_PROGRESS_STATE, RALPH_REVIEW_STATE,
-#   RALPH_DONE_STATE, RALPH_FAILED_LABEL, RALPH_WORKTREE_BASE, RALPH_MODEL,
-#   RALPH_STDOUT_LOG — from config.json
+#   RALPH_DONE_STATE, RALPH_FAILED_LABEL, RALPH_STALE_PARENT_LABEL,
+#   RALPH_WORKTREE_BASE, RALPH_MODEL, RALPH_STDOUT_LOG — from config.json
 #   RALPH_PROJECTS (newline-joined) — from <repo>/.ralph.json
 #   RALPH_CONFIG_LOADED — tuple "<global-config-abs-path>|<repo-root-abs-path>"
 
@@ -34,6 +34,7 @@ _config_load_workflow() {
     "RALPH_REVIEW_STATE:review_state"
     "RALPH_DONE_STATE:done_state"
     "RALPH_FAILED_LABEL:failed_label"
+    "RALPH_STALE_PARENT_LABEL:stale_parent_label"
     "RALPH_WORKTREE_BASE:worktree_base"
     "RALPH_MODEL:model"
     "RALPH_STDOUT_LOG:stdout_log_filename"
