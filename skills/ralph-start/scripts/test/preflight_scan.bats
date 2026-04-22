@@ -36,6 +36,11 @@ setup() {
   export STUB_APPROVED_IDS=""       # newline-separated issue IDs
   export STUB_BLOCKERS_JSON="{}"    # map of issue_id -> JSON (bash assoc not portable; use file)
   export STUB_DESC_CHARS="300"      # non-whitespace char count to return for all issues
+  # linear_label_exists stub:
+  #   STUB_DEFAULT_LABEL_EXISTS — fallback rc for any label name (default 0 = exists)
+  #   STUB_LABEL_EXISTS_<name-with-dashes-as-underscores> — per-label rc override
+  # Convention: rc 0 = exists, 1 = missing, 2 = query error.
+  export STUB_DEFAULT_LABEL_EXISTS="0"
 
   # Write a fake lib/linear.sh that sources its stubs from env
   mkdir -p "$STUB_DIR/lib"
@@ -54,6 +59,14 @@ linear_get_issue_blockers() {
   var_name="STUB_BLOCKERS_$(printf '%s' "$issue_id" | tr '-' '_')"
   local val="${!var_name:-[]}"
   printf '%s' "$val"
+}
+
+linear_label_exists() {
+  local name="$1"
+  # Per-label override: STUB_LABEL_EXISTS_<name-with-'-'→'_'>
+  local safe; safe="$(printf '%s' "$name" | tr '-' '_')"
+  local var="STUB_LABEL_EXISTS_${safe}"
+  return "${!var:-${STUB_DEFAULT_LABEL_EXISTS:-0}}"
 }
 LINEARSH
 
@@ -84,8 +97,11 @@ STUBLINEAR
   chmod +x "$STUB_DIR/linear"
   export PATH="$STUB_DIR:$PATH"
 
-  # Copy preflight_scan.sh into STUB_DIR so $(dirname "$0")/lib/linear.sh resolves
+  # Copy preflight_scan.sh into STUB_DIR so $(dirname "$0")/lib/linear.sh resolves.
   cp "$PREFLIGHT_SH" "$STUB_DIR/preflight_scan.sh"
+  # Copy the real preflight_labels.sh — exercising the real helper against the
+  # stubbed linear_label_exists above, not a hand-rolled second stub.
+  cp "$SCRIPT_DIR/lib/preflight_labels.sh" "$STUB_DIR/lib/preflight_labels.sh"
 }
 
 teardown() {
@@ -412,4 +428,81 @@ ENG-Q"
 
   [ "$status" -eq 0 ]
   [[ "$output" == *"all clear"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# 13. Missing workspace label: the label named in $RALPH_FAILED_LABEL is not
+#     present in Linear. Preflight must fail loud BEFORE any per-issue work.
+#     The operator-facing message names both the literal label AND the config
+#     var, so operators with non-default configs can tell WHICH config key
+#     pointed at the missing label.
+# ---------------------------------------------------------------------------
+@test "missing failed_label exits non-zero with setup hint, skipping per-issue checks" {
+  export STUB_LABEL_EXISTS_ralph_failed=1   # linear_label_exists returns 1 (not found)
+  # Seed an issue that WOULD trigger a per-issue anomaly. If the label-existence
+  # check does not short-circuit, we'd also see "canceled" in the output.
+  export STUB_APPROVED_IDS="ENG-500"
+  export STUB_BLOCKERS_ENG_500='[{"id":"ENG-501","state":"Canceled","branch":"eng-501"}]'
+
+  run_preflight
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"ralph-failed"* ]]
+  [[ "$output" == *"RALPH_FAILED_LABEL"* ]]   # message names the config var
+  [[ "$output" == *"does not exist"* ]]
+  # Short-circuit assertion: per-issue scan must not have run.
+  [[ "$output" != *"ENG-500"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# 14. Label query error: the label existence check itself failed (transient
+#     Linear outage, auth error). Surface as a distinct message so the operator
+#     can tell "label missing" from "we don't know yet".
+# ---------------------------------------------------------------------------
+@test "label query error exits non-zero with query-failure hint" {
+  export STUB_LABEL_EXISTS_ralph_failed=2   # linear_label_exists returns 2 (query error)
+  export STUB_APPROVED_IDS=""
+
+  run_preflight
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"ralph-failed"* ]]
+  [[ "$output" == *"query"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# 15. Stale-parent label is configured and missing.
+#     $RALPH_STALE_PARENT_LABEL is exported (ENG-208 plumbing), the label is
+#     missing, and $RALPH_FAILED_LABEL exists. Preflight must report the
+#     stale-parent entry specifically and name its config var in the message.
+# ---------------------------------------------------------------------------
+@test "missing stale_parent_label is reported alongside ralph-failed check" {
+  export RALPH_STALE_PARENT_LABEL="stale-parent"
+  export STUB_LABEL_EXISTS_stale_parent=1   # stale-parent missing
+  # ralph-failed exists (default STUB_DEFAULT_LABEL_EXISTS=0)
+  export STUB_APPROVED_IDS=""
+
+  run_preflight
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"stale-parent"* ]]
+  [[ "$output" == *"RALPH_STALE_PARENT_LABEL"* ]]
+  [[ "$output" == *"does not exist"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# 16. $RALPH_STALE_PARENT_LABEL is UNSET (ENG-208 not yet landed on this
+#     deploy). The helper must skip that slot silently and NOT fail preflight
+#     — unset means "not configured for this workspace", not "missing prereq".
+# ---------------------------------------------------------------------------
+@test "unset stale_parent_label is skipped silently" {
+  unset RALPH_STALE_PARENT_LABEL
+  export STUB_APPROVED_IDS=""
+
+  run_preflight
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"all clear"* ]]
+  [[ "$output" != *"stale-parent"* ]]
+  [[ "$output" != *"RALPH_STALE_PARENT_LABEL"* ]]
 }

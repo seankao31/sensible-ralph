@@ -12,6 +12,7 @@
 #   linear_get_issue_branch         — get Linear-generated branch name for an issue
 #   linear_set_state                — move an issue to a named workflow state
 #   linear_add_label                — add a label additively (preserves existing labels)
+#   linear_label_exists             — test whether a label name exists in the workspace
 #   linear_comment                  — post a comment on an issue
 
 # List issue IDs across the configured projects ($RALPH_PROJECTS, newline-
@@ -215,6 +216,36 @@ linear_add_label() {
 
   linear issue update "$issue_id" "${label_args[@]}" \
     || { printf 'linear_add_label: failed to update labels for %s\n' "$issue_id" >&2; return 1; }
+}
+
+# Test whether a label with the given name exists anywhere in the workspace
+# (workspace-scoped or team-scoped — `linear issue update --label` resolves
+# by name, so either form satisfies the label-add path).
+#
+# Returns 0 if found, 1 if not found, 2 on query failure or page truncation.
+# Silent on success; callers (preflight_labels.sh) phrase the operator-facing
+# message around the configured label name.
+#
+# Fails loud on page truncation for the same reason as linear_get_issue_blockers:
+# a silently-truncated list would let "not found" land even when the label is
+# just off-page, masking a real Linear-side surprise as a benign missing-prereq.
+linear_label_exists() {
+  local label_name="$1"
+  local raw
+  raw="$(linear label list --all --json)" || {
+    printf 'linear_label_exists: failed to query workspace labels\n' >&2
+    return 2
+  }
+  local has_next
+  has_next="$(printf '%s' "$raw" | jq -r '.pageInfo.hasNextPage // false')"
+  if [[ "$has_next" == "true" ]]; then
+    printf 'linear_label_exists: label listing truncated — cannot verify %q exists. Query via linear api directly if your workspace exceeds the CLI page.\n' "$label_name" >&2
+    return 2
+  fi
+  local count
+  count="$(printf '%s' "$raw" | jq -r --arg name "$label_name" \
+    '[.nodes[] | select(.name == $name)] | length')"
+  [[ "$count" -ge 1 ]]
 }
 
 # Post a comment on an issue.

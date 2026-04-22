@@ -17,6 +17,16 @@ Dispatch the autonomous spec-queue: sort Approved Linear issues into a DAG-aware
 - `jq` available on PATH.
 - Global workflow `config.json` present in the skill directory (copy from `config.example.json` and customize, or rely on the committed default). Required keys: `approved_state`, `in_progress_state`, `review_state`, `done_state`, `failed_label`, `worktree_base`, `model`, `stdout_log_filename`. The four state-name keys must match the actual workflow state names in your Linear workspace.
 - Per-repo `.ralph.json` at the repo root declaring the run's scope — see next section.
+- Workspace-scoped Linear labels exist (one-time admin setup). Label **names are config-driven** — the orchestrator and `close-feature-branch` look up labels by the values of the `failed_label` and `stale_parent_label` keys in `config.json`, so the labels you create in Linear must match whatever names those keys hold. Linear's label-by-name resolution silently no-ops on a nonexistent name, so preflight fails loud rather than letting labelless "marks" accumulate:
+  - The label named in the **`failed_label`** config key (default `ralph-failed`) — applied by the orchestrator to issues that hard-failed, exited clean without reaching review, or hit a per-issue setup failure. `linear_list_approved_issues` excludes labeled issues from subsequent runs. Preflight (`scripts/preflight_scan.sh` via `lib/preflight_labels.sh`) aborts with a setup hint if missing.
+  - The label named in the **`stale_parent_label`** config key (default `stale-parent`) — applied by `/close-feature-branch` to In-Review child issues whose blocked-by parent was amended after dispatch (review was based on pre-amendment content). Preflight-gated by the same helper whenever the key is set.
+
+  If you have not customized `config.json`, create both defaults once per workspace:
+  ```bash
+  linear label create --name ralph-failed --color '#EB5757' --description 'Orchestrator dispatched this issue but it did not reach the review state.'
+  linear label create --name stale-parent --color '#F2994A' --description 'In-Review issue whose blocked-by parent was amended after dispatch.'
+  ```
+  If you have customized `config.json`, substitute the values of `failed_label` and `stale_parent_label` for the `--name` argument above. The preflight error messages quote both the literal label name and the config var that points at it, so a missing or typo'd setup is unambiguous.
 
 The orchestrator scripts have `#!/usr/bin/env bash` shebangs and source `lib/config.sh` internally, so you can run them from any shell (zsh, fish, sh, etc.). Set `RALPH_CONFIG=<path>` to override the default `agent-config/skills/ralph-start/config.json`.
 

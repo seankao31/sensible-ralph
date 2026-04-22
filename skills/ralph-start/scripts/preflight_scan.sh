@@ -35,6 +35,17 @@ fi
 
 # shellcheck source=lib/linear.sh
 source "$SCRIPT_DIR/lib/linear.sh"
+# shellcheck source=lib/preflight_labels.sh
+source "$SCRIPT_DIR/lib/preflight_labels.sh"
+
+# Verify every configured workflow label exists in Linear before doing any
+# per-issue work. Missing labels silently no-op in `linear_add_label`, so a
+# missing prereq would let the orchestrator keep "marking" failed issues
+# without a visible trace in Linear. preflight_labels_check iterates the
+# set of label env vars and prints per-label diagnostics before returning.
+if ! preflight_labels_check; then
+  exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # Helpers
