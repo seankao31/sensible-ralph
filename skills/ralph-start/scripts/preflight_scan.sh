@@ -125,6 +125,9 @@ _chain_runnable() {
 # bash: ${var//[[:space:]]/} on bash 3.2 (macOS default) is O(n²)-ish on
 # multi-KB strings — a real 17 KB Linear description stalls for ~4 minutes
 # per call, which multiplies across every Approved issue in preflight.
+# jq `length` counts Unicode codepoints (correct for measuring description
+# substance; a 200-codepoint CJK description is substantive regardless of
+# byte width).
 # Calls: linear issue view <id> --json --no-comments.
 _desc_nonws_chars() {
   local issue_id="$1"

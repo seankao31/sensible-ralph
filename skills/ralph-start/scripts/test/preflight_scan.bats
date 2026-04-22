@@ -77,7 +77,10 @@ LINEARSH
   #     non-whitespace 'x' characters;
   #   - STUB_DESC_WHITESPACE_CHARS_<ISSUEID> (fallback
   #     STUB_DESC_WHITESPACE_CHARS, default 0) trailing space characters —
-  #     exercised by the pattern-sub-perf regression test.
+  #     exercised by the pattern-sub-perf regression test;
+  #   - STUB_DESC_RAW_<ISSUEID> (optional) literal description string, used
+  #     when the test needs to supply non-ASCII content for encoding tests.
+  #     Takes precedence over the char-count vars for the same issue.
   cat > "$STUB_DIR/linear" <<'STUBLINEAR'
 #!/usr/bin/env bash
 # Stub for `linear issue view <id> --json --no-comments`.
@@ -88,6 +91,13 @@ for arg in "$@"; do
     break
   fi
 done
+
+# Raw-description override: if set, JSON-encode and emit directly.
+raw_var="STUB_DESC_RAW_$(printf '%s' "$issue_id" | tr '-' '_')"
+if [[ -n "${!raw_var:-}" ]]; then
+  printf '%s' "${!raw_var}" | jq -Rs '{"description": .}'
+  exit 0
+fi
 
 chars_var="STUB_DESC_$(printf '%s' "$issue_id" | tr '-' '_')"
 char_count="${!chars_var:-${STUB_DESC_CHARS:-300}}"
@@ -555,6 +565,36 @@ ENG-Q"
 #     counts length in a single jq pass. A `timeout` cap catches any return
 #     to the bash pattern-sub approach.
 # ---------------------------------------------------------------------------
+@test "non-ASCII description uses Unicode codepoint count for PRD threshold" {
+  export STUB_APPROVED_IDS="ENG-88"
+  export STUB_BLOCKERS_ENG_88="[]"
+  # 200 CJK characters = 600 UTF-8 bytes but 200 Unicode codepoints.
+  # jq length counts codepoints, so this should pass the >= 200 threshold.
+  # (Byte counting would also yield 600, safely over 200, but the test
+  # documents the intentional semantics — codepoints, not bytes.)
+  STUB_DESC_RAW_ENG_88="$(printf '漢%.0s' $(seq 1 200))"
+  export STUB_DESC_RAW_ENG_88
+
+  run_preflight
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"all clear"* ]]
+}
+
+@test "non-ASCII description near boundary: 199 codepoints is a PRD anomaly" {
+  export STUB_APPROVED_IDS="ENG-89"
+  export STUB_BLOCKERS_ENG_89="[]"
+  # 199 CJK characters = 597 bytes but only 199 codepoints — below threshold.
+  STUB_DESC_RAW_ENG_89="$(printf '漢%.0s' $(seq 1 199))"
+  export STUB_DESC_RAW_ENG_89
+
+  run_preflight
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"PRD"* ]]
+  [[ "$output" == *"ENG-89"* ]]
+}
+
 @test "long whitespace-heavy description does not stall per-issue scan" {
   if ! command -v timeout >/dev/null 2>&1; then
     skip "timeout(1) not available — install coreutils to run this regression test"
