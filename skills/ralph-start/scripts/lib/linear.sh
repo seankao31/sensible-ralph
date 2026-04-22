@@ -218,9 +218,11 @@ linear_add_label() {
     || { printf 'linear_add_label: failed to update labels for %s\n' "$issue_id" >&2; return 1; }
 }
 
-# Test whether a label with the given name exists anywhere in the workspace
-# (workspace-scoped or team-scoped — `linear issue update --label` resolves
-# by name, so either form satisfies the label-add path).
+# Test whether a workspace-scoped label with the given name exists.
+# Team-scoped labels (where .team is non-null) are excluded: a workspace label
+# applies to every team's issues, while a team-scoped one may fail silently
+# when applied across teams. SKILL.md Prerequisites requires workspace-scoped;
+# accepting a team-scoped label would give a false green.
 #
 # Returns 0 if found, 1 if not found, 2 on query failure or page truncation.
 # Silent on success; callers (preflight_labels.sh) phrase the operator-facing
@@ -244,7 +246,7 @@ linear_label_exists() {
   fi
   local count
   count="$(printf '%s' "$raw" | jq -r --arg name "$label_name" \
-    '[.nodes[] | select(.name == $name)] | length')"
+    '[.nodes[] | select(.name == $name and .team == null)] | length')"
   [[ "$count" -ge 1 ]]
 }
 

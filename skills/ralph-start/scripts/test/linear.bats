@@ -478,3 +478,52 @@ STUB
   [ "$status" -eq 0 ]
   grep -qF 'Hello\ world' "$STUB_ARGS_FILE"
 }
+
+# ---------------------------------------------------------------------------
+# 7. linear_label_exists — returns 0 when workspace-scoped match found, 1
+#    when no match or only team-scoped match, 2 on query failure/truncation.
+# ---------------------------------------------------------------------------
+@test "linear_label_exists returns 0 when workspace-scoped label exists" {
+  STUB_OUTPUT='{"nodes":[{"id":"abc","name":"ralph-failed","team":null},{"id":"def","name":"other","team":{"id":"t1"}}],"pageInfo":{"hasNextPage":false}}'
+  export STUB_OUTPUT
+
+  run call_fn linear_label_exists ralph-failed
+
+  [ "$status" -eq 0 ]
+}
+
+@test "linear_label_exists returns 1 when only a team-scoped label has that name" {
+  STUB_OUTPUT='{"nodes":[{"id":"def","name":"ralph-failed","team":{"id":"t1","name":"ENG"}}],"pageInfo":{"hasNextPage":false}}'
+  export STUB_OUTPUT
+
+  run call_fn linear_label_exists ralph-failed
+
+  [ "$status" -eq 1 ]
+}
+
+@test "linear_label_exists returns 1 when no label matches" {
+  STUB_OUTPUT='{"nodes":[{"id":"abc","name":"other","team":null}],"pageInfo":{"hasNextPage":false}}'
+  export STUB_OUTPUT
+
+  run call_fn linear_label_exists ralph-failed
+
+  [ "$status" -eq 1 ]
+}
+
+@test "linear_label_exists returns 2 when label listing is paginated (truncated)" {
+  STUB_OUTPUT='{"nodes":[{"id":"abc","name":"ralph-failed","team":null}],"pageInfo":{"hasNextPage":true}}'
+  export STUB_OUTPUT
+
+  run call_fn linear_label_exists ralph-failed
+
+  [ "$status" -eq 2 ]
+}
+
+@test "linear_label_exists returns 2 when linear CLI fails" {
+  STUB_EXIT=1
+  export STUB_EXIT
+
+  run call_fn linear_label_exists ralph-failed
+
+  [ "$status" -eq 2 ]
+}
