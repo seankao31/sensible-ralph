@@ -46,9 +46,18 @@ If the orchestrator pre-merged a parent branch into this worktree, the merge may
 
 Follow agent-config conventions: TDD (via `superpowers:test-driven-development`), `superpowers:systematic-debugging` on failures, smallest reasonable changes. The PRD drives the scope.
 
+Before moving to Step 4, cross-check your implementation against the PRD:
+- Every deliverable in the PRD's scope section is implemented.
+- Nothing is implemented that the PRD did not ask for.
+- Any decisions made mid-implementation that the PRD did not specify are recorded (either inline in the code, in the commit messages, or via `superpowers:capture-decisions`).
+
+If you find in-scope items missing, loop back. If you find out-of-scope work, decide: does it need to be there for the in-scope work to function? If yes, it's justified. If no, revert it — the bar for "while I'm here" additions in an autonomous session is higher than interactive. See `agent-config/docs/playbooks/ralph-v2-usage.md` "Scope deviation" for the escape-hatch trigger.
+
 ## Step 4: Verify tests pass
 
-All tests must pass before handoff. If not, fix them — do not suppress, skip, or delete.
+Invoke `superpowers:verification-before-completion` to gate the claim that tests pass. Run the project's verification commands fresh (not from memory), read the exit codes and output, and confirm pristine output per the project's testing rules (see CLAUDE.md "Testing" section).
+
+If verification does not pass cleanly, fix the issue — do not suppress, skip, or delete tests. If the issue cannot be resolved within the session, treat as a red flag per Step 5 and do NOT invoke `/prepare-for-review`.
 
 ## Step 5: Invoke `/prepare-for-review` (conditional)
 
