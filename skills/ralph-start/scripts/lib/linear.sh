@@ -267,12 +267,12 @@ linear_add_label() {
   local existing_labels=()
   while IFS= read -r lbl; do
     [[ -n "$lbl" ]] && existing_labels+=("$lbl")
-  done < <(printf '%s' "$view_json" | jq -r '(.labels.nodes // []) | .[].name')
+  done < <(printf '%s' "$view_json" | jq -r '.labels.nodes[].name')
 
   # Build --label flags for all existing labels (skipping new_label to avoid duplicates) + new label
   local label_args=()
   local lbl
-  for lbl in ${existing_labels[@]+"${existing_labels[@]}"}; do
+  for lbl in "${existing_labels[@]}"; do
     [[ "$lbl" == "$new_label" ]] && continue
     label_args+=(--label "$lbl")
   done
