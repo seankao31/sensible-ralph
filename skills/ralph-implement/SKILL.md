@@ -51,7 +51,7 @@ Before moving to Step 4, cross-check your implementation against the PRD:
 - Nothing is implemented that the PRD did not ask for.
 - Any decisions made mid-implementation that the PRD did not specify are recorded (either inline in the code, in the commit messages, or via `capture-decisions`).
 
-If you find in-scope items missing, loop back. If you find out-of-scope work, decide: does it need to be there for the in-scope work to function? If yes, it's justified. If no, revert it — the bar for "while I'm here" additions in an autonomous session is higher than interactive. See `agent-config/docs/playbooks/ralph-v2-usage.md` "Scope deviation" for the escape-hatch trigger.
+If you find in-scope items missing, loop back. If you find out-of-scope work, revert it — unless it is a minimal mechanical prerequisite directly implied by the PRD (e.g., a missing import or a required type definition). If PRD completion appears to require substantial out-of-scope functionality, that is a scope deviation: invoke the playbook escape hatch (post a Linear comment describing the gap, do NOT invoke `/prepare-for-review`). Do not self-justify out-of-scope additions as "needed for the in-scope work." See `agent-config/docs/playbooks/ralph-v2-usage.md` "Scope deviation" for the escape-hatch trigger.
 
 ## Step 4: Verify tests pass
 
