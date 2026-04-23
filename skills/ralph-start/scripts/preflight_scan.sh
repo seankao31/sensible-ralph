@@ -27,14 +27,15 @@ RESOLVED_SCOPE_HASH=""
 if [[ -n "$RESOLVED_REPO_ROOT" && -f "$RESOLVED_REPO_ROOT/.ralph.json" ]]; then
   RESOLVED_SCOPE_HASH="$(shasum -a 1 < "$RESOLVED_REPO_ROOT/.ralph.json" | awk '{print $1}')"
 fi
+# shellcheck source=lib/linear.sh
+source "$SCRIPT_DIR/lib/linear.sh"
+
 EXPECTED_LOADED_TUPLE="${RESOLVED_CONFIG}|${RESOLVED_REPO_ROOT}|${RESOLVED_SCOPE_HASH}"
 if [[ "${RALPH_CONFIG_LOADED:-}" != "$EXPECTED_LOADED_TUPLE" ]]; then
   # shellcheck source=lib/config.sh
   source "$SCRIPT_DIR/lib/config.sh" "$CONFIG_FILE"
 fi
 
-# shellcheck source=lib/linear.sh
-source "$SCRIPT_DIR/lib/linear.sh"
 # shellcheck source=lib/preflight_labels.sh
 source "$SCRIPT_DIR/lib/preflight_labels.sh"
 

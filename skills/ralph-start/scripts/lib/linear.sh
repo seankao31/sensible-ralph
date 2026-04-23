@@ -2,8 +2,11 @@
 # Linear CLI wrapper functions.
 # This file is sourced (not executed); do NOT call `set` at the top level or `exit`.
 #
-# Callers must source lib/config.sh first to export:
-#   RALPH_PROJECTS (newline-joined), RALPH_APPROVED_STATE, RALPH_FAILED_LABEL
+# Source order: this file FIRST, then lib/config.sh — config.sh's `_config_load`
+# guards on `linear_list_initiative_projects` being defined. The functions
+# below also reference RALPH_PROJECTS, RALPH_APPROVED_STATE, and
+# RALPH_FAILED_LABEL at call time; those exports come from config.sh and must
+# be set before invoking the corresponding helpers.
 #
 # Functions:
 #   linear_list_approved_issues     — list Approved issue IDs (one per line)

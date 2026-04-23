@@ -4,6 +4,7 @@
 
 SCRIPT_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
 CONFIG_SH="$SCRIPT_DIR/lib/config.sh"
+LINEAR_SH="$SCRIPT_DIR/lib/linear.sh"
 FIXTURE_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
 EXAMPLE_CONFIG="$FIXTURE_DIR/config.example.json"
 
@@ -36,11 +37,12 @@ source_config() {
   local config_file="$1"
   bash -c '
     cd "$1"
-    source "$2" "$3" || exit $?
+    source "$2" || exit $?
+    source "$3" "$4" || exit $?
     for var in $(compgen -v RALPH_); do
       printf "%s=%s\n" "$var" "${!var}"
     done
-  ' _ "$TEST_REPO_ROOT" "$CONFIG_SH" "$config_file"
+  ' _ "$TEST_REPO_ROOT" "$LINEAR_SH" "$CONFIG_SH" "$config_file"
 }
 
 # ---------------------------------------------------------------------------
@@ -106,7 +108,7 @@ source_config() {
 }
 EOF
 
-  run bash -c "cd '$TEST_REPO_ROOT' && source '$CONFIG_SH' '$bad_config'" 2>&1
+  run bash -c "cd '$TEST_REPO_ROOT' && source '$LINEAR_SH' && source '$CONFIG_SH' '$bad_config'" 2>&1
   [ "$status" -eq 1 ]
   if [[ "$output" != *"model"* ]]; then
     echo "expected 'model' in error output, got: $output" >&2
@@ -126,7 +128,7 @@ EOF
 
   echo "not json" > "$bad_json"
 
-  run bash -c "cd '$TEST_REPO_ROOT' && source '$CONFIG_SH' '$bad_json'" 2>&1
+  run bash -c "cd '$TEST_REPO_ROOT' && source '$LINEAR_SH' && source '$CONFIG_SH' '$bad_json'" 2>&1
   [ "$status" -eq 1 ]
   if [[ "$output" != *"failed to parse"* ]]; then
     echo "expected 'failed to parse' in error, got: $output" >&2
@@ -195,7 +197,7 @@ EOF
 @test "missing .ralph.json exits 1 with helpful error" {
   rm -f "$TEST_REPO_ROOT/.ralph.json"
 
-  run bash -c "cd '$TEST_REPO_ROOT' && source '$CONFIG_SH' '$EXAMPLE_CONFIG'" 2>&1
+  run bash -c "cd '$TEST_REPO_ROOT' && source '$LINEAR_SH' && source '$CONFIG_SH' '$EXAMPLE_CONFIG'" 2>&1
   [ "$status" -eq 1 ]
   if [[ "$output" != *".ralph.json"* ]]; then
     echo "expected '.ralph.json' in error, got: $output" >&2
@@ -213,7 +215,7 @@ EOF
 }
 EOF
 
-  run bash -c "cd '$TEST_REPO_ROOT' && source '$CONFIG_SH' '$EXAMPLE_CONFIG'" 2>&1
+  run bash -c "cd '$TEST_REPO_ROOT' && source '$LINEAR_SH' && source '$CONFIG_SH' '$EXAMPLE_CONFIG'" 2>&1
   [ "$status" -eq 1 ]
   if [[ "$output" != *"empty"* ]] && [[ "$output" != *"projects"* ]]; then
     echo "expected 'empty' or 'projects' in error, got: $output" >&2
@@ -232,7 +234,7 @@ EOF
 }
 EOF
 
-  run bash -c "cd '$TEST_REPO_ROOT' && source '$CONFIG_SH' '$EXAMPLE_CONFIG'" 2>&1
+  run bash -c "cd '$TEST_REPO_ROOT' && source '$LINEAR_SH' && source '$CONFIG_SH' '$EXAMPLE_CONFIG'" 2>&1
   [ "$status" -eq 1 ]
   if [[ "$output" != *"both"* ]]; then
     echo "expected 'both' in error (projects + initiative), got: $output" >&2
@@ -248,7 +250,7 @@ EOF
 {}
 EOF
 
-  run bash -c "cd '$TEST_REPO_ROOT' && source '$CONFIG_SH' '$EXAMPLE_CONFIG'" 2>&1
+  run bash -c "cd '$TEST_REPO_ROOT' && source '$LINEAR_SH' && source '$CONFIG_SH' '$EXAMPLE_CONFIG'" 2>&1
   [ "$status" -eq 1 ]
   if [[ "$output" != *"projects"* ]] && [[ "$output" != *"initiative"* ]]; then
     echo "expected 'projects' or 'initiative' in error, got: $output" >&2
@@ -281,11 +283,12 @@ STUB
   run bash -c '
     cd "$1"
     export PATH="$2:$PATH"
-    source "$3" "$4" || exit $?
+    source "$3" || exit $?
+    source "$4" "$5" || exit $?
     for var in $(compgen -v RALPH_); do
       printf "%s=%s\n" "$var" "${!var}"
     done
-  ' _ "$TEST_REPO_ROOT" "$stub_dir" "$CONFIG_SH" "$EXAMPLE_CONFIG"
+  ' _ "$TEST_REPO_ROOT" "$stub_dir" "$LINEAR_SH" "$CONFIG_SH" "$EXAMPLE_CONFIG"
 
   [ "$status" -eq 0 ]
   if [[ "$output" != *"Agent Config"* ]]; then
@@ -322,12 +325,53 @@ STUB
   run bash -c '
     cd "$1"
     export PATH="$2:$PATH"
-    source "$3" "$4"
-  ' _ "$TEST_REPO_ROOT" "$stub_dir" "$CONFIG_SH" "$EXAMPLE_CONFIG" 2>&1
+    source "$3" || exit $?
+    source "$4" "$5"
+  ' _ "$TEST_REPO_ROOT" "$stub_dir" "$LINEAR_SH" "$CONFIG_SH" "$EXAMPLE_CONFIG" 2>&1
 
   [ "$status" -ne 0 ]
   if [[ "$output" != *"zero projects"* ]]; then
     echo "expected 'zero projects' in error, got: $output" >&2
+    return 1
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# 13. config.sh sources cleanly from zsh.
+#     Claude Code's Bash tool dispatches commands through /bin/zsh -c on
+#     macOS, so skill-doc snippets that source config.sh trip on bash-only
+#     constructs. This test reproduces the failure mode from the ENG-249
+#     ticket: zsh-side source must succeed and export RALPH_APPROVED_STATE.
+# ---------------------------------------------------------------------------
+@test "config.sh sources cleanly from zsh" {
+  command -v zsh >/dev/null || skip "zsh not installed"
+
+  run zsh -c "
+    cd '$TEST_REPO_ROOT'
+    source '$LINEAR_SH' || exit 10
+    source '$CONFIG_SH' '$EXAMPLE_CONFIG' || exit 11
+    printf 'APPROVED=%s\n' \"\$RALPH_APPROVED_STATE\"
+  " 2>&1
+
+  [ "$status" -eq 0 ]
+  if [[ "$output" != *"APPROVED=Approved"* ]]; then
+    echo "expected APPROVED=Approved, got: $output" >&2
+    return 1
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# 14. config.sh fails loudly if linear.sh was not pre-sourced. Guards against
+#     callers (e.g. future skill-doc snippets) that forget the order
+#     dependency — without the guard, the .ralph.json initiative path would
+#     hit a late "command not found" on linear_list_initiative_projects,
+#     which is much harder to trace than a load-time error.
+# ---------------------------------------------------------------------------
+@test "config.sh fails loudly if linear.sh not pre-sourced" {
+  run bash -c "cd '$TEST_REPO_ROOT' && source '$CONFIG_SH' '$EXAMPLE_CONFIG'" 2>&1
+  [ "$status" -eq 1 ]
+  if [[ "$output" != *"linear.sh"* ]]; then
+    echo "expected 'linear.sh' in error, got: $output" >&2
     return 1
   fi
 }

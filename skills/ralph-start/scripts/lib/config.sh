@@ -8,10 +8,12 @@
 # (state names, labels, worktree base, model, log filename) live in the global
 # config.json passed as the first argument.
 #
-# Must be sourced from bash (bash 3.2+): uses ${!arr[@]} (variable-name
-# indirection for indexed arrays) and `local -a`, both of which are
-# bash-specific. Sourcing from zsh produces `bad substitution` at the
-# ${!staged_names[@]} expansion in _config_load_workflow.
+# Portable between bash 3.2+ and zsh. Callers must source `lib/linear.sh`
+# before this file (it defines `linear_list_initiative_projects`, which the
+# `.ralph.json` `initiative` expansion path calls). The fail-loud guard at
+# `_config_load` entry catches callers that forget; without the guard, the
+# initiative path would emit a late "command not found" that's harder to
+# trace than a load-time error.
 #
 # All callers in this codebase run with `set -euo pipefail` already active;
 # this file must NOT call `set` at the top level, as sourcing a file with
@@ -44,10 +46,11 @@ _config_load_workflow() {
   # This prevents partial RALPH_* exports in the caller's shell when a key
   # is missing mid-loop (which would leave stale values on retry).
   #
-  # bash 3.2 (macOS) does not support associative arrays (declare -A), so
-  # parallel indexed arrays are used as the local staging store.
-  local -a staged_names=()
-  local -a staged_values=()
+  # Staging as NAME=VALUE tuples (rather than parallel indexed arrays) lets
+  # us iterate by value — portable between bash and zsh, which disagree on
+  # array indexing. Workflow values are single-line jq scalars with no '='
+  # inside, so splitting on the first '=' is unambiguous.
+  local -a staged=()
 
   local entry var_name json_key value
   for entry in "${keys[@]}"; do
@@ -65,17 +68,18 @@ _config_load_workflow() {
       return 1
     fi
 
-    staged_names+=("$var_name")
-    staged_values+=("$value")
+    staged+=("$var_name=$value")
   done
 
   # All keys present — export atomically.
   # Empty string is allowed; callers validate domain constraints.
   # printf -v handles multi-line values safely (declare -gx requires bash 4.2+).
-  local i
-  for i in "${!staged_names[@]}"; do
-    printf -v "${staged_names[$i]}" '%s' "${staged_values[$i]}"
-    export "${staged_names[$i]}"
+  local pair name val
+  for pair in "${staged[@]}"; do
+    name="${pair%%=*}"
+    val="${pair#*=}"
+    printf -v "$name" '%s' "$val"
+    export "$name"
   done
 }
 
@@ -134,8 +138,9 @@ _config_load_scope() {
       return 1
     fi
   else
-    # Initiative case — expand via linear_list_initiative_projects (sourced
-    # from lib/linear.sh at the top of _config_load).
+    # Initiative case — expand via linear_list_initiative_projects (defined
+    # in lib/linear.sh, which the caller must source before this file; the
+    # _config_load guard rejects callers that forget).
     local initiative
     initiative="$(jq -r '.initiative' "$scope_file")"
     projects_newline="$(linear_list_initiative_projects "$initiative")" || return 1
@@ -151,14 +156,15 @@ _config_load_scope() {
 _config_load() {
   local config_file="$1"
 
-  # Source linear.sh (sibling in lib/) so _config_load_scope can call
-  # linear_list_initiative_projects when .ralph.json uses the initiative
-  # shorthand. Sourcing is idempotent — entry-point scripts that source
-  # linear.sh separately are unaffected.
-  local _config_lib_dir
-  _config_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  # shellcheck source=linear.sh
-  source "$_config_lib_dir/linear.sh"
+  # lib/linear.sh must be sourced by the caller before this file — it
+  # defines linear_list_initiative_projects, which _config_load_scope calls
+  # for the .ralph.json `initiative` shape. Fail loudly at load time so
+  # callers get a clear message rather than a late "command not found"
+  # during scope expansion.
+  if ! declare -f linear_list_initiative_projects >/dev/null; then
+    echo "config: source lib/linear.sh before lib/config.sh (defines linear_list_initiative_projects)" >&2
+    return 1
+  fi
 
   _config_load_workflow "$config_file" || return 1
 
