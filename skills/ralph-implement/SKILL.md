@@ -49,7 +49,7 @@ Follow agent-config conventions: TDD (via `superpowers:test-driven-development`)
 Before moving to Step 4, cross-check your implementation against the PRD:
 - Every deliverable in the PRD's scope section is implemented.
 - Nothing is implemented that the PRD did not ask for.
-- Any decisions made mid-implementation that the PRD did not specify are recorded (either inline in the code, in the commit messages, or via `superpowers:capture-decisions`).
+- Any decisions made mid-implementation that the PRD did not specify are recorded (either inline in the code, in the commit messages, or via `capture-decisions`).
 
 If you find in-scope items missing, loop back. If you find out-of-scope work, decide: does it need to be there for the in-scope work to function? If yes, it's justified. If no, revert it — the bar for "while I'm here" additions in an autonomous session is higher than interactive. See `agent-config/docs/playbooks/ralph-v2-usage.md` "Scope deviation" for the escape-hatch trigger.
 
