@@ -59,7 +59,7 @@ Rules in CLAUDE.md flagged with `(autonomous: see playbook)`:
 
 **Exit clean** (per the escape hatch above):
 
-- *Our relationship*: "speak up when you don't know" / "STOP and ask for
+- *Communication*: "speak up when you don't know" / "STOP and ask for
   clarification" / "STOP and ask for help" / "We discuss architectural
   decisions together"
 - *Proactiveness*: "Only pause to ask for confirmation when [list]" — every
