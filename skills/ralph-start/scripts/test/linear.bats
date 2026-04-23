@@ -50,7 +50,7 @@ teardown() {
 # ---------------------------------------------------------------------------
 call_fn() {
   local fn_name="$1"; shift
-  bash -c "source '$LINEAR_SH' && $fn_name $*"
+  bash -c "set -euo pipefail; source '$LINEAR_SH' && $fn_name $*"
 }
 
 # ---------------------------------------------------------------------------
@@ -552,6 +552,24 @@ STUB
   # ralph-failed must appear exactly once
   count="$(printf '%s' "$update_call" | grep -o 'ralph-failed' | wc -l | tr -d ' ')"
   [ "$count" -eq 1 ]
+}
+
+@test "linear_add_label handles issue whose labels.nodes is null" {
+  cat > "$STUB_DIR/linear" <<'STUB'
+#!/usr/bin/env bash
+printf '%q ' "$@" >> "$STUB_ARGS_FILE"
+printf '\n' >> "$STUB_ARGS_FILE"
+if [[ "$*" == *"view"* ]]; then
+  printf '{"identifier": "ENG-54", "branchName": "eng-54-x", "state": {"name": "Approved"}, "labels": {"nodes": null}}'
+fi
+STUB
+  chmod +x "$STUB_DIR/linear"
+
+  run call_fn linear_add_label ENG-54 only-label
+
+  [ "$status" -eq 0 ]
+  update_call="$(grep "issue update ENG-54" "$STUB_ARGS_FILE")"
+  [[ "$update_call" == *"only-label"* ]]
 }
 
 # ---------------------------------------------------------------------------
