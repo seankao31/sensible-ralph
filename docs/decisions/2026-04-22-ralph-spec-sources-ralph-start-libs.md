@@ -54,12 +54,14 @@ against what ralph-start's orchestrator will see at dispatch time. Using
 `build_queue.sh` call — means the verification and the dispatch read
 the same bytes. Rolling our own query would open a semantic gap.
 
-**Bash requirement.** `config.sh` uses bash 3.2+ features (array
-indirection via `${!arr[@]}`) and fails in zsh with `bad substitution`.
-`ralph-spec`'s SKILL.md notes this explicitly: if the login shell is
-zsh or fish, wrap the sourcing in `bash -c` or a temp bash script.
-This is the price of lib reuse; the alternative (writing POSIX-sh-safe
-code in ralph-spec) is worse.
+**Portability.** `config.sh` is portable between bash 3.2+ and zsh
+(ENG-249). Earlier versions required bash due to array-indirection
+syntax (`${!arr[@]}`) and a `${BASH_SOURCE[0]}`-based sibling lookup;
+the current implementation stages workflow values as `NAME=VALUE`
+tuples and iterates by value to sidestep the cross-shell indexing
+difference, and delegates `linear.sh` sourcing to the caller (with a
+fail-loud guard at `_config_load` entry). This means `ralph-spec`'s
+finalization can run in any single shell session — bash or zsh.
 
 ## Consequences
 

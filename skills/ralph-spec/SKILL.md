@@ -144,7 +144,7 @@ Wait for the user's response. If they request changes, make them and re-run the 
 
 Terminal step. Run substeps in order. Steps 1-2 are mandatory preflight gates — no mutation (comment, description, relation, state) happens until both pass. If any later step fails, STOP before the state transition.
 
-**Shell note:** the snippets below source `lib/config.sh` which uses bash 3.2+ features (array indirection). They also share state across snippets (`RALPH_PROJECTS`, `STATE`, `PRIOR`, `ISSUE_ID`, `linear_get_issue_blockers`, …), so the whole finalization must run in a **single** bash session — not per-snippet `bash -c` calls, which spawn a fresh subshell each time and lose that state. If your login shell is zsh or fish, either drop into `bash` once and paste the whole flow, or save it as a bash script (`#!/usr/bin/env bash` at the top) and execute that. Running individual snippets via `bash -c` will silently drop earlier-set variables and fail further down.
+**Shell note:** the snippets below share state across blocks (`RALPH_PROJECTS`, `STATE`, `PRIOR`, `ISSUE_ID`, `linear_get_issue_blockers`, …), so the whole finalization must run in a **single** shell session — not per-snippet `bash -c` calls, which spawn a fresh subshell each time and lose that state. Run them in one continuous session (any shell — `lib/config.sh` is portable between bash 3.2+ and zsh; per ENG-249).
 
 ### 1. Load ralph-start config and scope
 
