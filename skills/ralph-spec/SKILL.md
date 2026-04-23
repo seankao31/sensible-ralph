@@ -28,17 +28,16 @@ Every ralph task goes through this process. A one-function utility, a config twe
 
 You MUST create a task for each of these items and complete them in order:
 
-1. **Resolve issue context** — if called with an issue-id argument, set `ISSUE_ID=<arg>` and fetch its current description as starting context. Otherwise leave `ISSUE_ID` unset; it will be created in step 11.
+1. **Resolve issue context** — if called with an issue-id argument, set `ISSUE_ID=<arg>` and fetch its current description as starting context. Otherwise leave `ISSUE_ID` unset; it will be created in step 10.
 2. **Explore project context** — check files, docs, recent commits. If `ISSUE_ID` is set, the existing description is part of this context.
 3. **Offer visual companion** (if topic will involve visual questions) — its own message, no clarifying question alongside. See the Visual Companion section.
 4. **Ask clarifying questions** — one at a time, understand purpose/constraints/success criteria.
 5. **Propose 2-3 approaches** — with trade-offs and your recommendation.
-6. **Present design** — in sections scaled to their complexity. Get user approval after each section. Explicitly surface any **prerequisite Linear issues** that must land before this one (for `blocked-by` relations in step 11).
+6. **Present design** — in sections scaled to their complexity. Get user approval after each section. Explicitly surface any **prerequisite Linear issues** that must land before this one (for `blocked-by` relations in step 10).
 7. **Write design doc** — save to `docs/specs/<topic>.md` and commit. If the file already exists, stop and ask the user before overwriting.
 8. **Spec self-review** — quick inline check for placeholders, contradictions, ambiguity, scope (see below).
 9. **User reviews written spec** — ask the user to review the spec file before Linear finalization.
-10. **Codex review gate** — run `/codex-review-gate` scoped to the spec's commits. Present findings to the user. Apply actionable findings inline; substantial edits loop back to step 7 so self-review and user review re-run. Do NOT dismiss findings because they challenge a decision made earlier in dialogue — that's exactly where adversarial review earns its keep. See "Codex review gate" under After the Design.
-11. **Finalize the Linear issue** — see "Finalizing the Linear Issue" below. Terminal state: issue description matches the approved spec, state is `approved_state`, blocked-by relations set.
+10. **Finalize the Linear issue** — see "Finalizing the Linear Issue" below. Terminal state: issue description matches the approved spec, state is `approved_state`, blocked-by relations set.
 
 ## Process Flow
 
@@ -55,7 +54,6 @@ digraph ralph_spec {
     "Write design doc\ndocs/specs/<topic>.md" [shape=box];
     "Spec self-review\n(fix inline)" [shape=box];
     "User reviews spec?" [shape=diamond];
-    "Codex review gate\n(standard + adversarial)" [shape=diamond];
     "Finalize Linear issue\n(description + state + blockers)" [shape=doublecircle];
 
     "Resolve issue context\n(arg → fetch existing)" -> "Explore project context";
@@ -71,9 +69,7 @@ digraph ralph_spec {
     "Write design doc\ndocs/specs/<topic>.md" -> "Spec self-review\n(fix inline)";
     "Spec self-review\n(fix inline)" -> "User reviews spec?";
     "User reviews spec?" -> "Write design doc\ndocs/specs/<topic>.md" [label="changes requested"];
-    "User reviews spec?" -> "Codex review gate\n(standard + adversarial)" [label="approved"];
-    "Codex review gate\n(standard + adversarial)" -> "Write design doc\ndocs/specs/<topic>.md" [label="substantial findings"];
-    "Codex review gate\n(standard + adversarial)" -> "Finalize Linear issue\n(description + state + blockers)" [label="clean / minor fixes inline"];
+    "User reviews spec?" -> "Finalize Linear issue\n(description + state + blockers)" [label="approved"];
 }
 ```
 
@@ -142,17 +138,7 @@ After the spec review, ask the user to review:
 
 > "Spec written and committed to `docs/specs/<topic>.md`. Please review it and let me know if you want any changes before I finalize the Linear issue."
 
-Wait for the user's response. If they request changes, make them and re-run the spec review. Only proceed to the Codex review gate once the user approves.
-
-**Codex review gate:**
-After the user approves the spec, run `/codex-review-gate` scoped to the commits that added or updated the spec. This catches mechanism-level issues that a narrative review tends to miss — cross-boundary state transfer, invariant gaps, failure-mode corner cases. The ROI is higher for ralph specs than for implementation specs: the autonomous implementer will follow the spec literally with no human in the loop to catch ambiguity, so the spec is the last chance to probe the design.
-
-- Present findings to the user honestly — severity, title, and the relevant quote from Codex. Don't filter.
-- Apply actionable findings inline. Substantial edits loop back to the spec write step (re-trigger spec self-review and user review before re-running this gate).
-- **Do not dismiss a finding because it challenges a decision we reached together.** Adversarial review is specifically designed to probe our decisions — that's a feature, not a collision with earlier consensus. When Codex pushes back on a choice, present it and let the user decide whether to revise or to keep the original call. A decision that survives adversarial probing is stronger than one that was never tested.
-- For trivial spec updates (typo fix, small clarification, cross-reference update), skipping the gate is acceptable — same reasoning as `codex-review-gate`'s own "skip for mechanical changes" guidance.
-
-Only proceed to Linear finalization once Codex findings are resolved (applied, fixed inline, or explicitly accepted-as-is by the user after discussion).
+Wait for the user's response. If they request changes, make them and re-run the spec review. Only proceed to Linear finalization once the user approves.
 
 ## Finalizing the Linear Issue
 
