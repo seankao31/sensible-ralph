@@ -177,9 +177,9 @@ GRAPHQL
 #   [{"id":"ENG-X","state":"In Review","branch":"eng-x-slug","project":"Agent Config"}, ...]
 # Issues with no outgoing `blocks` relations output: [].
 #
-# Consumer: ENG-208's close-feature-branch Step 3.5 walks these at the parent's
-# close time to detect In-Review children that were dispatched before the
-# parent's review amendments landed.
+# Consumer: close-issue's Step 3.5 (ENG-208 originally, ENG-213 split) walks
+# these at the parent's close time to detect In-Review children that were
+# dispatched before the parent's review amendments landed.
 #
 # Symmetric with linear_get_issue_blockers — same GraphQL plumbing, same
 # 250-cap fail-loud-on-truncation policy. The key differences are:

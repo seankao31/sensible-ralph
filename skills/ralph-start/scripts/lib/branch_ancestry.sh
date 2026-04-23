@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
 # Branch-ancestry helpers — pure git, no Linear dependency.
-# Used by ENG-208's stale-parent check in `.claude/skills/close-feature-branch`
-# and by the pre-flight branch-resolution refactor in the same skill.
+# Used by close-issue's stale-parent check (ENG-208 originally, moved to
+# close-issue in ENG-213) and by close-issue's pre-flight branch resolution.
 #
 # This file is sourced (not executed); do NOT call `set` at the top level or
 # `exit`.
 #
-# Co-located under scripts/lib/ with the Linear helpers because the close skill
+# Co-located under scripts/lib/ with the Linear helpers because close-issue
 # already sources from here. When the ralph-workflow skills consolidate into a
-# standalone plugin (ENG-213's follow-up on factoring project-local git from
-# global Linear bits), these helpers relocate with the rest of the shared
+# standalone plugin, these helpers relocate with the rest of the shared
 # plumbing — the current location is pragmatic, not principled.
 #
 # Functions:

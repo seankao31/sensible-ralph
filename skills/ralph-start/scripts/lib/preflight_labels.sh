@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Workspace label existence preflight — shared between ralph-start's
-# preflight_scan.sh and the `close-feature-branch` skill (ENG-208, which adds
-# $RALPH_STALE_PARENT_LABEL). Linear's `issue update --label` silently no-ops
-# on a nonexistent label name, so a missing workspace prereq would let
+# preflight_scan.sh and the close-issue skill (Step 3.5 applies
+# $RALPH_STALE_PARENT_LABEL; originally ENG-208 in close-feature-branch,
+# moved to close-issue in ENG-213). Linear's `issue update --label` silently
+# no-ops on a nonexistent label name, so a missing workspace prereq would let
 # callers keep "marking" issues with labels that never land. Fail loud.
 #
 # This file is sourced (not executed); do NOT call `set` at the top level or
