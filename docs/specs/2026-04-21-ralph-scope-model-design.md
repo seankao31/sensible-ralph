@@ -7,10 +7,10 @@
 
 ## Problem
 
-`agent-config/skills/ralph-start/config.json` hardcodes a single `project` field. This bakes in a single-scope assumption that doesn't match real workflows:
+`skills/ralph-start/config.json` hardcodes a single `project` field. This bakes in a single-scope assumption that doesn't match real workflows:
 
-1. **One repo, multiple projects.** The chezmoi repo hosts two Linear projects — `Agent Config` (changes under `agent-config/`) and `Machine Config` (chezmoi plumbing and machine-level dotfiles). Today ralph can only drain one of them per run; operators must hand-edit `config.json` and re-run to cover the other.
-2. **Concurrent sessions across repos.** Running `/ralph-start` in chezmoi while another session runs in a different repo should not produce collisions on `progress.json`, `ordered_queue.txt`, or worktree paths.
+1. **One repo, multiple projects.** A consumer repo may host more than one Linear project — say `Project A` and `Project B`. Today ralph can only drain one of them per run; operators must hand-edit the scope config and re-run to cover the other.
+2. **Concurrent sessions across repos.** Running `/ralph-start` in one repo while another session runs in a different repo should not produce collisions on `progress.json`, `ordered_queue.txt`, or worktree paths.
 3. **Auto-detect scope from cwd.** Invoking `/ralph-start` from a repo should resolve its scope from the repo itself, not from a hand-maintained global setting that drifts with "which repo am I standing in."
 
 The v2 spec (Contract Summary, Decision 7) already flagged single-project scope as a v2 constraint. ENG-203 attempted a narrower slice — cross-project blockers within one initiative — which this design subsumes.
@@ -34,7 +34,7 @@ A **scope** is the set of Linear projects that one `/ralph-start` invocation dra
 ```jsonc
 // Explicit: project list
 {
-  "projects": ["Agent Config", "Machine Config"]
+  "projects": ["Project A", "Project B"]
 }
 
 // Shorthand: initiative name, auto-expanded to its member projects
@@ -45,7 +45,7 @@ A **scope** is the set of Linear projects that one `/ralph-start` invocation dra
 
 **Rationale for projects-over-initiatives as the primary unit:**
 
-Initiatives group by conceptual theme; repos contain projects. In the current Linear workspace, the `AI Collaboration Toolkit` initiative contains two projects (`I Said Yes` and `Agent Config`) that belong to two different repos — setting the chezmoi repo's scope to that initiative would pull `I Said Yes` issues into chezmoi's ralph queue, which the orchestrator would then try to dispatch as worktrees inside chezmoi. That is wrong. Initiatives trend toward becoming multi-repo as they grow; projects stay 1:1 with repos. The project list is the unit that aligns with "which issues should produce worktrees in *this* repo."
+Initiatives group by conceptual theme; repos contain projects. An initiative can contain projects belonging to different repos — setting one repo's scope to a cross-repo initiative would pull another repo's issues into this repo's ralph queue, which the orchestrator would then try to dispatch as worktrees inside the wrong repo. That is wrong. Initiatives trend toward becoming multi-repo as they grow; projects stay 1:1 with repos. The project list is the unit that aligns with "which issues should produce worktrees in *this* repo."
 
 **Why keep `initiative` at all:**
 
@@ -63,12 +63,12 @@ For the case where an initiative's project membership genuinely matches a single
 Two files:
 
 - **Per-repo: `<repo-root>/.ralph.json`** (committed to each target repo). Contains *only* scope — a `projects` list or an `initiative` name.
-- **Global: `agent-config/skills/ralph-start/config.json`** (current location, unchanged). Keeps all workspace-wide workflow fields: state names, labels, `worktree_base`, `model`, `stdout_log_filename`, `prompt_template`. The `project` key is removed.
+- **Global: `skills/ralph-start/config.json`** (current location, unchanged). Keeps all workspace-wide workflow fields: state names, labels, `worktree_base`, `model`, `stdout_log_filename`, `prompt_template`. The `project` key is removed.
 
 **Rationale:**
 
 - Scope is a repo fact; workflow is a workspace fact. Splitting matches reality — "which issues should ralph drain here?" is local to the repo; "what does *Approved* mean in Linear?" is global to the ENG team.
-- `.ralph.json` committed at the repo root means the scope travels with the repo. Cloning chezmoi on a new machine — or cloning any repo that adopts ralph — works with no central-registry setup.
+- `.ralph.json` committed at the repo root means the scope travels with the repo. Cloning any repo that adopts ralph on a new machine works with no central-registry setup.
 - Auto-detection is trivial: `git rev-parse --show-toplevel` + read `<root>/.ralph.json`. No path-keyed central file. (Using `--show-toplevel` instead of `--git-common-dir` so each worktree reads its own committed `.ralph.json` — a branch that edits scope must see its own change, not the main checkout's stale copy. This differs from `progress.json`, which intentionally uses `--git-common-dir` for cross-worktree sharing.)
 - Duplicating workflow fields across every repo (the alternative of a per-repo file that holds both scope and workflow) would create drift surface every time a convention changes — e.g. renaming the `ralph-failed` label would touch every repo's config.
 
@@ -161,18 +161,18 @@ Nothing else in the v2 contract changes. The state machine, the pickup rule, the
 
 | File | Change |
 |---|---|
-| `agent-config/skills/ralph-start/config.json` | Remove `project` field |
-| `agent-config/skills/ralph-start/config.example.json` | Same |
-| `agent-config/skills/ralph-start/scripts/lib/config.sh` | Drop `RALPH_PROJECT`; add `.ralph.json` loader with scope resolution; export `RALPH_PROJECTS`; extend `RALPH_CONFIG_LOADED` tuple |
-| `agent-config/skills/ralph-start/scripts/lib/linear.sh` | `linear_list_approved_issues` unions over `RALPH_PROJECTS`; new helper `linear_list_initiative_projects` (GraphQL via `linear api`) for `initiative` expansion |
-| `agent-config/skills/ralph-start/scripts/preflight_scan.sh` | Update `_chain_runnable`; add out-of-scope-blocker anomaly |
-| `agent-config/skills/ralph-start/scripts/build_queue.sh` | Match new `_chain_runnable` semantics |
-| `agent-config/skills/ralph-start/SKILL.md` | Prerequisites: drop `project`, add `.ralph.json`; new section on scope resolution |
-| `agent-config/docs/playbooks/ralph-v2-usage.md` | Revise "When to run" and the single-project scope language |
-| `agent-config/docs/specs/2026-04-17-ralph-loop-v2-design.md` | Contract-summary note about v2 single-project limit updated to reference this design |
-| `.ralph.json` at chezmoi repo root (new) | `{ "projects": ["Agent Config", "Machine Config"] }` |
+| `skills/ralph-start/config.json` | Remove `project` field |
+| `skills/ralph-start/config.example.json` | Same |
+| `skills/ralph-start/scripts/lib/config.sh` | Drop `RALPH_PROJECT`; add `.ralph.json` loader with scope resolution; export `RALPH_PROJECTS`; extend `RALPH_CONFIG_LOADED` tuple |
+| `skills/ralph-start/scripts/lib/linear.sh` | `linear_list_approved_issues` unions over `RALPH_PROJECTS`; new helper `linear_list_initiative_projects` (GraphQL via `linear api`) for `initiative` expansion |
+| `skills/ralph-start/scripts/preflight_scan.sh` | Update `_chain_runnable`; add out-of-scope-blocker anomaly |
+| `skills/ralph-start/scripts/build_queue.sh` | Match new `_chain_runnable` semantics |
+| `skills/ralph-start/SKILL.md` | Prerequisites: drop `project`, add `.ralph.json`; new section on scope resolution |
+| `docs/playbooks/ralph-v2-usage.md` | Revise "When to run" and the single-project scope language |
+| `docs/specs/2026-04-17-ralph-loop-v2-design.md` | Contract-summary note about v2 single-project limit updated to reference this design |
+| `.ralph.json` at chezmoi repo root (new) | `{ "projects": ["Project A", "Project B"] }` |
 | `.chezmoiignore` (chezmoi source repo only) | Add `.ralph.json` so chezmoi does not apply it as a user dotfile — this file is repo-scope config, not a `$HOME` dotfile |
-| `agent-config/skills/ralph-start/test/…` | Existing tests updated; new tests for scope resolution and multi-project queue building |
+| `skills/ralph-start/test/…` | Existing tests updated; new tests for scope resolution and multi-project queue building |
 
 ## Coexistence with in-flight work
 

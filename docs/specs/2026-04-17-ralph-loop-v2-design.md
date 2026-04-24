@@ -439,7 +439,7 @@ No parent-HEAD tracking — staleness detection is a post-commit-hook concern, n
 
 ```json
 {
-    "project": "Agent Config",
+    "project": "Project A",
     "approved_state": "Approved",
     "review_state": "In Review",
     "failed_label": "ralph-failed",
@@ -471,7 +471,7 @@ spec-queue/
 Upstream tools (brainstorming, plan-writing) must produce:
 
 1. **A Linear issue** in the configured project, in state `Approved`.
-2. **A PRD written into the issue description.** Format is not rigidly prescribed — any markdown that gives Opus 4.7 enough context to implement without further human input. ENG-178 (rescoped 2026-04-22 to cover the full three-phase workflow evaluation) experiments with the recommended shape across idea → PRD, PRD → plan, and plan → code stages. Design doc: `agent-config/docs/specs/2026-04-22-ralph-v2-workflow-evaluation-design.md`.
+2. **A PRD written into the issue description.** Format is not rigidly prescribed — any markdown that gives Opus 4.7 enough context to implement without further human input. ENG-178 (rescoped 2026-04-22 to cover the full three-phase workflow evaluation) experiments with the recommended shape across idea → PRD, PRD → plan, and plan → code stages. Design doc: `docs/specs/2026-04-22-ralph-v2-workflow-evaluation-design.md`.
 3. **Explicit `blocked-by` relations** for any prerequisite issues. The orchestrator uses these for DAG ordering and base-branch selection. **v2 scope limit:** blocker relations are resolved only within the configured project. Cross-project `blocked-by` edges are returned by Linear but fail the "Approved blocker must be in this run's queue" membership check, so cross-project parents appear stuck in preflight. Multi-project dispatch is designed and implemented under ENG-205 (see `2026-04-21-ralph-scope-model-design.md`); once that work lands, the scope is a project list (or initiative shorthand) declared in per-repo `.ralph.json`, and blockers within any in-scope project resolve automatically. ENG-203 was canceled as subsumed.
 
 That's the entire input contract. Everything downstream (branch name, worktree path, session name) is derived by the orchestrator from the Linear issue.
@@ -497,7 +497,7 @@ That's the entire input contract. Everything downstream (branch name, worktree p
 5. **Post-commit hook for stale-parent detection** — fires on parent branch amendment during review; labels any In-Review children with `stale-parent`. Not ralph-loop scope.
 6. **Project-local `close-feature-branch` skill** (per active project; example in chezmoi as reference).
 
-ENG-177 (canceled 2026-04-22) and ENG-178 (rescoped 2026-04-22) covered the upstream-tool experiments. Both are consolidated into the rescoped ENG-178 — see `agent-config/docs/specs/2026-04-22-ralph-v2-workflow-evaluation-design.md`.
+ENG-177 (canceled 2026-04-22) and ENG-178 (rescoped 2026-04-22) covered the upstream-tool experiments. Both are consolidated into the rescoped ENG-178 — see `docs/specs/2026-04-22-ralph-v2-workflow-evaluation-design.md`.
 
 ## Open questions (resolved during implementation)
 
@@ -509,6 +509,6 @@ All five open questions below were resolved as ENG-184 landed. Resolutions are p
 
 3. **Session persistence horizon.** **Resolved:** `~/.claude/projects/` persists conversation history indefinitely with no GC; `claude --resume` remains available for any prior session. `progress.json` needs no expiration guards. The review-time diff + Linear QA comment + worktree context are still the primary review inputs; session resume is a convenience that happens to always be available.
 
-4. **`/run-queue` naming.** **Resolved:** `/ralph-start`. Skill lives at `agent-config/skills/ralph-start/`. The "start" framing emphasizes the user's action (kick off an overnight run) over the loop's internal queue semantics.
+4. **`/run-queue` naming.** **Resolved:** `/ralph-start`. Skill lives at `skills/ralph-start/`. The "start" framing emphasizes the user's action (kick off an overnight run) over the loop's internal queue semantics.
 
 5. **Integration-merge cleanup.** **Resolved:** No cleanup needed — the merge happens inside B's real worktree (not a throwaway one). If B ships, parent merges are absorbed into main; if B is abandoned, normal worktree hygiene removes it.
