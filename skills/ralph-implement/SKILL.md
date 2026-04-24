@@ -44,14 +44,14 @@ If the orchestrator pre-merged a parent branch into this worktree, the merge may
 
 ## Step 3: Implement per the PRD
 
-Follow agent-config conventions: TDD (via `superpowers:test-driven-development`), `superpowers:systematic-debugging` on failures, smallest reasonable changes. The PRD drives the scope.
+Follow your project's conventions: TDD (via `superpowers:test-driven-development`), `superpowers:systematic-debugging` on failures, smallest reasonable changes. The PRD drives the scope.
 
 Before moving to Step 4, cross-check your implementation against the PRD:
 - Every deliverable in the PRD's scope section is implemented.
 - Nothing is implemented that the PRD did not ask for.
 - Any decisions made mid-implementation that the PRD did not specify are recorded (either inline in the code, in the commit messages, or via `capture-decisions`).
 
-If you find in-scope items missing, loop back. If you find out-of-scope work, revert it — unless it is a minimal, behavior-preserving mechanical fix directly implied by the PRD (e.g., a missing import). The carve-out does NOT extend to changes to public interfaces, shared types, persistence schemas, config shapes, or files outside the immediate implementation; any of those, route through the escape hatch. If PRD completion appears to require substantial out-of-scope functionality, that is a scope deviation: invoke the escape hatch (post a Linear comment describing the gap, do NOT invoke `/prepare-for-review`). Do not self-justify out-of-scope additions as "needed for the in-scope work." See `agent-config/CLAUDE.md` `## Autonomous mode` / `### Overrides` for the escape-hatch behavior.
+If you find in-scope items missing, loop back. If you find out-of-scope work, revert it — unless it is a minimal, behavior-preserving mechanical fix directly implied by the PRD (e.g., a missing import). The carve-out does NOT extend to changes to public interfaces, shared types, persistence schemas, config shapes, or files outside the immediate implementation; any of those, route through the escape hatch. If PRD completion appears to require substantial out-of-scope functionality, that is a scope deviation: invoke the escape hatch (post a Linear comment describing the gap, do NOT invoke `/prepare-for-review`). Do not self-justify out-of-scope additions as "needed for the in-scope work." See the autonomous-mode preamble the orchestrator injected at session start for the escape-hatch behavior.
 
 ## Step 4: Verify tests pass
 

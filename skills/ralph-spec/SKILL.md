@@ -144,31 +144,30 @@ Wait for the user's response. If they request changes, make them and re-run the 
 
 Terminal step. Run substeps in order. Steps 1-2 are mandatory preflight gates — no mutation (comment, description, relation, state) happens until both pass. If any later step fails, STOP before the state transition.
 
-**Shell note:** the snippets below share state across blocks (`RALPH_PROJECTS`, `STATE`, `PRIOR`, `ISSUE_ID`, `linear_get_issue_blockers`, …), so the whole finalization must run in a **single** shell session — not per-snippet `bash -c` calls, which spawn a fresh subshell each time and lose that state. Run them in one continuous session (any shell — `lib/config.sh` is portable between bash 3.2+ and zsh; per ENG-249).
+**Shell note:** the snippets below share state across blocks (`RALPH_PROJECTS`, `STATE`, `PRIOR`, `ISSUE_ID`, `linear_get_issue_blockers`, …), so the whole finalization must run in a **single** shell session — not per-snippet `bash -c` calls, which spawn a fresh subshell each time and lose that state. Run them in one continuous session (any shell — `lib/scope.sh` is portable between bash 3.2+ and zsh).
 
-### 1. Load ralph-start config and scope
+### 1. Load ralph-start's scope loader
+
+Workflow state-name values (`CLAUDE_PLUGIN_OPTION_APPROVED_STATE` etc.) are already exported by the Claude Code plugin harness from the plugin's userConfig — no source call needed for them. What we DO need to source is ralph-start's `linear.sh` (for the `linear_get_issue_blockers` helper used in step 5) and `scope.sh` (which parses the repo's `.ralph.json` and exports `RALPH_PROJECTS`):
 
 ```bash
-CONFIG="${RALPH_CONFIG:-$HOME/.claude/skills/ralph-start/config.json}"
-
 # Reuse ralph-start's own loaders so behavior doesn't drift.
 # These exports become available after sourcing:
-#   RALPH_APPROVED_STATE — the configured Approved state name
-#   RALPH_PROJECTS       — newline-joined in-scope project names
-#                          (config.sh expands initiative-shaped .ralph.json)
+#   RALPH_PROJECTS — newline-joined in-scope project names
+#                    (scope.sh expands initiative-shaped .ralph.json)
 # And these helpers become callable:
-#   linear_get_issue_blockers  — used in step 5 for blocker verification
-source "$HOME/.claude/skills/ralph-start/scripts/lib/linear.sh" || {
-  echo "ralph-spec: failed to source linear.sh — ralph-start skill may not be installed at \$HOME/.claude/skills/ralph-start/. Fix the install path or RALPH_CONFIG and re-run." >&2
+#   linear_get_issue_blockers — used in step 5 for blocker verification
+source "$CLAUDE_PLUGIN_ROOT/skills/ralph-start/scripts/lib/linear.sh" || {
+  echo "ralph-spec: failed to source linear.sh — \$CLAUDE_PLUGIN_ROOT may be unset (sensible-ralph plugin not enabled?). Re-enable the plugin and re-run." >&2
   exit 1
 }
-source "$HOME/.claude/skills/ralph-start/scripts/lib/config.sh" "$CONFIG" || {
-  echo "ralph-spec: failed to load ralph-start config/scope. Fix \$RALPH_CONFIG or \$(git rev-parse --show-toplevel)/.ralph.json and re-run." >&2
+source "$CLAUDE_PLUGIN_ROOT/skills/ralph-start/scripts/lib/scope.sh" || {
+  echo "ralph-spec: failed to load scope. Fix \$(git rev-parse --show-toplevel)/.ralph.json and re-run." >&2
   exit 1
 }
 ```
 
-If either source command fails, stop — don't hand-roll `approved_state` parsing. The config is the source of truth and its validators are load-bearing (e.g. `.ralph.json` missing vs both-shapes-set vs initiative-zero-expansion).
+If either source command fails, stop — don't hand-roll `.ralph.json` parsing. `scope.sh` is the source of truth and its validators are load-bearing (e.g. `.ralph.json` missing vs both-shapes-set vs initiative-zero-expansion).
 
 ### 2. Preflight the target issue (gate before any mutation)
 
@@ -183,11 +182,11 @@ if [ -n "${ISSUE_ID:-}" ]; then
 fi
 ```
 
-Branch on `$STATE` before running anything below. Use the state names ralph-start's config loaded (`$RALPH_DONE_STATE`, `$RALPH_IN_PROGRESS_STATE`, `$RALPH_REVIEW_STATE`, `$RALPH_APPROVED_STATE`) rather than hard-coded strings — non-default workflow names would otherwise slip past the guards:
+Branch on `$STATE` before running anything below. Use the state names the plugin harness exported (`$CLAUDE_PLUGIN_OPTION_DONE_STATE`, `$CLAUDE_PLUGIN_OPTION_IN_PROGRESS_STATE`, `$CLAUDE_PLUGIN_OPTION_REVIEW_STATE`, `$CLAUDE_PLUGIN_OPTION_APPROVED_STATE`) rather than hard-coded strings — non-default workflow names would otherwise slip past the guards:
 
-- **Equals `$RALPH_DONE_STATE` or `Canceled`**: stop and ask. Reopening a terminal state warrants explicit confirmation. (`Canceled` is the literal Linear state name — not in ralph-start's config because it's not a pipeline state.)
-- **Equals `$RALPH_APPROVED_STATE`**: warn the user the prior spec will be overwritten. Require explicit confirmation before continuing.
-- **Equals `$RALPH_IN_PROGRESS_STATE` or `$RALPH_REVIEW_STATE`**: stop and ask. Re-speccing an active issue usually means the operator is on the wrong ticket.
+- **Equals `$CLAUDE_PLUGIN_OPTION_DONE_STATE` or `Canceled`**: stop and ask. Reopening a terminal state warrants explicit confirmation. (`Canceled` is the literal Linear state name — not a plugin option because it's not a pipeline state.)
+- **Equals `$CLAUDE_PLUGIN_OPTION_APPROVED_STATE`**: warn the user the prior spec will be overwritten. Require explicit confirmation before continuing.
+- **Equals `$CLAUDE_PLUGIN_OPTION_IN_PROGRESS_STATE` or `$CLAUDE_PLUGIN_OPTION_REVIEW_STATE`**: stop and ask. Re-speccing an active issue usually means the operator is on the wrong ticket.
 - **Anything else** (typically `Todo`, `Backlog`, or `Triage`): proceed.
 
 Then validate `$ISSUE_PROJECT` against `$RALPH_PROJECTS`:
@@ -234,7 +233,7 @@ fi
 
 ### 5. Push spec, set blockers, verify (all-or-nothing before approval)
 
-Blockers and description must all land cleanly before the state transition. A partial blocker set with the issue in `$RALPH_APPROVED_STATE` is materially unsafe — `/ralph-start` would dispatch the issue before the missing prerequisite completed.
+Blockers and description must all land cleanly before the state transition. A partial blocker set with the issue in `$CLAUDE_PLUGIN_OPTION_APPROVED_STATE` is materially unsafe — `/ralph-start` would dispatch the issue before the missing prerequisite completed.
 
 **Before running anything in this step, explicitly initialize `PREREQS`** from the prerequisites identified during design. Bash treats an unset array as empty, so forgetting this line makes the relation-add loop a no-op AND makes the later verification trivially pass (empty `ACTUAL` matches empty `EXPECTED`) — the guard silently collapses. Declare the array explicitly, even when there are no prerequisites:
 
@@ -291,17 +290,17 @@ If any step above fails, STOP. Do **not** run the transition in step 6. Report w
 Only reached when steps 1-5 all succeeded.
 
 ```bash
-linear issue update "$ISSUE_ID" --state "$RALPH_APPROVED_STATE" || {
-  echo "ralph-spec: state transition to $RALPH_APPROVED_STATE failed for $ISSUE_ID." >&2
+linear issue update "$ISSUE_ID" --state "$CLAUDE_PLUGIN_OPTION_APPROVED_STATE" || {
+  echo "ralph-spec: state transition to $CLAUDE_PLUGIN_OPTION_APPROVED_STATE failed for $ISSUE_ID." >&2
   echo "  Description and blocker relations already landed; issue is still in $STATE." >&2
-  echo "  Retry the transition by hand: linear issue update $ISSUE_ID --state \"$RALPH_APPROVED_STATE\"" >&2
+  echo "  Retry the transition by hand: linear issue update $ISSUE_ID --state \"$CLAUDE_PLUGIN_OPTION_APPROVED_STATE\"" >&2
   exit 1
 }
 ```
 
 Only after the transition succeeds, tell the user:
 
-> "`$ISSUE_ID` is now in `$RALPH_APPROVED_STATE`. Run `/ralph-start` at your next work session to dispatch it (along with any other Approved issues in the queue)."
+> "`$ISSUE_ID` is now in `$CLAUDE_PLUGIN_OPTION_APPROVED_STATE`. Run `/ralph-start` at your next work session to dispatch it (along with any other Approved issues in the queue)."
 
 If the transition failed, do NOT emit that message — the prior mutations landed but the issue is not dispatchable.
 
