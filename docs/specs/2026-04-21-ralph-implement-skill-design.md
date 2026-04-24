@@ -36,7 +36,7 @@ Body — numbered steps:
 
 1. **Read the PRD** — `linear issue view "$ISSUE_ID" --json | jq -r .description`. The description is the spec.
 2. **Check for unresolved merge conflicts** — `git status --short`. If the orchestrator pre-merged a parent branch into this worktree, resolve conflicts before implementing the feature.
-3. **Implement per the PRD** — follow agent-config conventions: TDD, systematic-debugging on failures, smallest reasonable changes.
+3. **Implement per the PRD** — follow your project's conventions: TDD, systematic-debugging on failures, smallest reasonable changes.
 4. **Verify tests pass.**
 5. **Invoke `/prepare-for-review`** — *only if steps 3–4 are clean*. `prepare-for-review` runs the doc sweep, decisions capture, codex review, posts the handoff comment, and transitions Linear to In Review.
 
@@ -97,7 +97,7 @@ The orchestrator still computes `issue_id`, `title`, `branch`, `path` the same w
 Not touched (historical / unrelated):
 - `docs/specs/2026-04-15-spec-queue-orchestrator-design.md` — superseded v1 spec.
 - `docs/plans/2026-04-18-ralph-v2-rollout.md` — frozen rollout plan for ralph v2 (deleted after all tickets completed).
-- `agent-config/superpowers-overrides/subagent-driven-development/SKILL.md` — "Prompt Templates" section header is generic, unrelated to ralph.
+- `superpowers-overrides/subagent-driven-development/SKILL.md` (in the chezmoi repo where this plugin originated) — "Prompt Templates" section header is generic, unrelated to ralph.
 
 ## Out of scope
 

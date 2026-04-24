@@ -1,5 +1,15 @@
 # Ralph-spec sources ralph-start's config and linear libs
 
+> **Historical note (post-extraction, 2026-04-24):** this decision was
+> written when ralph lived in the chezmoi repo with skills symlinked
+> into `$HOME/.claude/skills/`. The decision — ralph-spec reuses
+> ralph-start's libs rather than reimplementing them — still holds. The
+> paths below now resolve through `$CLAUDE_PLUGIN_ROOT/skills/ralph-start/...`
+> (see `skills/ralph-spec/SKILL.md`), and `config.sh` has been renamed
+> and shrunk to `scope.sh` (workflow config now comes from plugin
+> userConfig via `CLAUDE_PLUGIN_OPTION_*` env vars). The reasoning
+> about drift risk and semantic-gap avoidance is unchanged.
+
 ## Context
 
 `ralph-spec`'s finalization step needs three pieces of configuration that
