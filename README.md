@@ -116,6 +116,45 @@ Brief summary:
 - **`/ralph-implement`** — invoked INSIDE a dispatched session; reads the
   Linear issue as its spec and implements it end-to-end up to
   `/prepare-for-review`.
+- **`/prepare-for-review`** — handoff ritual at the end of an
+  implementation session (doc sweep, decisions capture, codex review,
+  Linear comment, state transition to In Review).
+- **`/close-issue`** — Linear-side close ritual after the user reviews
+  In-Review work. Delegates VCS integration to a project-local
+  `close-branch` skill (not bundled — see below).
+
+## Companion skills
+
+The plugin bundles the four skills that sit in the critical path of
+the ralph lifecycle: `ralph-start`, `ralph-spec`, `ralph-implement`,
+`prepare-for-review`, and `close-issue`. A few external skills extend
+the flow:
+
+**Required for the consumer repo:**
+
+- A project-local **`close-branch`** skill at `.claude/skills/close-branch/`.
+  This is the project-specific VCS integration — base branch, rebase policy,
+  merge strategy, push model, branch-delete semantics. `close-issue`
+  invokes it via `Skill(close-branch)` without a discovery step, so the
+  skill name is part of the contract. sensible-ralph intentionally
+  doesn't bundle one — every project's merge ritual is different.
+
+**Recommended companions:**
+
+- **Superpowers plugin** ([obra/superpowers](https://github.com/obra/superpowers))
+  — provides `test-driven-development`, `systematic-debugging`,
+  `verification-before-completion`, `using-git-worktrees`,
+  `capture-decisions`, `prune-completed-docs`, `update-stale-docs`,
+  `clean-branch-history`. Referenced by `ralph-implement` (for
+  implementation discipline) and by `prepare-for-review` (for its doc
+  and history cleanup steps). If superpowers isn't installed, those
+  steps degrade gracefully (skip with a note, or fall back to manual
+  equivalents).
+- **Codex plugin** ([openai/codex-plugin-cc](https://github.com/openai/codex-plugin-cc))
+  — provides `codex-rescue` and `codex-review-gate`. `codex-review-gate`
+  is the review gate that `prepare-for-review` runs before handoff; it's
+  a load-bearing piece of the safety pillar in autonomous sessions.
+  Install this if you rely on the orchestrator.
 
 ## Design notes
 
@@ -126,10 +165,6 @@ Brief summary:
   prompt that overrides your CLAUDE.md rules requiring human input —
   those become "post a Linear comment and exit clean" instead. See
   `skills/ralph-start/scripts/autonomous-preamble.md`.
-- The plugin assumes a handful of general-purpose skills are available:
-  `linear-workflow`, `codex-review-gate`, `prepare-for-review`,
-  `clean-branch-history`, `using-git-worktrees`. Install those from
-  their own plugins; sensible-ralph doesn't bundle them.
 
 ## Version
 

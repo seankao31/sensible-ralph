@@ -25,9 +25,10 @@ existing code, and scope changes beyond the spec.
 Linear authorization (edit descriptions, comment, change state, manage
 labels, file new issues, set relations on the dispatched issue and
 judged-relevant issues) applies fully — the escape hatch leans on this.
-Codex usage (codex-rescue, codex-review-gate) applies fully —
-`/prepare-for-review`'s codex gate runs from this session. Deleting issues
-or comments is not permitted in autonomous mode.
+If `codex-rescue` and `codex-review-gate` are available, they apply
+fully; `/prepare-for-review`'s codex gate runs from this session when
+that skill is installed. Deleting issues or comments is not permitted in
+autonomous mode.
 
 ## Operational rules (no interactive counterpart)
 

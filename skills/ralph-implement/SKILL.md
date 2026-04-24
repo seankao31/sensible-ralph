@@ -44,7 +44,7 @@ If the orchestrator pre-merged a parent branch into this worktree, the merge may
 
 ## Step 3: Implement per the PRD
 
-Follow your project's conventions: TDD (via `superpowers:test-driven-development`), `superpowers:systematic-debugging` on failures, smallest reasonable changes. The PRD drives the scope.
+Follow your project's conventions: TDD, systematic debugging on failures, smallest reasonable changes. The PRD drives the scope. If the `superpowers` plugin is installed, prefer its `test-driven-development` and `systematic-debugging` skills; otherwise apply the equivalent discipline directly.
 
 Before moving to Step 4, cross-check your implementation against the PRD:
 - Every deliverable in the PRD's scope section is implemented.
@@ -55,7 +55,7 @@ If you find in-scope items missing, loop back. If you find out-of-scope work, re
 
 ## Step 4: Verify tests pass
 
-Invoke `superpowers:verification-before-completion` to gate the claim that tests pass. Run the project's verification commands fresh (not from memory), read the exit codes and output, and confirm pristine output per the project's testing rules (see CLAUDE.md "Testing" section).
+If `superpowers:verification-before-completion` is installed, invoke it to gate the claim that tests pass. Otherwise: run the project's verification commands fresh (not from memory), read the exit codes and output, and confirm pristine output per the project's testing rules (see CLAUDE.md "Testing" section).
 
 If verification does not pass cleanly, fix the issue — do not suppress, skip, or delete tests. If the issue cannot be resolved within the session, treat as a red flag per Step 5 and do NOT invoke `/prepare-for-review`.
 
