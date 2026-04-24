@@ -54,6 +54,8 @@ setup() {
   cp "$ORCH_SH" "$STUB_DIR/scripts/orchestrator.sh"
   # Real worktree.sh — we want real git worktree operations
   cp "$WORKTREE_SH" "$STUB_DIR/scripts/lib/worktree.sh"
+  # defaults.sh is sourced by orchestrator.sh at startup for CLAUDE_PLUGIN_OPTION_* fallbacks
+  cp "$SCRIPT_DIR/lib/defaults.sh" "$STUB_DIR/scripts/lib/defaults.sh"
   # orchestrator.sh prepends this file to the claude -p prompt
   cp "$AUTONOMOUS_PREAMBLE" "$STUB_DIR/scripts/autonomous-preamble.md"
 

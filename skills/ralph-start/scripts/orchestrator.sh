@@ -23,6 +23,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# shellcheck source=lib/defaults.sh
+source "$SCRIPT_DIR/lib/defaults.sh"
+
 # Auto-source scope unless the load marker matches THIS invocation's repo +
 # scope-file content. RALPH_SCOPE_LOADED is "<repo-root>|<scope-hash>"; if the
 # operator ran another repo's ralph in the same shell, or edited .ralph.json

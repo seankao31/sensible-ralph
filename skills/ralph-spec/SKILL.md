@@ -152,11 +152,17 @@ Workflow state-name values (`CLAUDE_PLUGIN_OPTION_APPROVED_STATE` etc.) are alre
 
 ```bash
 # Reuse ralph-start's own loaders so behavior doesn't drift.
+# defaults.sh applies CLAUDE_PLUGIN_OPTION_* fallbacks — the plugin
+# harness may skip populating them when the user didn't walk the
+# enable-time config dialog, so the shell-side `:=` assignments keep
+# state-name comparisons working either way.
 # These exports become available after sourcing:
 #   RALPH_PROJECTS — newline-joined in-scope project names
 #                    (scope.sh expands initiative-shaped .ralph.json)
+#   CLAUDE_PLUGIN_OPTION_* — workflow state/label/path defaults
 # And these helpers become callable:
 #   linear_get_issue_blockers — used in step 5 for blocker verification
+source "$CLAUDE_PLUGIN_ROOT/skills/ralph-start/scripts/lib/defaults.sh"
 source "$CLAUDE_PLUGIN_ROOT/skills/ralph-start/scripts/lib/linear.sh" || {
   echo "ralph-spec: failed to source linear.sh — \$CLAUDE_PLUGIN_ROOT may be unset (sensible-ralph plugin not enabled?). Re-enable the plugin and re-run." >&2
   exit 1

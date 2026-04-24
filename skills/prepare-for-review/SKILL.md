@@ -28,6 +28,14 @@ This skill is a workflow orchestrator — each step delegates to another skill. 
 
 If any of these is missing at invocation time, skip the step with a brief note and continue. Step 6 (Linear comment) and Step 7 (state transition) are self-contained — they invoke `linear` CLI directly and don't need any other skill.
 
+## Load plugin-option defaults
+
+Before running any state-name comparisons, source the plugin's defaults lib so `$CLAUDE_PLUGIN_OPTION_REVIEW_STATE`, `$CLAUDE_PLUGIN_OPTION_IN_PROGRESS_STATE`, etc. are populated even if the user skipped the enable-time config dialog:
+
+```bash
+source "$CLAUDE_PLUGIN_ROOT/skills/ralph-start/scripts/lib/defaults.sh"
+```
+
 ## Determine the Linear issue ID
 
 In sensible-ralph sessions, the agent receives the issue ID as the `/ralph-implement` invocation argument and exposes it as `$ISSUE_ID`. In interactive sessions, derive it from the branch name:

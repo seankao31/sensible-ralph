@@ -60,6 +60,7 @@ STUBLINEAR
 
   cp "$BUILD_QUEUE_SH" "$STUB_DIR/build_queue.sh"
   cp "$TOPOSORT_SH" "$STUB_DIR/toposort.sh"
+  cp "$SCRIPT_DIR/lib/defaults.sh" "$STUB_DIR/lib/defaults.sh"
 }
 
 teardown() {

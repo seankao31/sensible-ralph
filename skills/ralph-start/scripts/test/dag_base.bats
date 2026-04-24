@@ -56,6 +56,7 @@ STUB
 
   # Symlink dag_base.sh into temp dir so \$(dirname "\$0")/lib/linear.sh resolves correctly
   cp "$DAG_BASE" "$tmp_dir/dag_base.sh"
+  cp "$SCRIPT_DIR/lib/defaults.sh" "$tmp_dir/lib/defaults.sh"
 
   # Set the scope-loaded marker to the current repo + .ralph.json hash so
   # dag_base.sh's auto-source gate skips loading scope.sh.

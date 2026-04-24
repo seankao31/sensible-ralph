@@ -113,6 +113,7 @@ STUBLINEAR
 
   # Copy preflight_scan.sh into STUB_DIR so $(dirname "$0")/lib/linear.sh resolves.
   cp "$PREFLIGHT_SH" "$STUB_DIR/preflight_scan.sh"
+  cp "$SCRIPT_DIR/lib/defaults.sh" "$STUB_DIR/lib/defaults.sh"
   # Copy the real preflight_labels.sh — exercising the real helper against the
   # stubbed linear_label_exists above, not a hand-rolled second stub.
   cp "$SCRIPT_DIR/lib/preflight_labels.sh" "$STUB_DIR/lib/preflight_labels.sh"

@@ -53,6 +53,7 @@ Source `lib/linear.sh` first — it defines helpers used throughout Pre-flight a
 
 ```bash
 RALPH_LIB="$CLAUDE_PLUGIN_ROOT/skills/ralph-start/scripts/lib"
+source "$RALPH_LIB/defaults.sh"       # CLAUDE_PLUGIN_OPTION_* fallbacks
 source "$RALPH_LIB/linear.sh"
 source "$RALPH_LIB/scope.sh"
 source "$RALPH_LIB/branch_ancestry.sh"
