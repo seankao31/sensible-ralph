@@ -1,0 +1,9 @@
+# Runtime artifacts the orchestrator writes to a consumer repo. Not usually
+# relevant inside the plugin repo itself (sensible-ralph isn't typically a
+# ralph consumer of its own skills), but shipped so the list is easy to
+# copy-paste from here if the plugin's own development ever involves a
+# dispatch.
+/progress.json
+/ordered_queue.txt
+/.worktrees/
+ralph-output.log
