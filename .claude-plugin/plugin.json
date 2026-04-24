@@ -9,65 +9,56 @@
     "approved_state": {
       "type": "string",
       "title": "Approved state name",
-      "description": "Linear workflow state for issues ready to dispatch. Press Enter to accept the default: Approved",
-      "default": "Approved",
-      "required": true
+      "description": "Linear workflow state for issues ready to dispatch (default: Approved)",
+      "default": "Approved"
     },
     "in_progress_state": {
       "type": "string",
       "title": "In-Progress state name",
-      "description": "Linear workflow state while a session is running. Press Enter to accept the default: In Progress",
-      "default": "In Progress",
-      "required": true
+      "description": "Linear workflow state while a session is running (default: In Progress)",
+      "default": "In Progress"
     },
     "review_state": {
       "type": "string",
       "title": "In-Review state name",
-      "description": "Linear workflow state after /prepare-for-review. Press Enter to accept the default: In Review",
-      "default": "In Review",
-      "required": true
+      "description": "Linear workflow state after /prepare-for-review (default: In Review)",
+      "default": "In Review"
     },
     "done_state": {
       "type": "string",
       "title": "Done state name",
-      "description": "Linear workflow state after merge. Press Enter to accept the default: Done",
-      "default": "Done",
-      "required": true
+      "description": "Linear workflow state after merge (default: Done)",
+      "default": "Done"
     },
     "failed_label": {
       "type": "string",
       "title": "Failed label",
-      "description": "Label applied when a session fails or exits clean. Press Enter to accept the default: ralph-failed",
-      "default": "ralph-failed",
-      "required": true
+      "description": "Label applied when a session fails or exits clean (default: ralph-failed)",
+      "default": "ralph-failed"
     },
     "stale_parent_label": {
       "type": "string",
       "title": "Stale-parent label",
-      "description": "Label applied to In-Review children whose parent was amended. Press Enter to accept the default: stale-parent",
-      "default": "stale-parent",
-      "required": true
+      "description": "Label applied to In-Review children whose parent was amended (default: stale-parent)",
+      "default": "stale-parent"
     },
     "worktree_base": {
       "type": "string",
       "title": "Worktree base directory",
-      "description": "Directory under repo root for session worktrees. Press Enter to accept the default: .worktrees",
-      "default": ".worktrees",
-      "required": true
+      "description": "Directory under repo root for session worktrees (default: .worktrees)",
+      "default": ".worktrees"
     },
     "model": {
       "type": "string",
       "title": "Claude model",
-      "description": "Model to use for dispatched sessions. Press Enter to accept the default: opus",
-      "default": "opus",
-      "required": true
+      "description": "Model to use for dispatched sessions (default: opus)",
+      "default": "opus"
     },
     "stdout_log_filename": {
       "type": "string",
       "title": "Session log filename",
-      "description": "Per-session stdout log file (inside the worktree). Press Enter to accept the default: ralph-output.log",
-      "default": "ralph-output.log",
-      "required": true
+      "description": "Per-session stdout log file inside the worktree (default: ralph-output.log)",
+      "default": "ralph-output.log"
     }
   }
 }
