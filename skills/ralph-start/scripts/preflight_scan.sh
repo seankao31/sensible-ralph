@@ -5,8 +5,9 @@ set -euo pipefail
 # missing/trivial PRD. Scans all Approved issues and reports anomalies.
 # Exits non-zero if any anomalies found so the operator can fix before dispatch.
 #
-# Requires RALPH_PROJECTS, RALPH_APPROVED_STATE, RALPH_FAILED_LABEL,
-# RALPH_REVIEW_STATE, RALPH_DONE_STATE exported (source lib/config.sh first).
+# Requires RALPH_PROJECTS (from lib/scope.sh) and CLAUDE_PLUGIN_OPTION_APPROVED_STATE,
+# CLAUDE_PLUGIN_OPTION_FAILED_LABEL, CLAUDE_PLUGIN_OPTION_REVIEW_STATE,
+# CLAUDE_PLUGIN_OPTION_DONE_STATE (from the plugin harness).
 #
 # Performance: makes O(M * K) Linear CLI calls where M = number of Approved issues,
 # K = average blocker count (plus recursive calls for stuck-chain check).
@@ -14,14 +15,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# Auto-source config unless the load marker matches THIS script's expected
-# config path. See orchestrator.sh for rationale.
-CONFIG_FILE="${RALPH_CONFIG:-$SCRIPT_DIR/../config.json}"
-if [[ ! -f "$CONFIG_FILE" ]]; then
-  echo "preflight_scan: config not found at $CONFIG_FILE — set RALPH_CONFIG or create config.json" >&2
-  exit 1
-fi
-RESOLVED_CONFIG="$(cd "$(dirname "$CONFIG_FILE")" && pwd)/$(basename "$CONFIG_FILE")"
+# Auto-source scope unless the load marker matches THIS invocation's repo +
+# scope-file content. See orchestrator.sh for rationale.
 RESOLVED_REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || RESOLVED_REPO_ROOT=""
 RESOLVED_SCOPE_HASH=""
 if [[ -n "$RESOLVED_REPO_ROOT" && -f "$RESOLVED_REPO_ROOT/.ralph.json" ]]; then
@@ -30,10 +25,10 @@ fi
 # shellcheck source=lib/linear.sh
 source "$SCRIPT_DIR/lib/linear.sh"
 
-EXPECTED_LOADED_TUPLE="${RESOLVED_CONFIG}|${RESOLVED_REPO_ROOT}|${RESOLVED_SCOPE_HASH}"
-if [[ "${RALPH_CONFIG_LOADED:-}" != "$EXPECTED_LOADED_TUPLE" ]]; then
-  # shellcheck source=lib/config.sh
-  source "$SCRIPT_DIR/lib/config.sh" "$CONFIG_FILE"
+EXPECTED_SCOPE_LOADED="${RESOLVED_REPO_ROOT}|${RESOLVED_SCOPE_HASH}"
+if [[ "${RALPH_SCOPE_LOADED:-}" != "$EXPECTED_SCOPE_LOADED" ]]; then
+  # shellcheck source=lib/scope.sh
+  source "$SCRIPT_DIR/lib/scope.sh"
 fi
 
 # shellcheck source=lib/preflight_labels.sh
@@ -56,7 +51,7 @@ fi
 # Returns 0 (true) if resolved, 1 (false) otherwise.
 _blocker_is_resolved() {
   local state="$1"
-  [[ "$state" == "$RALPH_REVIEW_STATE" || "$state" == "$RALPH_DONE_STATE" ]]
+  [[ "$state" == "$CLAUDE_PLUGIN_OPTION_REVIEW_STATE" || "$state" == "$CLAUDE_PLUGIN_OPTION_DONE_STATE" ]]
 }
 
 # Check whether a project name (exact match, whole line) is in RALPH_PROJECTS.
@@ -109,7 +104,7 @@ _chain_runnable() {
     if _blocker_is_resolved "$b_state"; then
       continue
     fi
-    if [[ "$b_state" == "$RALPH_APPROVED_STATE" ]]; then
+    if [[ "$b_state" == "$CLAUDE_PLUGIN_OPTION_APPROVED_STATE" ]]; then
       if [[ "${_PREFLIGHT_APPROVED_SET:-}" != *" $b_id "* ]]; then
         return 1
       fi
@@ -198,7 +193,7 @@ while IFS= read -r issue_id; do
     # Only Approved blockers can be stuck — In Progress/Todo etc. are reported by
     # other anomaly checks (or simply not orchestrator-dispatchable). Resolved
     # blockers (Done/In Review) trivially can't be stuck.
-    if [[ "$b_state" != "$RALPH_APPROVED_STATE" ]]; then
+    if [[ "$b_state" != "$CLAUDE_PLUGIN_OPTION_APPROVED_STATE" ]]; then
       continue
     fi
     if [[ "$_PREFLIGHT_APPROVED_SET" != *" $b_id "* ]]; then

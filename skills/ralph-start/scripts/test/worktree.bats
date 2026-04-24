@@ -15,8 +15,8 @@ setup() {
   git -C "$REPO_DIR" add README.md
   git -C "$REPO_DIR" commit -m "init"
 
-  # Export RALPH_WORKTREE_BASE as config.sh would
-  export RALPH_WORKTREE_BASE=".worktrees"
+  # Export CLAUDE_PLUGIN_OPTION_WORKTREE_BASE as config.sh would
+  export CLAUDE_PLUGIN_OPTION_WORKTREE_BASE=".worktrees"
 }
 
 teardown() {
@@ -143,7 +143,7 @@ call_fn_from() {
 # 4. worktree_path_for_issue — computes the correct path from repo root
 # ---------------------------------------------------------------------------
 @test "worktree_path_for_issue returns correct path for a branch name" {
-  local expected="$REPO_DIR/$RALPH_WORKTREE_BASE/eng-99-some-feature"
+  local expected="$REPO_DIR/$CLAUDE_PLUGIN_OPTION_WORKTREE_BASE/eng-99-some-feature"
 
   run call_fn worktree_path_for_issue "eng-99-some-feature"
 
@@ -151,10 +151,10 @@ call_fn_from() {
   [ "$output" = "$expected" ]
 }
 
-@test "worktree_path_for_issue strips leading and trailing slashes from RALPH_WORKTREE_BASE" {
+@test "worktree_path_for_issue strips leading and trailing slashes from CLAUDE_PLUGIN_OPTION_WORKTREE_BASE" {
   local expected="$REPO_DIR/.worktrees/eng-99-slash-test"
 
-  run bash -c "cd '$REPO_DIR' && RALPH_WORKTREE_BASE='/.worktrees/' source '$WORKTREE_SH' && worktree_path_for_issue eng-99-slash-test"
+  run bash -c "cd '$REPO_DIR' && CLAUDE_PLUGIN_OPTION_WORKTREE_BASE='/.worktrees/' source '$WORKTREE_SH' && worktree_path_for_issue eng-99-slash-test"
 
   [ "$status" -eq 0 ]
   [ "$output" = "$expected" ]
@@ -185,7 +185,7 @@ call_fn_from() {
   local linked_wt="$REPO_DIR/.worktrees/existing-wt"
   git -C "$REPO_DIR" worktree add "$linked_wt" -b "existing-wt"
 
-  local expected="$REPO_DIR/$RALPH_WORKTREE_BASE/eng-99-new-feature"
+  local expected="$REPO_DIR/$CLAUDE_PLUGIN_OPTION_WORKTREE_BASE/eng-99-new-feature"
 
   run call_fn_from "$linked_wt" worktree_path_for_issue "eng-99-new-feature"
 
@@ -198,7 +198,7 @@ call_fn_from() {
   git -C "$REPO_DIR" worktree add "$linked_wt" -b "existing-wt-subdir"
   mkdir -p "$linked_wt/nested/deep"
 
-  local expected="$REPO_DIR/$RALPH_WORKTREE_BASE/eng-99-new-feature"
+  local expected="$REPO_DIR/$CLAUDE_PLUGIN_OPTION_WORKTREE_BASE/eng-99-new-feature"
 
   run call_fn_from "$linked_wt/nested/deep" worktree_path_for_issue "eng-99-new-feature"
 

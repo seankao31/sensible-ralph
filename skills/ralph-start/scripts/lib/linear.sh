@@ -2,11 +2,12 @@
 # Linear CLI wrapper functions.
 # This file is sourced (not executed); do NOT call `set` at the top level or `exit`.
 #
-# Source order: this file FIRST, then lib/config.sh — config.sh's `_config_load`
+# Source order: this file FIRST, then lib/scope.sh — scope.sh's `_scope_load`
 # guards on `linear_list_initiative_projects` being defined. The functions
-# below also reference RALPH_PROJECTS, RALPH_APPROVED_STATE, and
-# RALPH_FAILED_LABEL at call time; those exports come from config.sh and must
-# be set before invoking the corresponding helpers.
+# below also reference RALPH_PROJECTS (from scope.sh),
+# CLAUDE_PLUGIN_OPTION_APPROVED_STATE, and CLAUDE_PLUGIN_OPTION_FAILED_LABEL
+# (from the plugin harness) at call time; those must be set before invoking
+# the corresponding helpers.
 #
 # Functions:
 #   linear_list_approved_issues     — list Approved issue IDs (one per line)
@@ -20,8 +21,9 @@
 #   linear_comment                  — post a comment on an issue
 
 # List issue IDs across the configured projects ($RALPH_PROJECTS, newline-
-# joined) with state name matching $RALPH_APPROVED_STATE, excluding issues
-# labeled $RALPH_FAILED_LABEL. Outputs one issue ID per line.
+# joined) with state name matching $CLAUDE_PLUGIN_OPTION_APPROVED_STATE,
+# excluding issues labeled $CLAUDE_PLUGIN_OPTION_FAILED_LABEL. Outputs one
+# issue ID per line.
 #
 # Makes one `linear issue query` call per project and concatenates results.
 # Preserved over a single GraphQL query with a project-list filter because
@@ -38,8 +40,8 @@ linear_list_approved_issues() {
     }
 
     printf '%s' "$raw" | jq -r \
-      --arg state "$RALPH_APPROVED_STATE" \
-      --arg failed_label "$RALPH_FAILED_LABEL" \
+      --arg state "$CLAUDE_PLUGIN_OPTION_APPROVED_STATE" \
+      --arg failed_label "$CLAUDE_PLUGIN_OPTION_FAILED_LABEL" \
       '.nodes[]
        | select(.state.name == $state)
        | select(
@@ -52,7 +54,7 @@ linear_list_approved_issues() {
 # Expand an initiative name to the list of its member project names.
 # Outputs: one project name per line (newline-joined).
 #
-# Used by config.sh when .ralph.json carries `initiative: "..."` instead of
+# Used by scope.sh when .ralph.json carries `initiative: "..."` instead of
 # an explicit `projects` list. `linear issue query --initiative` does not
 # exist (CLI v2.0.0), so the resolution path is a GraphQL lookup via
 # `linear api`.

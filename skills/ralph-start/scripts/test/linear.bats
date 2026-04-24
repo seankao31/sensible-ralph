@@ -37,8 +37,8 @@ STUB
   # as before the multi-project change), but the multi-project tests below
   # override this.
   export RALPH_PROJECTS="Agent Config"
-  export RALPH_APPROVED_STATE="Approved"
-  export RALPH_FAILED_LABEL="ralph-failed"
+  export CLAUDE_PLUGIN_OPTION_APPROVED_STATE="Approved"
+  export CLAUDE_PLUGIN_OPTION_FAILED_LABEL="ralph-failed"
 }
 
 teardown() {

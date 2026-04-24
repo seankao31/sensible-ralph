@@ -9,23 +9,18 @@ set -euo pipefail
 #   scripts/build_queue.sh > ordered_queue.txt
 #
 # An issue is pickup-ready only if:
-#   - state == $RALPH_APPROVED_STATE
-#   - no $RALPH_FAILED_LABEL label (filtered by linear_list_approved_issues)
-#   - every blocked-by relation is in {$RALPH_DONE_STATE, $RALPH_REVIEW_STATE}
+#   - state == $CLAUDE_PLUGIN_OPTION_APPROVED_STATE
+#   - no $CLAUDE_PLUGIN_OPTION_FAILED_LABEL label (filtered by linear_list_approved_issues)
+#   - every blocked-by relation is in {$CLAUDE_PLUGIN_OPTION_DONE_STATE,
+#     $CLAUDE_PLUGIN_OPTION_REVIEW_STATE}
 #
 # Issues with any blocker in another state are skipped (not yet pickup-ready)
 # and a warning is emitted to stderr.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# Auto-source config unless the load marker matches THIS script's expected
-# config path. See orchestrator.sh for rationale.
-CONFIG_FILE="${RALPH_CONFIG:-$SCRIPT_DIR/../config.json}"
-if [[ ! -f "$CONFIG_FILE" ]]; then
-  echo "build_queue: config not found at $CONFIG_FILE — set RALPH_CONFIG or create config.json" >&2
-  exit 1
-fi
-RESOLVED_CONFIG="$(cd "$(dirname "$CONFIG_FILE")" && pwd)/$(basename "$CONFIG_FILE")"
+# Auto-source scope unless the load marker matches THIS invocation's repo +
+# scope-file content. See orchestrator.sh for rationale.
 RESOLVED_REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || RESOLVED_REPO_ROOT=""
 RESOLVED_SCOPE_HASH=""
 if [[ -n "$RESOLVED_REPO_ROOT" && -f "$RESOLVED_REPO_ROOT/.ralph.json" ]]; then
@@ -34,10 +29,10 @@ fi
 # shellcheck source=lib/linear.sh
 source "$SCRIPT_DIR/lib/linear.sh"
 
-EXPECTED_LOADED_TUPLE="${RESOLVED_CONFIG}|${RESOLVED_REPO_ROOT}|${RESOLVED_SCOPE_HASH}"
-if [[ "${RALPH_CONFIG_LOADED:-}" != "$EXPECTED_LOADED_TUPLE" ]]; then
-  # shellcheck source=lib/config.sh
-  source "$SCRIPT_DIR/lib/config.sh" "$CONFIG_FILE"
+EXPECTED_SCOPE_LOADED="${RESOLVED_REPO_ROOT}|${RESOLVED_SCOPE_HASH}"
+if [[ "${RALPH_SCOPE_LOADED:-}" != "$EXPECTED_SCOPE_LOADED" ]]; then
+  # shellcheck source=lib/scope.sh
+  source "$SCRIPT_DIR/lib/scope.sh"
 fi
 
 # Check whether a project name (exact match, whole line) is in RALPH_PROJECTS.
@@ -82,10 +77,10 @@ while IFS= read -r issue_id; do
   for (( i = 0; i < blocker_count; i++ )); do
     state="$(printf '%s' "$blockers_json" | jq -r ".[$i].state")"
     blocker_id="$(printf '%s' "$blockers_json" | jq -r ".[$i].id")"
-    if [[ "$state" == "$RALPH_DONE_STATE" || "$state" == "$RALPH_REVIEW_STATE" ]]; then
+    if [[ "$state" == "$CLAUDE_PLUGIN_OPTION_DONE_STATE" || "$state" == "$CLAUDE_PLUGIN_OPTION_REVIEW_STATE" ]]; then
       continue
     fi
-    if [[ "$state" == "$RALPH_APPROVED_STATE" ]]; then
+    if [[ "$state" == "$CLAUDE_PLUGIN_OPTION_APPROVED_STATE" ]]; then
       if [[ "$approved_set" == *" $blocker_id "* ]]; then
         continue
       fi

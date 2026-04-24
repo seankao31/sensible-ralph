@@ -10,12 +10,12 @@ LINEAR_SH="$SCRIPT_DIR/lib/linear.sh"
 # Setup: set required env vars and stub linear_get_issue_blockers
 # ---------------------------------------------------------------------------
 setup() {
-  export RALPH_REVIEW_STATE="In Review"
-  export RALPH_APPROVED_STATE="Approved"
-  export RALPH_PROJECT="Agent Config"
-  export RALPH_FAILED_LABEL="ralph-failed"
+  export CLAUDE_PLUGIN_OPTION_REVIEW_STATE="In Review"
+  export CLAUDE_PLUGIN_OPTION_APPROVED_STATE="Approved"
+  export RALPH_PROJECTS="Test Project"
+  export CLAUDE_PLUGIN_OPTION_FAILED_LABEL="ralph-failed"
   # Marker is set per-test in run_dag_base, after the per-test tmp_dir is
-  # created — its path is what the script's auto-source gate compares against.
+  # created — its value is what the script's auto-source gate compares against.
 }
 
 # ---------------------------------------------------------------------------
@@ -57,18 +57,15 @@ STUB
   # Symlink dag_base.sh into temp dir so \$(dirname "\$0")/lib/linear.sh resolves correctly
   cp "$DAG_BASE" "$tmp_dir/dag_base.sh"
 
-  # Provide a dummy config inside tmp_dir and set the marker to its resolved
-  # path so dag_base.sh's auto-source gate skips loading config.sh.
-  local dummy_config="$tmp_dir/dummy-config.json"
-  touch "$dummy_config"
+  # Set the scope-loaded marker to the current repo + .ralph.json hash so
+  # dag_base.sh's auto-source gate skips loading scope.sh.
   local _repo_root _scope_hash
   _repo_root="$(git rev-parse --show-toplevel)"
   _scope_hash=""
   if [[ -f "$_repo_root/.ralph.json" ]]; then
     _scope_hash="$(shasum -a 1 < "$_repo_root/.ralph.json" | awk '{print $1}')"
   fi
-  RALPH_CONFIG="$dummy_config" \
-    RALPH_CONFIG_LOADED="$(cd "$(dirname "$dummy_config")" && pwd)/$(basename "$dummy_config")|$_repo_root|$_scope_hash" \
+  RALPH_SCOPE_LOADED="$_repo_root|$_scope_hash" \
     run bash "$tmp_dir/dag_base.sh" "$issue_id"
   rm -rf "$tmp_dir"
 }
@@ -84,7 +81,7 @@ STUB
 }
 
 # ---------------------------------------------------------------------------
-# 2. All blockers Done (state != RALPH_REVIEW_STATE) → output "main"
+# 2. All blockers Done (state != CLAUDE_PLUGIN_OPTION_REVIEW_STATE) → output "main"
 # ---------------------------------------------------------------------------
 @test "all blockers done outputs main" {
   local blockers

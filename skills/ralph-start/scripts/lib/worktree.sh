@@ -115,13 +115,13 @@ _resolve_repo_root() {
 }
 
 # Compute the worktree path for an issue given its branch name.
-# Outputs: $REPO_ROOT/$RALPH_WORKTREE_BASE/<branch>
-# Requires $RALPH_WORKTREE_BASE exported (set by config.sh).
+# Outputs: $REPO_ROOT/$CLAUDE_PLUGIN_OPTION_WORKTREE_BASE/<branch>
+# Requires $CLAUDE_PLUGIN_OPTION_WORKTREE_BASE exported (set by the plugin harness).
 worktree_path_for_issue() {
   local branch="$1"
   local repo_root
   repo_root="$(_resolve_repo_root)" || return 1
-  local base="${RALPH_WORKTREE_BASE#/}"   # strip leading slash
-  base="${base%/}"                         # strip trailing slash
+  local base="${CLAUDE_PLUGIN_OPTION_WORKTREE_BASE#/}"   # strip leading slash
+  base="${base%/}"                                        # strip trailing slash
   printf '%s/%s/%s\n' "$repo_root" "$base" "$branch"
 }

@@ -7,6 +7,7 @@
 SCRIPT_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
 ORCH_SH="$SCRIPT_DIR/orchestrator.sh"
 WORKTREE_SH="$SCRIPT_DIR/lib/worktree.sh"
+AUTONOMOUS_PREAMBLE="$SCRIPT_DIR/autonomous-preamble.md"
 
 # ---------------------------------------------------------------------------
 # Setup: real git repo + STUB_DIR with mirrored scripts/ layout
@@ -22,27 +23,25 @@ setup() {
   git -C "$REPO_DIR" config user.name "t"
   git -C "$REPO_DIR" commit --allow-empty -m "init" -q
 
-  # Env vars config.sh would export
+  # Env vars the plugin harness exports from userConfig. RALPH_PROJECTS is
+  # the per-repo scope var (from lib/scope.sh, not userConfig).
   export RALPH_PROJECTS="Test Project"
-  export RALPH_APPROVED_STATE="Approved"
-  export RALPH_IN_PROGRESS_STATE="In Progress"
-  export RALPH_REVIEW_STATE="In Review"
-  export RALPH_DONE_STATE="Done"
-  export RALPH_FAILED_LABEL="ralph-failed"
-  export RALPH_WORKTREE_BASE=".worktrees"
-  export RALPH_MODEL="opus"
-  export RALPH_STDOUT_LOG="ralph-output.log"
-  # Touch a dummy config and point RALPH_CONFIG at it. The marker carries the
-  # tuple "<resolved-config>|<repo-root>" (ENG-205 scope gate); the
-  # orchestrator is invoked with cwd=REPO_DIR so repo-root resolves to that.
-  local dummy="$STUB_DIR/dummy-config.json"
-  touch "$dummy"
-  export RALPH_CONFIG="$dummy"
+  export CLAUDE_PLUGIN_OPTION_APPROVED_STATE="Approved"
+  export CLAUDE_PLUGIN_OPTION_IN_PROGRESS_STATE="In Progress"
+  export CLAUDE_PLUGIN_OPTION_REVIEW_STATE="In Review"
+  export CLAUDE_PLUGIN_OPTION_DONE_STATE="Done"
+  export CLAUDE_PLUGIN_OPTION_FAILED_LABEL="ralph-failed"
+  export CLAUDE_PLUGIN_OPTION_WORKTREE_BASE=".worktrees"
+  export CLAUDE_PLUGIN_OPTION_MODEL="opus"
+  export CLAUDE_PLUGIN_OPTION_STDOUT_LOG_FILENAME="ralph-output.log"
+  # Set the scope-loaded marker so orchestrator.sh's auto-source gate skips
+  # loading scope.sh. The orchestrator is invoked with cwd=REPO_DIR so
+  # repo-root resolves to that.
   local _scope_hash=""
   if [[ -f "$REPO_DIR/.ralph.json" ]]; then
     _scope_hash="$(shasum -a 1 < "$REPO_DIR/.ralph.json" | awk '{print $1}')"
   fi
-  export RALPH_CONFIG_LOADED="$(cd "$(dirname "$dummy")" && pwd)/$(basename "$dummy")|$REPO_DIR|$_scope_hash"
+  export RALPH_SCOPE_LOADED="$REPO_DIR|$_scope_hash"
 
   # Claude invocation capture + state-transition trace
   export STUB_CLAUDE_ARGS_FILE="$STUB_DIR/claude_args"
@@ -55,6 +54,8 @@ setup() {
   cp "$ORCH_SH" "$STUB_DIR/scripts/orchestrator.sh"
   # Real worktree.sh — we want real git worktree operations
   cp "$WORKTREE_SH" "$STUB_DIR/scripts/lib/worktree.sh"
+  # orchestrator.sh prepends this file to the claude -p prompt
+  cp "$AUTONOMOUS_PREAMBLE" "$STUB_DIR/scripts/autonomous-preamble.md"
 
   # Fake lib/linear.sh driven by env vars / fixture files.
   # Also records every call (function + args) to $STUB_LINEAR_CALLS_FILE.
@@ -152,7 +153,7 @@ linear_get_issue_state() {
     cat "$f"
   else
     # Default: Approved (pre-dispatch)
-    printf '%s' "${RALPH_APPROVED_STATE:-Approved}"
+    printf '%s' "${CLAUDE_PLUGIN_OPTION_APPROVED_STATE:-Approved}"
   fi
 }
 LINEARSH
@@ -243,9 +244,14 @@ progress_json() {
   local sha; sha="$(cat "$wt_path/.ralph-base-sha")"
   [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
 
-  # claude was invoked with /ralph-implement as the dispatch prompt
-  # (printf '%q' escapes the space as '\ ' in the args file)
-  grep -qF '/ralph-implement\ ENG-10' "$STUB_CLAUDE_ARGS_FILE"
+  # claude was invoked with /ralph-implement as the dispatch prompt. The
+  # orchestrator prepends the autonomous-mode preamble (which contains
+  # non-ASCII bytes — em-dashes) and a blank line. printf '%q' on the
+  # resulting multi-line arg wraps it in $'...' form where internal spaces
+  # are NOT backslash-escaped. BSD grep in a UTF-8 locale silently refuses
+  # to match when a file contains invalid UTF-8; LC_ALL=C forces byte-
+  # oriented matching, and -a forces text mode.
+  LC_ALL=C grep -qaF '/ralph-implement ENG-10' "$STUB_CLAUDE_ARGS_FILE"
 
   # progress.json has exactly one in_review record
   [ -f "$REPO_DIR/progress.json" ]

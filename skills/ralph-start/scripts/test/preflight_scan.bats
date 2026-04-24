@@ -13,25 +13,23 @@ setup() {
   STUB_DIR="$(mktemp -d)"
   export STUB_DIR
 
-  # env vars that config.sh would export
+  # Env vars the plugin harness exports from userConfig, plus RALPH_PROJECTS
+  # (the per-repo scope var, from lib/scope.sh).
   export RALPH_PROJECTS="Agent Config"
-  export RALPH_APPROVED_STATE="Approved"
-  export RALPH_FAILED_LABEL="ralph-failed"
-  export RALPH_STALE_PARENT_LABEL="stale-parent"
-  export RALPH_REVIEW_STATE="In Review"
-  export RALPH_DONE_STATE="Done"
-  # Touch a dummy config and set the marker to the resolved tuple so the
-  # entry script's auto-source gate skips loading.
-  local dummy="$STUB_DIR/dummy-config.json"
-  touch "$dummy"
-  export RALPH_CONFIG="$dummy"
+  export CLAUDE_PLUGIN_OPTION_APPROVED_STATE="Approved"
+  export CLAUDE_PLUGIN_OPTION_FAILED_LABEL="ralph-failed"
+  export CLAUDE_PLUGIN_OPTION_STALE_PARENT_LABEL="stale-parent"
+  export CLAUDE_PLUGIN_OPTION_REVIEW_STATE="In Review"
+  export CLAUDE_PLUGIN_OPTION_DONE_STATE="Done"
+  # Set the scope-loaded marker so preflight_scan.sh's auto-source gate skips
+  # loading scope.sh.
   local _repo_root _scope_hash
   _repo_root="$(git rev-parse --show-toplevel)"
   _scope_hash=""
   if [[ -f "$_repo_root/.ralph.json" ]]; then
     _scope_hash="$(shasum -a 1 < "$_repo_root/.ralph.json" | awk '{print $1}')"
   fi
-  export RALPH_CONFIG_LOADED="$(cd "$(dirname "$dummy")" && pwd)/$(basename "$dummy")|$_repo_root|$_scope_hash"
+  export RALPH_SCOPE_LOADED="$_repo_root|$_scope_hash"
 
   # Default stub values — override per test
   export STUB_APPROVED_IDS=""       # newline-separated issue IDs
@@ -447,7 +445,7 @@ ENG-Q"
 }
 
 # ---------------------------------------------------------------------------
-# 13. Missing workspace label: the label named in $RALPH_FAILED_LABEL is not
+# 13. Missing workspace label: the label named in $CLAUDE_PLUGIN_OPTION_FAILED_LABEL is not
 #     present in Linear. Preflight must fail loud BEFORE any per-issue work.
 #     The operator-facing message names both the literal label AND the config
 #     var, so operators with non-default configs can tell WHICH config key
@@ -464,7 +462,7 @@ ENG-Q"
 
   [ "$status" -ne 0 ]
   [[ "$output" == *"ralph-failed"* ]]
-  [[ "$output" == *"RALPH_FAILED_LABEL"* ]]   # message names the config var
+  [[ "$output" == *"CLAUDE_PLUGIN_OPTION_FAILED_LABEL"* ]]   # message names the config var
   [[ "$output" == *"does not exist"* ]]
   # Short-circuit assertion: per-issue scan must not have run.
   [[ "$output" != *"ENG-500"* ]]
@@ -488,12 +486,12 @@ ENG-Q"
 
 # ---------------------------------------------------------------------------
 # 15. Stale-parent label is configured and missing.
-#     $RALPH_STALE_PARENT_LABEL is exported (ENG-208 plumbing), the label is
-#     missing, and $RALPH_FAILED_LABEL exists. Preflight must report the
+#     $CLAUDE_PLUGIN_OPTION_STALE_PARENT_LABEL is exported (ENG-208 plumbing), the label is
+#     missing, and $CLAUDE_PLUGIN_OPTION_FAILED_LABEL exists. Preflight must report the
 #     stale-parent entry specifically and name its config var in the message.
 # ---------------------------------------------------------------------------
 @test "missing stale_parent_label is reported alongside ralph-failed check" {
-  export RALPH_STALE_PARENT_LABEL="stale-parent"
+  export CLAUDE_PLUGIN_OPTION_STALE_PARENT_LABEL="stale-parent"
   export STUB_LABEL_EXISTS_stale_parent=1   # stale-parent missing
   # ralph-failed exists (default STUB_DEFAULT_LABEL_EXISTS=0)
   export STUB_APPROVED_IDS=""
@@ -502,52 +500,52 @@ ENG-Q"
 
   [ "$status" -ne 0 ]
   [[ "$output" == *"stale-parent"* ]]
-  [[ "$output" == *"RALPH_STALE_PARENT_LABEL"* ]]
+  [[ "$output" == *"CLAUDE_PLUGIN_OPTION_STALE_PARENT_LABEL"* ]]
   [[ "$output" == *"does not exist"* ]]
 }
 
 # ---------------------------------------------------------------------------
-# 16. $RALPH_STALE_PARENT_LABEL is required (ENG-208 made the config key
+# 16. $CLAUDE_PLUGIN_OPTION_STALE_PARENT_LABEL is required (ENG-208 made the config key
 #     required in config.sh's keys array). An empty or unset value now means
-#     misconfiguration — preflight must fail loud, matching the RALPH_FAILED_LABEL
+#     misconfiguration — preflight must fail loud, matching the CLAUDE_PLUGIN_OPTION_FAILED_LABEL
 #     empty-guard behavior.
 # ---------------------------------------------------------------------------
-@test "empty RALPH_STALE_PARENT_LABEL is rejected as misconfigured" {
-  export RALPH_STALE_PARENT_LABEL=""
+@test "empty CLAUDE_PLUGIN_OPTION_STALE_PARENT_LABEL is rejected as misconfigured" {
+  export CLAUDE_PLUGIN_OPTION_STALE_PARENT_LABEL=""
   export STUB_APPROVED_IDS=""
 
   run_preflight
 
   [ "$status" -ne 0 ]
-  [[ "$output" == *"RALPH_STALE_PARENT_LABEL"* ]]
+  [[ "$output" == *"CLAUDE_PLUGIN_OPTION_STALE_PARENT_LABEL"* ]]
   [[ "$output" == *"empty"* ]]
 }
 
 # ---------------------------------------------------------------------------
-# 17. RALPH_FAILED_LABEL is required — if config exports it as an empty string
+# 17. CLAUDE_PLUGIN_OPTION_FAILED_LABEL is required — if config exports it as an empty string
 #     (failed_label: "" in config.json), preflight must fail loud rather than
 #     silently skipping the check and returning 0. Regression for the adversarial
 #     review finding: the skip-when-empty guard is for optional labels only.
 # ---------------------------------------------------------------------------
-@test "empty RALPH_FAILED_LABEL is rejected as misconfigured, not silently skipped" {
-  export RALPH_FAILED_LABEL=""
+@test "empty CLAUDE_PLUGIN_OPTION_FAILED_LABEL is rejected as misconfigured, not silently skipped" {
+  export CLAUDE_PLUGIN_OPTION_FAILED_LABEL=""
   export STUB_APPROVED_IDS=""
 
   run_preflight
 
   [ "$status" -ne 0 ]
-  [[ "$output" == *"RALPH_FAILED_LABEL"* ]]
+  [[ "$output" == *"CLAUDE_PLUGIN_OPTION_FAILED_LABEL"* ]]
   [[ "$output" == *"empty"* ]]
 }
 
 # ---------------------------------------------------------------------------
-# 18. RALPH_FAILED_LABEL="0" must be treated as a real (non-empty) label name
+# 18. CLAUDE_PLUGIN_OPTION_FAILED_LABEL="0" must be treated as a real (non-empty) label name
 #     and checked against Linear, not silently skipped. Guard against the
 #     falsy-string edge case that the -z test does not have but is worth being
 #     explicit about.
 # ---------------------------------------------------------------------------
-@test "RALPH_FAILED_LABEL of '0' is treated as a real label name, not skipped" {
-  export RALPH_FAILED_LABEL="0"
+@test "CLAUDE_PLUGIN_OPTION_FAILED_LABEL of '0' is treated as a real label name, not skipped" {
+  export CLAUDE_PLUGIN_OPTION_FAILED_LABEL="0"
   export STUB_LABEL_EXISTS_0=0   # label "0" exists
   export STUB_APPROVED_IDS=""
 

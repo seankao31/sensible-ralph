@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # Workspace label existence preflight — shared between ralph-start's
-# preflight_scan.sh and the close-issue skill (Step 3.5 applies
-# $RALPH_STALE_PARENT_LABEL; originally ENG-208 in close-feature-branch,
-# moved to close-issue in ENG-213). Linear's `issue update --label` silently
-# no-ops on a nonexistent label name, so a missing workspace prereq would let
+# preflight_scan.sh and the operator's close-issue ritual (applies
+# $CLAUDE_PLUGIN_OPTION_STALE_PARENT_LABEL to children whose parent was
+# amended after dispatch). Linear's `issue update --label` silently no-ops
+# on a nonexistent label name, so a missing workspace prereq would let
 # callers keep "marking" issues with labels that never land. Fail loud.
 #
 # This file is sourced (not executed); do NOT call `set` at the top level or
 # `exit`. Requires `lib/linear.sh` already sourced (provides
-# `linear_label_exists`). Requires config already loaded (RALPH_* vars
-# exported).
+# `linear_label_exists`). Requires CLAUDE_PLUGIN_OPTION_FAILED_LABEL and
+# CLAUDE_PLUGIN_OPTION_STALE_PARENT_LABEL exported (from the plugin harness).
 #
 # Function:
 #   preflight_labels_check — verify each configured label name exists in Linear.
@@ -19,19 +19,18 @@
 #   1 — a required label var is empty, one or more labels are missing, or a
 #       query error occurred. Per-label diagnostics printed to stderr.
 #
-# Design note: the lists are hardcoded rather than inferred from a RALPH_*_LABEL
-# naming convention. The convention would let any stray RALPH_*_LABEL (e.g., a
-# future non-label field named with that suffix) accidentally become a label
-# check; explicit lists keep the set of "things that must exist in Linear"
-# auditable.
+# Design note: the lists are hardcoded rather than inferred from a
+# CLAUDE_PLUGIN_OPTION_*_LABEL naming convention. The convention would let
+# any stray option named with that suffix accidentally become a label check;
+# explicit lists keep the set of "things that must exist in Linear" auditable.
 preflight_labels_check() {
   # Required label env vars — must be set AND non-empty. An empty value means
-  # config is misconfigured (failed_label: "" etc.). Fail immediately rather
-  # than silently skipping the check and returning 0 (the bug Codex caught:
-  # the skip-when-empty guard is for optional labels only).
+  # the operator's plugin config is misconfigured (failed_label: "" etc.).
+  # Fail immediately rather than silently skipping the check and returning 0
+  # (the bug Codex caught: the skip-when-empty guard is for optional labels only).
   local -a required_vars=(
-    RALPH_FAILED_LABEL
-    RALPH_STALE_PARENT_LABEL
+    CLAUDE_PLUGIN_OPTION_FAILED_LABEL
+    CLAUDE_PLUGIN_OPTION_STALE_PARENT_LABEL
   )
   # Optional label env vars — skip if unset or empty. None today; kept as a
   # named list for future additions that may be feature-flagged (applied only
@@ -45,7 +44,7 @@ preflight_labels_check() {
   for var in "${required_vars[@]}"; do
     name="${!var:-}"
     if [[ -z "$name" ]]; then
-      printf 'preflight: %s is empty or unset — set a non-empty label name in config.json before running.\n' \
+      printf 'preflight: %s is empty or unset — set a non-empty label name in the plugin config before running.\n' \
         "$var" >&2
       return 1
     fi
@@ -100,7 +99,7 @@ preflight_labels_check() {
     for entry in "${missing[@]}"; do
       lv="${entry%%=*}"
       ln="${entry#*=}"
-      printf 'preflight: workspace label %q (configured as %s) does not exist in Linear. Create it once as a workspace-scoped label, or update config to name an existing label. See agent-config/skills/ralph-start/SKILL.md Prerequisites.\n' \
+      printf 'preflight: workspace label %q (configured as %s) does not exist in Linear. Create it once as a workspace-scoped label, or update plugin config to name an existing label. See skills/ralph-start/SKILL.md Prerequisites.\n' \
         "$ln" "$lv" >&2
     done
     return 1

@@ -13,10 +13,10 @@ setup() {
   export STUB_DIR
 
   export RALPH_PROJECTS="Agent Config"
-  export RALPH_APPROVED_STATE="Approved"
-  export RALPH_REVIEW_STATE="In Review"
-  export RALPH_DONE_STATE="Done"
-  export RALPH_FAILED_LABEL="ralph-failed"
+  export CLAUDE_PLUGIN_OPTION_APPROVED_STATE="Approved"
+  export CLAUDE_PLUGIN_OPTION_REVIEW_STATE="In Review"
+  export CLAUDE_PLUGIN_OPTION_DONE_STATE="Done"
+  export CLAUDE_PLUGIN_OPTION_FAILED_LABEL="ralph-failed"
 
   export STUB_APPROVED_IDS=""
   export STUB_PRIORITY_DEFAULT=2
@@ -49,17 +49,14 @@ STUBLINEAR
   chmod +x "$STUB_DIR/linear"
   export PATH="$STUB_DIR:$PATH"
 
-  # Marker setup (script's auto-source gate is a tuple "<config>|<repo-root>")
-  local dummy="$STUB_DIR/dummy-config.json"
-  touch "$dummy"
-  export RALPH_CONFIG="$dummy"
+  # Marker setup — script's auto-source gate is "<repo-root>|<scope-hash>".
   local _repo_root _scope_hash
   _repo_root="$(git rev-parse --show-toplevel)"
   _scope_hash=""
   if [[ -f "$_repo_root/.ralph.json" ]]; then
     _scope_hash="$(shasum -a 1 < "$_repo_root/.ralph.json" | awk '{print $1}')"
   fi
-  export RALPH_CONFIG_LOADED="$(cd "$(dirname "$dummy")" && pwd)/$(basename "$dummy")|$_repo_root|$_scope_hash"
+  export RALPH_SCOPE_LOADED="$_repo_root|$_scope_hash"
 
   cp "$BUILD_QUEUE_SH" "$STUB_DIR/build_queue.sh"
   cp "$TOPOSORT_SH" "$STUB_DIR/toposort.sh"

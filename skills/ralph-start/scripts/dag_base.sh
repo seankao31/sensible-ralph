@@ -2,19 +2,14 @@
 set -euo pipefail
 
 # DAG base-branch selection (Decision 7).
-# Input:  $1 = issue ID; env vars RALPH_REVIEW_STATE, RALPH_APPROVED_STATE from config.sh.
+# Input:  $1 = issue ID; env vars CLAUDE_PLUGIN_OPTION_REVIEW_STATE,
+#              CLAUDE_PLUGIN_OPTION_APPROVED_STATE from the plugin harness.
 # Output: "main" | "<branch>" | "INTEGRATION <branch1> <branch2> ..."
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# Auto-source config unless the load marker matches THIS script's expected
-# config path. See orchestrator.sh for rationale.
-CONFIG_FILE="${RALPH_CONFIG:-$SCRIPT_DIR/../config.json}"
-if [[ ! -f "$CONFIG_FILE" ]]; then
-  echo "dag_base: config not found at $CONFIG_FILE — set RALPH_CONFIG or create config.json" >&2
-  exit 1
-fi
-RESOLVED_CONFIG="$(cd "$(dirname "$CONFIG_FILE")" && pwd)/$(basename "$CONFIG_FILE")"
+# Auto-source scope unless the load marker matches THIS invocation's repo +
+# scope-file content. See orchestrator.sh for rationale.
 RESOLVED_REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || RESOLVED_REPO_ROOT=""
 RESOLVED_SCOPE_HASH=""
 if [[ -n "$RESOLVED_REPO_ROOT" && -f "$RESOLVED_REPO_ROOT/.ralph.json" ]]; then
@@ -23,10 +18,10 @@ fi
 # shellcheck source=lib/linear.sh
 source "$SCRIPT_DIR/lib/linear.sh"
 
-EXPECTED_LOADED_TUPLE="${RESOLVED_CONFIG}|${RESOLVED_REPO_ROOT}|${RESOLVED_SCOPE_HASH}"
-if [[ "${RALPH_CONFIG_LOADED:-}" != "$EXPECTED_LOADED_TUPLE" ]]; then
-  # shellcheck source=lib/config.sh
-  source "$SCRIPT_DIR/lib/config.sh" "$CONFIG_FILE"
+EXPECTED_SCOPE_LOADED="${RESOLVED_REPO_ROOT}|${RESOLVED_SCOPE_HASH}"
+if [[ "${RALPH_SCOPE_LOADED:-}" != "$EXPECTED_SCOPE_LOADED" ]]; then
+  # shellcheck source=lib/scope.sh
+  source "$SCRIPT_DIR/lib/scope.sh"
 fi
 
 issue_id="$1"
@@ -37,16 +32,16 @@ blockers_json="$(linear_get_issue_blockers "$issue_id")"
 # (the new GraphQL path emits real null for missing branchName) AND the string
 # "null" (defensive — historical text-parsing flow stringified missing values).
 null_branches="$(printf '%s' "$blockers_json" | jq -r \
-  --arg state "$RALPH_REVIEW_STATE" \
+  --arg state "$CLAUDE_PLUGIN_OPTION_REVIEW_STATE" \
   '.[] | select(.state == $state) | select(.branch == null or .branch == "null" or .branch == "") | .id')"
 if [[ -n "$null_branches" ]]; then
   printf 'dag_base: in-review blocker(s) have no branch name: %s\n' "$null_branches" >&2
   exit 1
 fi
 
-# Extract branches of blockers whose state matches RALPH_REVIEW_STATE
+# Extract branches of blockers whose state matches CLAUDE_PLUGIN_OPTION_REVIEW_STATE
 review_branches="$(printf '%s' "$blockers_json" | jq -r \
-  --arg state "$RALPH_REVIEW_STATE" \
+  --arg state "$CLAUDE_PLUGIN_OPTION_REVIEW_STATE" \
   '.[] | select(.state == $state) | .branch')"
 
 # Count how many In Review blockers there are

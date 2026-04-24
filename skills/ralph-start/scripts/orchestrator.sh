@@ -13,24 +13,22 @@ set -euo pipefail
 # pre-sorted by toposort.sh. progress.json is written to the repo root
 # (resolved via lib/worktree.sh::_resolve_repo_root), independent of cwd.
 #
-# Required env: RALPH_IN_PROGRESS_STATE, RALPH_REVIEW_STATE, RALPH_FAILED_LABEL,
-#               RALPH_WORKTREE_BASE, RALPH_MODEL, RALPH_STDOUT_LOG.
+# Required env: CLAUDE_PLUGIN_OPTION_IN_PROGRESS_STATE,
+#               CLAUDE_PLUGIN_OPTION_REVIEW_STATE,
+#               CLAUDE_PLUGIN_OPTION_FAILED_LABEL,
+#               CLAUDE_PLUGIN_OPTION_WORKTREE_BASE,
+#               CLAUDE_PLUGIN_OPTION_MODEL,
+#               CLAUDE_PLUGIN_OPTION_STDOUT_LOG_FILENAME
+# (Claude Code harness auto-exports these from the plugin's userConfig.)
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# Auto-source config unless the load marker matches THIS script's expected
-# config path. RALPH_CONFIG_LOADED records the resolved path of the config
-# file last loaded; if the operator sourced another repo's config earlier in
-# the same shell, the marker won't match the current repo's config and we
-# re-source. Removes the bash-shell requirement for callers (each entry-point
-# script has a bash shebang and sources config itself, so invoke from
-# zsh/fish/sh).
-CONFIG_FILE="${RALPH_CONFIG:-$SCRIPT_DIR/../config.json}"
-if [[ ! -f "$CONFIG_FILE" ]]; then
-  echo "orchestrator: config not found at $CONFIG_FILE — set RALPH_CONFIG or create config.json" >&2
-  exit 1
-fi
-RESOLVED_CONFIG="$(cd "$(dirname "$CONFIG_FILE")" && pwd)/$(basename "$CONFIG_FILE")"
+# Auto-source scope unless the load marker matches THIS invocation's repo +
+# scope-file content. RALPH_SCOPE_LOADED is "<repo-root>|<scope-hash>"; if the
+# operator ran another repo's ralph in the same shell, or edited .ralph.json
+# mid-session, the marker won't match and we re-source. Removes the
+# bash-shell requirement for callers (this script has a bash shebang and
+# sources scope itself, so invoke from zsh/fish/sh).
 RESOLVED_REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || RESOLVED_REPO_ROOT=""
 RESOLVED_SCOPE_HASH=""
 if [[ -n "$RESOLVED_REPO_ROOT" && -f "$RESOLVED_REPO_ROOT/.ralph.json" ]]; then
@@ -39,10 +37,10 @@ fi
 # shellcheck source=lib/linear.sh
 source "$SCRIPT_DIR/lib/linear.sh"
 
-EXPECTED_LOADED_TUPLE="${RESOLVED_CONFIG}|${RESOLVED_REPO_ROOT}|${RESOLVED_SCOPE_HASH}"
-if [[ "${RALPH_CONFIG_LOADED:-}" != "$EXPECTED_LOADED_TUPLE" ]]; then
-  # shellcheck source=lib/config.sh
-  source "$SCRIPT_DIR/lib/config.sh" "$CONFIG_FILE"
+EXPECTED_SCOPE_LOADED="${RESOLVED_REPO_ROOT}|${RESOLVED_SCOPE_HASH}"
+if [[ "${RALPH_SCOPE_LOADED:-}" != "$EXPECTED_SCOPE_LOADED" ]]; then
+  # shellcheck source=lib/scope.sh
+  source "$SCRIPT_DIR/lib/scope.sh"
 fi
 
 # shellcheck source=lib/worktree.sh
@@ -207,7 +205,7 @@ _record_setup_failure() {
   local issue_id="$1"
   local failed_step="$2"
   local timestamp="$3"
-  linear_add_label "$issue_id" "$RALPH_FAILED_LABEL" || true
+  linear_add_label "$issue_id" "$CLAUDE_PLUGIN_OPTION_FAILED_LABEL" || true
   _taint_descendants "$issue_id"
   local record
   record="$(jq -n \
@@ -441,7 +439,7 @@ _dispatch_issue() {
   fi
 
   # Transition Linear state to In Progress
-  linear_set_state "$issue_id" "$RALPH_IN_PROGRESS_STATE"
+  linear_set_state "$issue_id" "$CLAUDE_PLUGIN_OPTION_IN_PROGRESS_STATE"
   if [[ $? -ne 0 ]]; then
     set -e
     _cleanup_worktree "$path" "$branch"
@@ -451,10 +449,18 @@ _dispatch_issue() {
 
   set -e
 
-  # Dispatch prompt: invoke ralph-implement with the issue ID.
-  # The agent reads title from Linear, branch from git, and runs in the
-  # worktree as cwd — none of those need substituting here.
-  local prompt="/ralph-implement $issue_id"
+  # Dispatch prompt: autonomous-mode preamble (overrides usual CLAUDE.md
+  # behavior — escape-hatch to "post comment + exit clean" for anything
+  # requiring human input) followed by the /ralph-implement invocation.
+  #
+  # Prepending here (not in ralph-implement's SKILL.md) puts the rules in
+  # context from token zero, so any decision between session start and the
+  # skill's load still runs under autonomous-mode rules. The blank line
+  # between preamble and slash command ensures the command starts on its
+  # own line for the harness's slash-command recognizer.
+  local preamble
+  preamble="$(cat "$SCRIPT_DIR/autonomous-preamble.md")"
+  local prompt="${preamble}"$'\n\n'"/ralph-implement $issue_id"
 
   # Dispatch claude from the worktree cwd, tee-ing output to the log file
   # without letting tee mask claude's exit code.
@@ -466,7 +472,7 @@ _dispatch_issue() {
   (
     cd "$path"
     set +e
-    claude -p --permission-mode auto --model "$RALPH_MODEL" --name "$issue_id: $title" "$prompt" 2>&1 | tee "$path/$RALPH_STDOUT_LOG"
+    claude -p --permission-mode auto --model "$CLAUDE_PLUGIN_OPTION_MODEL" --name "$issue_id: $title" "$prompt" 2>&1 | tee "$path/$CLAUDE_PLUGIN_OPTION_STDOUT_LOG_FILENAME"
     ec="${PIPESTATUS[0]}"
     exit "$ec"
   ) || claude_exit=$?
@@ -494,17 +500,17 @@ _dispatch_issue() {
   fi
 
   local outcome record
-  if [[ "$claude_exit" -eq 0 && "$post_state" == "$RALPH_REVIEW_STATE" ]]; then
+  if [[ "$claude_exit" -eq 0 && "$post_state" == "$CLAUDE_PLUGIN_OPTION_REVIEW_STATE" ]]; then
     outcome="in_review"
   elif [[ "$claude_exit" -eq 0 ]]; then
     outcome="exit_clean_no_review"
-    linear_add_label "$issue_id" "$RALPH_FAILED_LABEL" || \
-      printf 'orchestrator: failed to add %s label to %s (continuing)\n' "$RALPH_FAILED_LABEL" "$issue_id" >&2
+    linear_add_label "$issue_id" "$CLAUDE_PLUGIN_OPTION_FAILED_LABEL" || \
+      printf 'orchestrator: failed to add %s label to %s (continuing)\n' "$CLAUDE_PLUGIN_OPTION_FAILED_LABEL" "$issue_id" >&2
     _taint_descendants "$issue_id"
   else
     outcome="failed"
-    linear_add_label "$issue_id" "$RALPH_FAILED_LABEL" || \
-      printf 'orchestrator: failed to add %s label to %s (continuing)\n' "$RALPH_FAILED_LABEL" "$issue_id" >&2
+    linear_add_label "$issue_id" "$CLAUDE_PLUGIN_OPTION_FAILED_LABEL" || \
+      printf 'orchestrator: failed to add %s label to %s (continuing)\n' "$CLAUDE_PLUGIN_OPTION_FAILED_LABEL" "$issue_id" >&2
     _taint_descendants "$issue_id"
   fi
 
