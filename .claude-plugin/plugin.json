@@ -1,0 +1,73 @@
+{
+  "name": "sensible-ralph",
+  "version": "0.1.0",
+  "description": "Autonomous overnight execution of Approved Linear issues, with safety, structure, traceability, composability, and deliberation.",
+  "author": { "name": "Yi-Hsiang (Sean) Kao" },
+  "license": "MIT",
+  "homepage": "https://github.com/seankao31/sensible-ralph",
+  "userConfig": {
+    "approved_state": {
+      "type": "string",
+      "title": "Approved state name",
+      "description": "Linear workflow state for issues ready to dispatch",
+      "default": "Approved",
+      "required": true
+    },
+    "in_progress_state": {
+      "type": "string",
+      "title": "In-Progress state name",
+      "description": "Linear workflow state while a session is running",
+      "default": "In Progress",
+      "required": true
+    },
+    "review_state": {
+      "type": "string",
+      "title": "In-Review state name",
+      "description": "Linear workflow state after /prepare-for-review",
+      "default": "In Review",
+      "required": true
+    },
+    "done_state": {
+      "type": "string",
+      "title": "Done state name",
+      "description": "Linear workflow state after merge",
+      "default": "Done",
+      "required": true
+    },
+    "failed_label": {
+      "type": "string",
+      "title": "Failed label",
+      "description": "Label applied when a session fails or exits clean",
+      "default": "ralph-failed",
+      "required": true
+    },
+    "stale_parent_label": {
+      "type": "string",
+      "title": "Stale-parent label",
+      "description": "Label applied to In-Review children whose parent was amended",
+      "default": "stale-parent",
+      "required": true
+    },
+    "worktree_base": {
+      "type": "string",
+      "title": "Worktree base directory",
+      "description": "Directory under repo root for session worktrees",
+      "default": ".worktrees",
+      "required": true
+    },
+    "model": {
+      "type": "string",
+      "title": "Claude model",
+      "description": "Model to use for dispatched sessions",
+      "default": "opus",
+      "required": true
+    },
+    "stdout_log_filename": {
+      "type": "string",
+      "title": "Session log filename",
+      "description": "Per-session stdout log file (inside the worktree)",
+      "default": "ralph-output.log",
+      "required": true
+    }
+  }
+}
