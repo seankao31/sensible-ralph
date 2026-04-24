@@ -202,15 +202,54 @@ If `ISSUE_ID` is set, skip this step — step 2 already validated the issue's pr
 
 If `ISSUE_ID` is unset, the new issue must land in a project listed in `$RALPH_PROJECTS` (already resolved by step 1, regardless of whether `.ralph.json` is `projects`- or `initiative`-shaped):
 
-- **One project**: use it directly.
-- **Multiple projects**: ask the user. Accept only an answer that appears in `$RALPH_PROJECTS` — reject anything else and re-ask.
+- **One project**: use it directly — bind to `$TARGET_PROJECT`.
+- **Multiple projects**: ask the user. Accept only an answer that appears in `$RALPH_PROJECTS` — reject anything else and re-ask. Bind the chosen name to `$TARGET_PROJECT`.
 
-Create via `linear-workflow`, honoring its duplicate-prevention flow, passing the validated project. Use the spec's title (verb-first imperative); leave description empty.
+#### Duplicate prevention
 
-**After `linear-workflow` returns**, inspect what happened:
+Before creating, scan the target project for existing issues that overlap with the spec. The scan uses the spec's title and a few salient keywords from the approved design:
 
-- **New issue created**: capture the new ID as `ISSUE_ID` and set `PRIOR=""` — a freshly-created issue has no prior content to preserve, and its state is the just-created default (typically `Todo`), project is the one we just passed.
-- **Duplicate-prevention pointed at an existing issue**: capture that ID as `ISSUE_ID` and **loop back to step 2**. An existing issue reached through duplicate detection could be Done, Canceled, active, or in an out-of-scope project (if the duplicate lived outside `$RALPH_PROJECTS`); it also has a prior description that must be preserved. Re-running step 2 applies the same preflight gates as an explicit issue-id invocation would.
+```bash
+# Query in-project issues; scan returned titles and descriptions for overlap.
+linear issue query --project "$TARGET_PROJECT" --search "<keyword or title phrase>" --json \
+  | jq -r '.nodes[] | "\(.identifier)\t\(.state.name)\t\(.title)"'
+```
+
+Look for:
+
+- **Same feature described differently** (e.g., "Recipe data pipeline" vs "Recipe data loads from msgpack").
+- **Issues that would be superseded** by this spec (e.g., an older approach the design explicitly replaces).
+- **Completed work** that already covers the acceptance criteria.
+
+Apply these rules:
+
+- **Exact duplicate** — don't create. Surface to the user ("This appears to already be filed as `$EXISTING_ID`; want to populate that issue instead?"). If they confirm, capture `ISSUE_ID=$EXISTING_ID` and loop back to step 2 so the state/project preflight applies.
+- **Superseded by this design** — surface to the user and propose canceling the old issue with a comment linking to the new one once created. Don't cancel without confirmation.
+- **Partially overlapping** — surface to the user and let them decide whether to merge, split, or file alongside.
+- **Already done but not marked Done** — surface to the user and propose closing it.
+
+If no overlap is found, proceed to create.
+
+#### Create the issue
+
+```bash
+linear issue create \
+  --project "$TARGET_PROJECT" \
+  --title "<verb-first imperative title from the approved spec>" \
+  --state "Todo"
+```
+
+Conventions for the creation call:
+
+- **Title**: verb-first imperative, scannable at a glance. No prefixes like `[FE]` or `Done when …`.
+- **Project**: `$TARGET_PROJECT` (the validated in-scope project).
+- **State**: `Todo` (the spec is actionable by construction; step 6 will transition to `$CLAUDE_PLUGIN_OPTION_APPROVED_STATE`).
+- **No description**: step 5 overwrites it with the approved spec.
+- **No assignee**: the user assigns manually when they're ready to pick it up.
+- **No priority flag**: Linear's default (Medium / no priority) is fine; the user can adjust after landing.
+- **No labels at creation**.
+
+Capture the new ID as `ISSUE_ID` and set `PRIOR=""` — a freshly-created issue has no prior content to preserve.
 
 ### 4. Preserve prior description as a comment
 
