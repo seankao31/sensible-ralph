@@ -272,6 +272,8 @@ linear_add_label() {
   # Build --label flags for all existing labels (skipping new_label to avoid duplicates) + new label
   local label_args=()
   local lbl
+  # `${arr[@]+"${arr[@]}"}` expands to nothing when the array is empty,
+  # sidestepping bash 3.2's unbound-variable fault under `set -u`.
   for lbl in ${existing_labels[@]+"${existing_labels[@]}"}; do
     [[ "$lbl" == "$new_label" ]] && continue
     label_args+=(--label "$lbl")
