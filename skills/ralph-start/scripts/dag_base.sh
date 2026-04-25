@@ -3,8 +3,9 @@ set -euo pipefail
 
 # DAG base-branch selection (Decision 7).
 # Input:  $1 = issue ID; env vars CLAUDE_PLUGIN_OPTION_REVIEW_STATE,
-#              CLAUDE_PLUGIN_OPTION_APPROVED_STATE from the plugin harness.
-# Output: "main" | "<branch>" | "INTEGRATION <branch1> <branch2> ..."
+#              CLAUDE_PLUGIN_OPTION_APPROVED_STATE from the plugin harness;
+#              RALPH_DEFAULT_BASE_BRANCH from lib/scope.sh (auto-sourced below).
+# Output: "<RALPH_DEFAULT_BASE_BRANCH>" | "<branch>" | "INTEGRATION <branch1> <branch2> ..."
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -51,7 +52,7 @@ review_branches="$(printf '%s' "$blockers_json" | jq -r \
 review_count="$(printf '%s' "$review_branches" | grep -c . || true)"
 
 if [[ $review_count -eq 0 ]]; then
-  printf 'main\n'
+  printf '%s\n' "$RALPH_DEFAULT_BASE_BRANCH"
 elif [[ $review_count -eq 1 ]]; then
   printf '%s\n' "$review_branches"
 else

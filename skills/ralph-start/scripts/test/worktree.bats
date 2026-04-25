@@ -17,6 +17,10 @@ setup() {
 
   # Export CLAUDE_PLUGIN_OPTION_WORKTREE_BASE as config.sh would
   export CLAUDE_PLUGIN_OPTION_WORKTREE_BASE=".worktrees"
+  # ENG-214: worktree_create_with_integration reads the trunk from this var
+  # (formerly hardcoded to "main"). In production lib/scope.sh exports it;
+  # tests bypass scope-loading so they must export it themselves.
+  export RALPH_DEFAULT_BASE_BRANCH="main"
 }
 
 teardown() {
@@ -277,6 +281,42 @@ call_fn_from() {
 # ---------------------------------------------------------------------------
 # 8. worktree_create_with_integration — first parent conflict stops second merge
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# 9. ENG-214: worktree_create_with_integration branches the integration
+#    worktree from RALPH_DEFAULT_BASE_BRANCH (configurable via .ralph.json),
+#    not the literal "main". Confirms a project whose trunk is "dev" can
+#    integrate parents on top of dev.
+# ---------------------------------------------------------------------------
+@test "worktree_create_with_integration uses RALPH_DEFAULT_BASE_BRANCH as the integration base" {
+  # Create a `dev` branch that diverges from main with a unique file.
+  git -C "$REPO_DIR" checkout -b dev -q
+  echo "dev-only" > "$REPO_DIR/dev_marker.txt"
+  git -C "$REPO_DIR" add dev_marker.txt
+  git -C "$REPO_DIR" commit -m "dev marker" -q
+  git -C "$REPO_DIR" checkout main -q
+
+  # A parent branch off main with its own unique file — the integration must
+  # carry both `dev`'s commits AND the parent's commits, proving the merge
+  # was performed onto `dev` rather than `main`.
+  git -C "$REPO_DIR" checkout -b "eng-214-parent" -q
+  echo "parent" > "$REPO_DIR/parent_file.txt"
+  git -C "$REPO_DIR" add parent_file.txt
+  git -C "$REPO_DIR" commit -m "parent" -q
+  git -C "$REPO_DIR" checkout main -q
+
+  local wt_path="$REPO_DIR/.worktrees/integration-on-dev"
+
+  run bash -c "cd '$REPO_DIR' && export RALPH_DEFAULT_BASE_BRANCH=dev && source '$WORKTREE_SH' && worktree_create_with_integration '$wt_path' 'integration-on-dev' 'eng-214-parent'"
+
+  [ "$status" -eq 0 ]
+  [ -d "$wt_path" ]
+  # `dev`'s marker — present only because the worktree was branched from dev,
+  # not main.
+  [ -f "$wt_path/dev_marker.txt" ]
+  # Parent's content — present because the merge ran.
+  [ -f "$wt_path/parent_file.txt" ]
+}
+
 @test "worktree_create_with_integration multi-parent conflict fails fast (does not silently drop later parents)" {
   # Parent A: conflicts with main on conflict.txt
   git -C "$REPO_DIR" checkout -b "eng-30-conflict-a"

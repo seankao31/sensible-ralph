@@ -42,6 +42,10 @@ setup() {
     _scope_hash="$(shasum -a 1 < "$REPO_DIR/.ralph.json" | awk '{print $1}')"
   fi
   export RALPH_SCOPE_LOADED="$REPO_DIR|$_scope_hash"
+  # ENG-214: orchestrator's INTEGRATION path reads RALPH_DEFAULT_BASE_BRANCH
+  # (formerly hardcoded to "main"). With the marker bypass above, scope.sh
+  # is never sourced, so tests must export the trunk explicitly.
+  export RALPH_DEFAULT_BASE_BRANCH="main"
 
   # Claude invocation capture + state-transition trace
   export STUB_CLAUDE_ARGS_FILE="$STUB_DIR/claude_args"

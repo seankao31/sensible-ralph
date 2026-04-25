@@ -20,6 +20,7 @@
 #
 # Exports:
 #   RALPH_PROJECTS (newline-joined) — from <repo>/.ralph.json
+#   RALPH_DEFAULT_BASE_BRANCH — from .ralph.json `default_base_branch` (default "main")
 #   RALPH_SCOPE_LOADED — tuple "<repo-root-abs-path>|<scope-hash>"
 
 # Resolve the working tree root for .ralph.json discovery.
@@ -90,6 +91,26 @@ _scope_load_projects() {
   fi
 
   export RALPH_PROJECTS="$projects_newline"
+
+  # Optional `default_base_branch`: the trunk ralph branches from when an
+  # Approved issue has no in-review parent. Absent → "main" (preserves
+  # behavior for every existing .ralph.json). Empty string and non-string
+  # JSON types are hard errors caught here, never at git-ref resolution.
+  local default_base dbb_type
+  dbb_type="$(jq -r 'if has("default_base_branch") then (.default_base_branch | type) else "absent" end' "$scope_file")"
+  if [[ "$dbb_type" == "absent" ]]; then
+    default_base="main"
+  elif [[ "$dbb_type" == "string" ]]; then
+    default_base="$(jq -r '.default_base_branch' "$scope_file")"
+    if [[ -z "$default_base" ]]; then
+      echo "scope: .ralph.json default_base_branch is empty — omit the key or set a non-empty string" >&2
+      return 1
+    fi
+  else
+    echo "scope: .ralph.json default_base_branch must be a string, got $dbb_type" >&2
+    return 1
+  fi
+  export RALPH_DEFAULT_BASE_BRANCH="$default_base"
 }
 
 _scope_load() {

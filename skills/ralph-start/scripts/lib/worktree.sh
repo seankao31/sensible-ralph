@@ -30,7 +30,11 @@ worktree_create_at_base() {
 }
 
 # Create a worktree for integration (one or more parent branches in review).
-# Creates the worktree at main, then sequentially merges each parent branch.
+# Creates the worktree at $RALPH_DEFAULT_BASE_BRANCH (the per-repo trunk
+# configured via .ralph.json, defaulting to "main"), then sequentially merges
+# each parent branch. Callers must source lib/scope.sh before invoking this
+# function so the env var is set; orchestrator.sh and dag_base.sh both do this
+# via the conditional RALPH_SCOPE_LOADED gate.
 # Conflict handling depends on parent count:
 #   - Single parent: leaves conflicts in-place — the dispatched agent resolves
 #     them. The `ralph-implement` skill tells it to handle conflicts before
@@ -41,7 +45,7 @@ worktree_create_at_base() {
 #     ... silently NOT merged — the dispatched agent has no signal that those
 #     parents exist, so it would resolve N's conflicts and dispatch against an
 #     incomplete integration. Failing fast forces the operator to resolve the
-#     scope conflict (in main, or by re-sequencing parents) before dispatch.
+#     scope conflict (on the trunk branch, or by re-sequencing parents) before dispatch.
 # $1: path      — absolute path where the worktree should be created
 # $2: branch    — new branch name
 # $3+: parents  — parent branches to merge sequentially
@@ -69,7 +73,7 @@ worktree_create_with_integration() {
     fi
   done
 
-  git worktree add "$path" -b "$branch" main
+  git worktree add "$path" -b "$branch" "${RALPH_DEFAULT_BASE_BRANCH}"
 
   local i merge_ref
   for (( i = 0; i < parent_count; i++ )); do
