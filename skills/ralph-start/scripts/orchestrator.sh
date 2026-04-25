@@ -413,6 +413,8 @@ _dispatch_issue() {
     base_sha="$(git rev-parse "${RALPH_DEFAULT_BASE_BRANCH}")"
     if [[ $? -ne 0 || -z "$base_sha" ]]; then
       set -e
+      # "rev_parse_main" is intentionally stable — renaming it to "rev_parse_trunk"
+      # would silently break any operator grep/jq on existing progress.json files.
       _record_setup_failure "$issue_id" "rev_parse_main" "$timestamp"
       return 1
     fi
