@@ -191,8 +191,8 @@ and `preflight_labels.sh` — the moved files are no longer there.
 
 The new pattern: introduce a `PLUGIN_ROOT` variable at the top of each
 script that prefers `$CLAUDE_PLUGIN_ROOT` (set by the plugin harness in
-production) and falls back to walking up from `$SCRIPT_DIR` (so bats
-tests can run without setting the env var):
+production) and falls back to walking up from `$SCRIPT_DIR` when the
+script is invoked from its real repo path:
 
 ```bash
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -201,6 +201,14 @@ PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
 
 The `../../../` is three levels up: `scripts/` → `ralph-start/` →
 `skills/` → plugin root.
+
+**Important:** the env-less walk-up is only valid when the script runs
+from its real location in the repo tree. The bats test harnesses that
+copy entry-point scripts into a temp directory (`$STUB_DIR/build_queue.sh`,
+`$tmp_dir/dag_base.sh`, etc.) cannot use the walk-up — three levels up
+from a temp path is not the plugin root. Those tests MUST export
+`CLAUDE_PLUGIN_ROOT` pointing to a stub plugin root with the required
+`lib/` layout (details in section (d)).
 
 Source-line changes per script:
 
@@ -226,41 +234,70 @@ moved lib, qualify it as "sources from the plugin's top-level lib/".
 
 ### (d) Bats test updates
 
-Two surfaces need attention.
+All four copied-script bats harnesses must be updated. Each currently
+copies an entry-point script into a temp dir and puts lib stubs at
+`$STUB_DIR/lib/...` — a layout that no longer matches the post-migration
+source pattern. After the move, each script reads shared libs from
+`$PLUGIN_ROOT/lib/`, not `$SCRIPT_DIR/lib/`.
 
-**Tests that build stub directories.** `preflight_scan.bats` currently
-builds a stub at `$STUB_DIR/lib/{defaults,linear,preflight_labels}.sh`
-and copies `preflight_scan.sh` into `$STUB_DIR/`, so the script's
-`$SCRIPT_DIR/lib/...` resolves to the stub libs. After the move, the
-script reads `defaults.sh`, `linear.sh`, `scope.sh` from
-`$PLUGIN_ROOT/lib/` and `preflight_labels.sh` from `$SCRIPT_DIR/lib/`.
-The test must build a stub plugin root:
+The fix is uniform across all four: create a stub plugin root with
+`lib/defaults.sh` (copied from real) and `lib/linear.sh` (stub, already
+synthesised by the existing harness), then export
+`CLAUDE_PLUGIN_ROOT=<stub-plugin-root>`. The script's
+`${CLAUDE_PLUGIN_ROOT:-...}` picks up the env var. Because all four
+tests already export `RALPH_SCOPE_LOADED` to bypass `scope.sh`, the
+stub plugin root only needs `lib/defaults.sh` and `lib/linear.sh` —
+not `lib/scope.sh`.
+
+**`preflight_scan.bats`** — current setup builds
+`$STUB_DIR/lib/{defaults,linear,preflight_labels}.sh` and copies
+`preflight_scan.sh` into `$STUB_DIR/`. Post-migration stub layout:
 
 ```
 $STUB_PLUGIN_ROOT/
 ├── lib/
-│   ├── defaults.sh         (copied from real lib/defaults.sh)
-│   ├── linear.sh           (synthesized stub — same approach as today)
-│   └── scope.sh            (real or stubbed — match current behavior)
+│   ├── defaults.sh         (copy from real lib/defaults.sh)
+│   └── linear.sh           (synthesised stub — as today)
 └── skills/ralph-start/scripts/
     ├── preflight_scan.sh   (copied)
     └── lib/
         └── preflight_labels.sh (copied)
 ```
 
-Then `export CLAUDE_PLUGIN_ROOT="$STUB_PLUGIN_ROOT"` before invoking
-`preflight_scan.sh`. The script's `PLUGIN_ROOT` resolution picks up
-the env var and reads from the stub.
+`export CLAUDE_PLUGIN_ROOT="$STUB_PLUGIN_ROOT"` in `setup()` before
+invoking `preflight_scan.sh`.
 
-**Other entry-point bats files (`orchestrator.bats`, `build_queue.bats`,
-`dag_base.bats`).** Apply the equivalent fix where they construct stub
-layouts that encode the old `$SCRIPT_DIR/lib/` structure. Tests that
-don't construct stubs and just source the real scripts work without
-changes — the fallback walk-up from `$SCRIPT_DIR` resolves correctly
-when the test invokes the real script in its real location.
+**`build_queue.bats`** — current setup builds
+`$STUB_DIR/lib/{defaults,linear}.sh` and copies `build_queue.sh` into
+`$STUB_DIR/`. Post-migration: create a `$STUB_PLUGIN_ROOT` alongside
+`$STUB_DIR`, put `lib/defaults.sh` (copy) and `lib/linear.sh` (stub,
+moved from `$STUB_DIR/lib/linear.sh`) under it, and export
+`CLAUDE_PLUGIN_ROOT="$STUB_PLUGIN_ROOT"` in `setup()`. Remove the
+`mkdir -p "$STUB_DIR/lib"` and associated file writes from `$STUB_DIR`
+— `$STUB_DIR` now only hosts the copied script and the stub `linear`
+binary.
 
-The implementer should grep these bats files for `lib/` references
-during the migration and apply the stub-layout update consistently.
+**`dag_base.bats`** — each test creates a per-call `$tmp_dir` and puts
+`lib/{defaults,linear}.sh` there alongside the copied `dag_base.sh`.
+Post-migration: create a second `$stub_plugin_root` per call (via
+`mktemp -d`), put `lib/defaults.sh` (copy) and `lib/linear.sh` (stub)
+there, and pass `CLAUDE_PLUGIN_ROOT="$stub_plugin_root"` as an inline
+env override alongside the existing `RALPH_SCOPE_LOADED` assignment on
+the `run bash` invocation. Clean up `$stub_plugin_root` alongside
+`$tmp_dir` in the cleanup line.
+
+**`orchestrator.bats`** — current setup builds
+`$STUB_DIR/scripts/lib/{defaults,linear,worktree}.sh` and copies
+`orchestrator.sh` into `$STUB_DIR/scripts/`. Post-migration: reuse
+`$STUB_DIR` as the stub plugin root — add `lib/` under it, move
+`defaults.sh` (copy) and stub `linear.sh` to `$STUB_DIR/lib/`, and
+export `CLAUDE_PLUGIN_ROOT="$STUB_DIR"`. The script's `$SCRIPT_DIR`
+is still `$STUB_DIR/scripts/` when running from
+`$STUB_DIR/scripts/orchestrator.sh`, so the unchanged
+`$SCRIPT_DIR/lib/worktree.sh` continues to resolve to
+`$STUB_DIR/scripts/lib/worktree.sh`. Remove the `defaults.sh` and
+`linear.sh` copies from `$STUB_DIR/scripts/lib/` — they move to
+`$STUB_DIR/lib/`.
 
 ### What does NOT change
 
@@ -343,7 +380,17 @@ After the implementation lands, all of the following must hold.
    `worktree.sh`, validating that `PLUGIN_ROOT` resolution and updated
    stub-fixture layouts work.
 
-7. **Smoke source from the harness path.** Confirms the new source
+7. **No runnable verification snippets source the moved paths.** Grep
+   docs/specs/ for executable `source` commands referencing the old
+   path:
+   ```bash
+   ! grep -rn "source.*ralph-start/scripts/lib/\(defaults\|linear\|scope\|branch_ancestry\)" \
+     docs/specs/ 2>/dev/null
+   ```
+   The known instance (`in-design-workflow-state.md:255`) must be
+   updated as part of this issue's implementation.
+
+8. **Smoke source from the harness path.** Confirms the new source
    pattern works as a consumer skill would invoke it:
    ```bash
    bash -c 'set -eu
@@ -385,12 +432,19 @@ Explicitly excluded from this issue:
   moves files and updates source paths. It does not split functions
   across files, change function signatures, or rewrite implementations.
   Cleanup is filed separately if needed.
-- **Historical specs** in `docs/specs/` and `docs/archive/decisions/`
-  that mention the old paths (e.g., `ralph-scope-model-design.md`,
-  `ralph-implement-skill-design.md`,
-  `ralph-spec-sources-ralph-start-libs.md`). These are records of
-  work-as-done at the time. Retroactive path-edits would falsify the
-  record.
+- **Prose narrative in historical specs** in `docs/specs/` and
+  `docs/archive/decisions/` that mentions the old paths in expository
+  text (e.g., `ralph-scope-model-design.md`, `ralph-implement-skill-design.md`,
+  `ralph-spec-sources-ralph-start-libs.md`). Retroactive edits to prose
+  records falsify the historical account and are left as-is.
+  *Exception: runnable verification commands are treated as active
+  consumers, not prose. Any inline `bash -c '... source <old-path> ...'`
+  or equivalent that a user could copy-paste and run gets updated in the
+  same pass as the other consumer edits.* The concrete instance is
+  `docs/specs/in-design-workflow-state.md:255` — a verification step
+  that sources `skills/ralph-start/scripts/lib/defaults.sh`. Update that
+  line to source `lib/defaults.sh` (relative to repo root) to match the
+  new location.
 - **README.md and `docs/usage.md` narrative.** Neither references the
   moved paths in a way that needs updating.
 - **`docs/specs/in-design-workflow-state.md`** (ENG-273 spec). Stays
