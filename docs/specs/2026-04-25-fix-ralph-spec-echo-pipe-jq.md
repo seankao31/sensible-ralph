@@ -76,8 +76,8 @@ After the edit, all of the following must pass:
 1. `grep -nE 'echo .*\| *jq' skills/ralph-spec/SKILL.md`
    → zero matches.
 
-2. `grep -nE "printf '%s' \"\\\$VIEW\" \| jq" skills/ralph-spec/SKILL.md`
-   → exactly three matches, on consecutive lines.
+2. `grep -cF 'printf '\''%s'\'' "$VIEW" | jq' skills/ralph-spec/SKILL.md`
+   → exactly `3` (fixed-string count; no regex escaping pitfalls).
 
 3. Repo-wide audit stays clean:
    `grep -rnE 'echo .*\| *jq' --include='*.md' --include='*.sh' .`
