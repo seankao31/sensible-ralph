@@ -7,3 +7,10 @@
 /ordered_queue.txt
 /.worktrees/
 ralph-output.log
+
+# Handoff files between close-issue (sensible-ralph plugin skill) and the
+# project-local close-branch skill at .claude/skills/close-branch/. Written
+# at the start of each close ritual and deleted at the end; presence between
+# runs means the previous /close-issue was interrupted.
+/.close-branch-inputs
+/.close-branch-result
