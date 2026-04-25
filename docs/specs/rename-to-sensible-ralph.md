@@ -213,10 +213,15 @@ sweep.
   `ralph-status-command.md`,
   `2026-04-25-ralph-start-default-base-branch.md`,
   `2026-04-25-codex-review-gate-in-ralph-spec.md`. The spec *files* are
-  point-in-time records — keep the filenames as-is. **In-content**
-  identifier references inside those specs follow the rename rules
-  (e.g., `RALPH_PROJECTS` mentioned inside a spec body becomes
-  `SENSIBLE_RALPH_PROJECTS` if it points at current plugin mechanics).
+  point-in-time records — keep the filenames as-is. But inside those
+  spec files, rename **any mention** of current plugin mechanics or
+  callable surfaces — including command names, skill directory paths,
+  env vars, runtime filenames, and diagram node identifiers — in both
+  code-formatted and plain prose. Examples: `/ralph-spec` → `/sr-spec`,
+  `skills/ralph-start/` → `skills/sr-start/`, `RALPH_PROJECTS` →
+  `SENSIBLE_RALPH_PROJECTS`, `digraph ralph_spec {` → `digraph sr_spec
+  {`. Only the spec filename itself (used as a path reference or link
+  target in another file) stays unchanged.
 - **Marketplace and plugin manifest**: `.claude-plugin/marketplace.json`
   and `.claude-plugin/plugin.json` already say `sensible-ralph`. The
   `failed_label` and `stdout_log_filename` userConfig defaults
@@ -242,14 +247,22 @@ plugin. Inside the session:
 - Bats tests in the worktree run against the *new* code and use the
   new names — that's correct under test.
 
-So: **don't rename the runtime `.ralph-base-sha` file at the worktree
-root during the task** — only its references in source. The cached
-plugin needs the old-name file to complete the session. After merge
-and plugin reload, future sessions write the renamed file.
+So: **don't rename or delete the runtime `.ralph-base-sha` file at the
+worktree root during the task** — only update its name in source code
+references. The cached plugin needs the old-name file at the worktree
+root to complete the session; if it's missing, `prepare-for-review`
+will fall back to the wrong base SHA.
 
-The same logic applies to `.ralph/progress.json` written at the
-operator's main-checkout root by the cached orchestrator: leave it
-alone; the operator migration moves it.
+Note on the acceptance grep: criterion 1's grep scans only
+`*.md`, `*.sh`, `*.json`, and `*.bats` files — the extensionless
+runtime `.ralph-base-sha` at the worktree root is NOT scanned. When
+the grep surfaces `.ralph-base-sha` hits (e.g., from
+`orchestrator.sh` or `prepare-for-review/SKILL.md`), those are
+source-code references that **do** rename. The runtime file is exempt
+and must still be present at completion (see acceptance criterion 9).
+
+The same logic applies to `.ralph/progress.json` at the operator's
+main-checkout root: leave it alone; the operator migration moves it.
 
 ## Migration ritual (operator-side, post-merge)
 
@@ -287,21 +300,24 @@ ralph-output.log
 1. **No `ralph` plugin-identity hits remain** outside heritage carve-outs.
    This grep returns only heritage:
    ```bash
-   grep -rEn '(\.ralph\b|\.ralph[-/]|RALPH_[A-Z_]+|/ralph-(start|spec|implement)\b|skills/ralph-)' \
+   grep -rEn '(\.ralph\b|\.ralph[-/]|RALPH_[A-Z_]+|\bralph-(start|spec|implement)\b|\bralph_[a-z]|skills/ralph-)' \
      --include='*.md' --include='*.sh' --include='*.json' --include='*.bats' \
      . 2>/dev/null \
      | grep -v 'docs/archive/\|\.git/\|\.worktrees/' \
      | grep -v 'docs/specs/.*-design\.md' \
      | grep -v 'docs/specs/rename-to-sensible-ralph\.md'
    ```
-   (No leading `\b` — `.ralph` and `/ralph-` are preceded by non-word
-   characters in real hits like `/.ralph/` and `path/ralph-start`, so a
-   word boundary anchor at the start of the alternation would miss them.
-   The alternations are individually anchored: `\.ralph` requires a
-   literal `.`, `RALPH_[A-Z_]+` requires uppercase, `/ralph-` requires
-   a leading slash, `skills/ralph-` is path-anchored. Heritage strings
-   like `snarktank/ralph`, `vanilla ralph`, and `ralph technique` don't
-   match any alternation.)
+   Pattern notes: `\.ralph` and `skills/ralph-` are path-anchored and
+   need no leading `\b` (they start with non-word chars). The command
+   patterns use `\bralph-(start|spec|implement)\b` (word boundary, no
+   literal slash) to catch both `/ralph-start` and bare `ralph-start` in
+   prose — `ralph-failed` and `ralph-output` don't match because neither
+   `failed` nor `output` appears in the alternation, so heritage
+   verb-noun forms are safe. `\bralph_[a-z]` catches underscore-form
+   identifiers like the `ralph_spec` token in graphviz diagrams.
+   Heritage strings (`snarktank/ralph`, `vanilla ralph`, `ralph
+   technique`) don't match any alternation.
+
    Each remaining line must be a heritage reference: vanilla ralph
    narrative, the technique citation, fork links, or a spec filename
    carve-out (`docs/specs/ralph-status-command.md` etc. — filenames
@@ -327,6 +343,17 @@ ralph-output.log
 8. **Env-var guard checks pass at runtime.** Every shell script that
    gates on `[[ "${SENSIBLE_RALPH_SCOPE_LOADED:-}" != "$EXPECTED_SCOPE_LOADED" ]]`
    loads scope correctly when the new env var is set.
+9. **Runtime base-SHA marker still present.** The extensionless
+   `.ralph-base-sha` file at the worktree root must NOT be renamed or
+   deleted during the task. Verify before handing off:
+   ```bash
+   test -f .ralph-base-sha \
+     && echo "OK — runtime marker present" \
+     || echo "ERROR — marker missing; cached /prepare-for-review will use wrong base"
+   ```
+   Source code *references* to `.ralph-base-sha` in `orchestrator.sh`
+   and SKILL.md files rename correctly (to `.sensible-ralph-base-sha`);
+   only the runtime file at the worktree root is exempt.
 
 ## Verification (run in this order)
 
