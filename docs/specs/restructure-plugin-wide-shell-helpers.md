@@ -380,15 +380,19 @@ After the implementation lands, all of the following must hold.
    `worktree.sh`, validating that `PLUGIN_ROOT` resolution and updated
    stub-fixture layouts work.
 
-7. **No runnable verification snippets source the moved paths.** Grep
-   docs/specs/ for executable `source` commands referencing the old
-   path:
+7. **Runnable verification snippet updated.** The only runnable shell
+   command in `docs/specs/` that sources a moved lib is
+   `in-design-workflow-state.md:255` — a `bash -c 'source
+   skills/ralph-start/scripts/lib/defaults.sh ...'` verification step.
+   Confirm it now sources `lib/defaults.sh`:
    ```bash
-   ! grep -rn "source.*ralph-start/scripts/lib/\(defaults\|linear\|scope\|branch_ancestry\)" \
-     docs/specs/ 2>/dev/null
+   ! grep -n "source skills/ralph-start/scripts/lib/defaults.sh" \
+     docs/specs/in-design-workflow-state.md
    ```
-   The known instance (`in-design-workflow-state.md:255`) must be
-   updated as part of this issue's implementation.
+   (Other `docs/specs/` files contain prose references and diff blocks
+   that mention the old path — those are historical record, not
+   runnable commands. Only `in-design-workflow-state.md:255` is an
+   executable snippet the user could copy and run.)
 
 8. **Smoke source from the harness path.** Confirms the new source
    pattern works as a consumer skill would invoke it:
