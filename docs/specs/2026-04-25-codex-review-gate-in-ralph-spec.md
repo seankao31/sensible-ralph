@@ -44,9 +44,11 @@ Change to:
 >    file before Linear finalization.
 > 10. **Codex review gate** — invoke `codex-review-gate` scoped to
 >     this session's spec commits (`--base "$SPEC_BASE_SHA"` captured
->     in step 7, run inside a temporary worktree detached at
+>     at the start of step 7 *immediately before writing the spec
+>     file*, run inside a temporary worktree detached at
 >     `SPEC_HEAD_SHA`). Present findings to the user. Apply
->     trivially-actionable findings inline; substantial edits or
+>     trivially-actionable findings inline (commit, recapture
+>     `SPEC_HEAD_SHA`, re-run the gate); substantial edits or
 >     user-judgment revisions loop back to step 7 (re-trigger
 >     self-review + user review before re-running the gate). See the
 >     "Codex review gate" subsection below. Skip only when re-running
@@ -91,8 +93,13 @@ with these three edges:
 ```
 "User reviews spec?" -> "Codex review gate\n(standard + adversarial)" [label="approved"];
 "Codex review gate\n(standard + adversarial)" -> "Write design doc\ndocs/specs/<topic>.md" [label="substantial findings"];
-"Codex review gate\n(standard + adversarial)" -> "Finalize Linear issue\n(description + state + blockers)" [label="clean / minor fixes inline"];
+"Codex review gate\n(standard + adversarial)" -> "Codex review gate\n(standard + adversarial)" [label="minor fixes inline\n(commit, recapture SPEC_HEAD_SHA, re-run)"];
+"Codex review gate\n(standard + adversarial)" -> "Finalize Linear issue\n(description + state + blockers)" [label="clean"];
 ```
+
+The self-loop is intentional: minor fixes do not exit the gate. Every
+fix-inline path commits, recaptures `SPEC_HEAD_SHA`, and re-runs the
+gate. Only a clean run (no actionable findings) reaches Finalize.
 
 The other existing edge (`"User reviews spec?" -> "Write design
 doc\ndocs/specs/<topic>.md" [label="changes requested"]`) stays
@@ -106,7 +113,7 @@ bracket the spec commit with SHA captures. The new bullet list:
 ```markdown
 **Documentation:**
 
-- **Capture pre-spec HEAD:** `SPEC_BASE_SHA=$(git rev-parse HEAD)`. Required as `--base` for the codex gate (step 10) — operators commonly commit specs to `main`, where concurrent sessions would otherwise blend their commits in codex's default merge-base diff.
+- **Capture pre-spec HEAD — immediately before writing the spec file, after any pre-spec sync/rebase:** `SPEC_BASE_SHA=$(git rev-parse HEAD)`. Used as `--base` for the codex gate (step 10). **Do not capture earlier in the session.** Operators commonly commit specs to `main`; any concurrent session's commits that land between this capture and the spec commit become parents of the spec commit and contaminate codex's diff. Capturing at the last possible moment narrows that window to the fraction of a second between `git rev-parse HEAD` and `git commit`. For fully-isolated review (zero parent-contamination window), commit specs on a per-session feature branch — see the "Run the gate in an isolated worktree" sub-step below for what the worktree pattern does and does not isolate.
 - Write the validated design (spec) to `docs/specs/<topic>.md`.
   - Pick `<topic>` as a short kebab-case summary of what's being built.
   - If the file already exists, stop and ask before overwriting — it may belong to a related but distinct scope.
@@ -164,15 +171,33 @@ node <codex-script> review --json --base "$SPEC_BASE_SHA"
 node <codex-script> adversarial-review --json --base "$SPEC_BASE_SHA" "<focus text>"
 
 popd >/dev/null
-git worktree remove "$WT"
-trap - EXIT
+if git worktree remove "$WT"; then
+  trap - EXIT
+fi
 ```
 
-Followed by one or two sentences explaining: always-worktree (vs.
-conditional) keeps the codex invocation on one code path with one
-invariant — "codex always runs detached at `SPEC_HEAD_SHA`." The
-`trap EXIT` is the safety net for aborted/errored runs so we never
-leak temporary worktrees.
+Followed by prose explaining what the pattern actually isolates:
+
+- **Upper-bound isolation (full):** the worktree pins HEAD to
+  `SPEC_HEAD_SHA`, so codex never sees commits that landed *after*
+  this session's spec commit. This is the always-worktree pattern's
+  primary value — protecting the diff from later HEAD drift on a
+  shared-main tree.
+- **Lower-bound minimization (partial):** `--base "$SPEC_BASE_SHA"`
+  pins the lower bound to the SHA captured at step 7. Concurrent
+  commits landing in the sub-second window between that capture and
+  this session's first spec commit will become parents of the spec
+  commit and appear in `base..head`. The capture-timing rule in step
+  7 narrows the window to fractions of a second, but does not
+  eliminate it. For fully-isolated review, commit on a per-session
+  feature branch — that's the only way to guarantee no foreign
+  parents.
+- **Cleanup contract:** `trap EXIT` is the safety net for
+  aborted/errored runs. The explicit happy-path `git worktree remove`
+  is guarded by `if ... then trap - EXIT; fi`, so a failed removal
+  (e.g., codex left untracked files) leaves the trap armed and the
+  fallback fires on shell exit. Without the guard, the trap would be
+  cleared before removal was confirmed and the worktree could leak.
 
 The `<codex-script>` and `<focus text>` placeholders are kept literal
 in `SKILL.md` — at runtime, the model substitutes the path discovered
@@ -293,8 +318,12 @@ of the resulting `SKILL.md` for internal consistency.
 - Pre-flight checks on `/ralph-spec` (e.g., requiring a clean working
   tree before spec write).
 - Recommending or enforcing a branching workflow for `/ralph-spec`
-  sessions broadly. The always-worktree codex pattern handles the
-  shared-main-tree concurrency case without dictating a workflow.
+  sessions broadly. The always-worktree pattern fully isolates the
+  upper bound (post-spec HEAD drift) and narrows the lower-bound race
+  to a sub-second window, which is acceptable for the shared-main-tree
+  workflow most of the time. Operators wanting zero parent-
+  contamination should commit specs on per-session feature branches —
+  noted in the Documentation subsection but not mandated.
 
 ## Testing expectations
 
