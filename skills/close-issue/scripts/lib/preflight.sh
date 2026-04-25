@@ -37,5 +37,5 @@ close_issue_check_review_state() {
         "$issue_id" "$state" >&2
       ;;
   esac
-  return 1
+  return 1  # case arms use printf (exit 0); explicit return ensures non-zero for all error paths
 }
