@@ -50,14 +50,20 @@ teardown() {
 
 # ---------------------------------------------------------------------------
 # Helper: source the fakes + preflight in a subshell, call the function.
+#
+# call_fn uses `if fn; then rc=0; else rc=$?; fi` to distinguish `return`
+# from `exit`: `set -e` is suppressed inside an `if` condition, so a compliant
+# `return 1` goes to `else` and control reaches `echo CALL_FN_SENTINEL`; an
+# illegal `exit 1` kills the subshell before the sentinel prints. Tests assert
+# that CALL_FN_SENTINEL is present, proving the function used `return`.
 # ---------------------------------------------------------------------------
 call_fn() {
   local fn_name="$1"; shift
-  bash -c "set -euo pipefail; source '$STUB_DIR/lib/linear.sh' && source '$STUB_DIR/lib/preflight.sh' && $fn_name $*"
+  bash -c "set -euo pipefail; source '$STUB_DIR/lib/linear.sh'; source '$STUB_DIR/lib/preflight.sh'; if $fn_name $*; then rc=0; else rc=\$?; fi; echo CALL_FN_SENTINEL; exit \$rc"
 }
 
 # ---------------------------------------------------------------------------
-# 1. Happy path — state matches review state → returns 0, no stderr
+# 1. Happy path — state matches review state → returns 0, sentinel only
 # ---------------------------------------------------------------------------
 @test "close_issue_check_review_state returns 0 when state matches review state" {
   STUB_LINEAR_STATE="In Review"
@@ -66,7 +72,7 @@ call_fn() {
   run call_fn close_issue_check_review_state ENG-100
 
   [ "$status" -eq 0 ]
-  [ -z "$output" ]
+  [ "$output" = "CALL_FN_SENTINEL" ]  # sentinel only — no error messages, proves return was used
 }
 
 # ---------------------------------------------------------------------------
@@ -79,6 +85,7 @@ call_fn() {
   run call_fn close_issue_check_review_state ENG-101
 
   [ "$status" -ne 0 ]
+  [[ "$output" == *"CALL_FN_SENTINEL"* ]]  # sentinel present — proves return 1, not exit 1
   if [[ "$output" != *"/prepare-for-review"* ]]; then
     echo "expected /prepare-for-review hint in output, got: $output" >&2
     return 1
@@ -95,6 +102,7 @@ call_fn() {
   run call_fn close_issue_check_review_state ENG-102
 
   [ "$status" -ne 0 ]
+  [[ "$output" == *"CALL_FN_SENTINEL"* ]]  # sentinel present — proves return 1, not exit 1
   if [[ "$output" != *"Investigate"* ]] && [[ "$output" != *"leftover"* ]]; then
     echo "expected 'Investigate' or 'leftover' hint in output, got: $output" >&2
     return 1
@@ -111,6 +119,7 @@ call_fn() {
   run call_fn close_issue_check_review_state ENG-103
 
   [ "$status" -ne 0 ]
+  [[ "$output" == *"CALL_FN_SENTINEL"* ]]  # sentinel present — proves return 1, not exit 1
   if [[ "$output" != *"dispatch lifecycle"* ]]; then
     echo "expected 'dispatch lifecycle' hint in output, got: $output" >&2
     return 1
@@ -129,8 +138,24 @@ call_fn() {
   run call_fn close_issue_check_review_state ENG-104
 
   [ "$status" -ne 0 ]
+  [[ "$output" == *"CALL_FN_SENTINEL"* ]]  # sentinel present — proves return 1, not exit 1
   if [[ "$output" != *"linear_get_issue_state: failed to view"* ]]; then
     echo "expected helper diagnostic in output, got: $output" >&2
     return 1
   fi
+}
+
+# ---------------------------------------------------------------------------
+# 6. Harness self-test — proves call_fn detects illegal `exit` calls.
+#    A sourced function that calls `exit 1` instead of `return 1` kills the
+#    subshell before CALL_FN_SENTINEL prints. If this test ever stops
+#    catching that (e.g., sentinel always prints), the harness is broken.
+# ---------------------------------------------------------------------------
+@test "call_fn sentinel is absent when a sourced function calls exit (harness self-test)" {
+  printf 'exit_fn() { exit 1; }\n' > "$STUB_DIR/lib/preflight.sh"
+
+  run call_fn exit_fn
+
+  [ "$status" -ne 0 ]
+  [[ "$output" != *"CALL_FN_SENTINEL"* ]]
 }
