@@ -2,7 +2,7 @@
 
 **Linear issue:** ENG-236
 **Date:** 2026-04-25
-**Status:** Approved
+**Status:** Implemented
 
 ## Motivation
 

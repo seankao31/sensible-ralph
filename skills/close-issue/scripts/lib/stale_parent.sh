@@ -118,6 +118,8 @@ close_issue_label_stale_children() {
     children=""
   }
 
+  # Redundant reset (already `local stale_count=0` above) — preserved verbatim
+  # from the original Step 3.5 body per ENG-236 AC#6. Do NOT remove.
   stale_count=0
   while IFS= read -r child_id; do
     [ -z "$child_id" ] && continue
