@@ -48,12 +48,14 @@ Change to:
 >     file*, run inside a temporary worktree detached at
 >     `SPEC_HEAD_SHA`). Present findings to the user. Apply
 >     trivially-actionable findings inline (commit, recapture
->     `SPEC_HEAD_SHA`, re-run the gate); substantial edits or
->     user-judgment revisions loop back to step 7 (re-trigger
->     self-review + user review before re-running the gate). See the
->     "Codex review gate" subsection below. Skip only when re-running
->     on an Approved issue and the diff since prior approval is
->     purely cosmetic.
+>     `SPEC_HEAD_SHA`, re-run the gate); substantial findings loop
+>     back to step 7 (re-trigger self-review + user review before
+>     re-running the gate). User-judgment findings are presented to
+>     the user first, then routed by resulting change size — a
+>     trivial fix takes the inline path, a substantial revision takes
+>     the step-7 loop. See the "Codex review gate" subsection below.
+>     Skip only when re-running on an Approved issue and the diff
+>     since prior approval is purely cosmetic.
 > 11. **Finalize the Linear issue** — see "Finalizing the Linear
 >     Issue" below. Terminal state: issue description matches the
 >     approved spec, state is `approved_state`, blocked-by relations
@@ -162,13 +164,24 @@ If non-empty, continue to the next sub-step.
 Exact shell:
 
 ```bash
-WT=$(mktemp -d)
+WT=$(mktemp -d) || { echo "ralph-spec: mktemp failed; gate aborted" >&2; exit 1; }
 trap 'git worktree remove --force "$WT" 2>/dev/null; rm -rf "$WT"' EXIT
-git worktree add --detach "$WT" "$SPEC_HEAD_SHA"
+git worktree add --detach "$WT" "$SPEC_HEAD_SHA" || {
+  echo "ralph-spec: git worktree add failed; gate aborted" >&2
+  exit 1
+}
 pushd "$WT" >/dev/null
 
-node <codex-script> review --json --base "$SPEC_BASE_SHA"
-node <codex-script> adversarial-review --json --base "$SPEC_BASE_SHA" "<focus text>"
+node <codex-script> review --json --base "$SPEC_BASE_SHA" || {
+  echo "ralph-spec: standard codex review failed; gate aborted" >&2
+  popd >/dev/null
+  exit 1
+}
+node <codex-script> adversarial-review --json --base "$SPEC_BASE_SHA" "<focus text>" || {
+  echo "ralph-spec: adversarial codex review failed; gate aborted" >&2
+  popd >/dev/null
+  exit 1
+}
 
 popd >/dev/null
 if git worktree remove "$WT"; then
