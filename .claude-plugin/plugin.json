@@ -6,6 +6,12 @@
   "license": "MIT",
   "homepage": "https://github.com/seankao31/sensible-ralph",
   "userConfig": {
+    "design_state": {
+      "type": "string",
+      "title": "In-Design state name",
+      "description": "Linear workflow state while an interactive /ralph-spec session is open (default: In Design)",
+      "default": "In Design"
+    },
     "approved_state": {
       "type": "string",
       "title": "Approved state name",

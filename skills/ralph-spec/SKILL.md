@@ -28,7 +28,7 @@ Every ralph task goes through this process. A one-function utility, a config twe
 
 You MUST create a task for each of these items and complete them in order:
 
-1. **Resolve issue context** — if called with an issue-id argument, set `ISSUE_ID=<arg>` and fetch its current description as starting context. Otherwise leave `ISSUE_ID` unset; it will be created in step 10.
+1. **Resolve issue context** — if called with an issue-id argument, set `ISSUE_ID=<arg>` and fetch its current description as starting context; if the issue is in `Todo`, `Backlog`, or `Triage`, immediately transition it to `$CLAUDE_PLUGIN_OPTION_DESIGN_STATE` before the dialogue begins. Otherwise leave `ISSUE_ID` unset; it will be created in step 10.
 2. **Explore project context** — check files, docs, recent commits. If `ISSUE_ID` is set, the existing description is part of this context.
 3. **Offer visual companion** (if topic will involve visual questions) — its own message, no clarifying question alongside. See the Visual Companion section.
 4. **Ask clarifying questions** — one at a time, understand purpose/constraints/success criteria.
@@ -79,7 +79,24 @@ digraph ralph_spec {
 
 **Understanding the idea:**
 
-- If `ISSUE_ID` is set, start by reading its current description — that's the user's framing before the dialogue refines it.
+- If `ISSUE_ID` is set, start by reading its current description — that's the user's framing before the dialogue refines it. Then, before asking any questions, source `defaults.sh` and transition the issue to `$CLAUDE_PLUGIN_OPTION_DESIGN_STATE` if it is in an idle state (`Todo`, `Backlog`, or `Triage`). This is best-effort — log and continue on failure:
+
+  ```bash
+  source "$CLAUDE_PLUGIN_ROOT/skills/ralph-start/scripts/lib/defaults.sh"
+
+  if [ -n "${ISSUE_ID:-}" ]; then
+    STATE=$(linear issue view "$ISSUE_ID" --json | jq -r '.state.name')
+
+    case "$STATE" in
+      Todo|Backlog|Triage)
+        linear issue update "$ISSUE_ID" \
+          --state "$CLAUDE_PLUGIN_OPTION_DESIGN_STATE" \
+          || echo "ralph-spec: failed to transition $ISSUE_ID to '$CLAUDE_PLUGIN_OPTION_DESIGN_STATE'; continuing with dialogue" >&2
+        ;;
+    esac
+  fi
+  ```
+
 - Check out the current project state (files, docs, recent commits).
 - Before asking detailed questions, assess scope: if the request describes multiple independent subsystems (e.g., "build a platform with chat, file storage, billing, and analytics"), flag this immediately. Don't spend questions refining details of a project that needs to be decomposed first.
 - If the project is too large for a single spec, help the user decompose into sub-projects: what are the independent pieces, how do they relate, what order should they be built? Each sub-project gets its own spec → its own ralph-spec invocation. Prerequisite relationships become `blocked-by` edges in step 10.
@@ -193,7 +210,7 @@ Branch on `$STATE` before running anything below. Use the state names the plugin
 - **Equals `$CLAUDE_PLUGIN_OPTION_DONE_STATE` or `Canceled`**: stop and ask. Reopening a terminal state warrants explicit confirmation. (`Canceled` is the literal Linear state name — not a plugin option because it's not a pipeline state.)
 - **Equals `$CLAUDE_PLUGIN_OPTION_APPROVED_STATE`**: warn the user the prior spec will be overwritten. Require explicit confirmation before continuing.
 - **Equals `$CLAUDE_PLUGIN_OPTION_IN_PROGRESS_STATE` or `$CLAUDE_PLUGIN_OPTION_REVIEW_STATE`**: stop and ask. Re-speccing an active issue usually means the operator is on the wrong ticket.
-- **Anything else** (typically `Todo`, `Backlog`, or `Triage`): proceed.
+- **Anything else** (typically `Todo`, `Backlog`, `Triage`, or `$CLAUDE_PLUGIN_OPTION_DESIGN_STATE`): proceed.
 
 Then validate `$ISSUE_PROJECT` against `$RALPH_PROJECTS`:
 
