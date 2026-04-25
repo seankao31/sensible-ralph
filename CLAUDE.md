@@ -8,10 +8,9 @@ design; [`docs/usage.md`](docs/usage.md) for the operator flow.
 
 **Initiative:** AI Collaboration Toolkit
 **Team:** Engineering
-**Project:** Sensible Ralph.
+**Project:** Sensible Ralph
 
-Pre-extraction history lives
-under Agent Config — don't refile there.
+Pre-extraction history lives under Agent Config — don't refile there.
 
 **Estimates** use Fibonacci points (1, 2, 3, 5, 8, 13) — Engineering team
 default. Every new issue must include an estimate.
