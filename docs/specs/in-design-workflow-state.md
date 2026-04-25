@@ -86,9 +86,7 @@ begins. Concretely, after the existing fetch, run:
 
 ```bash
 if [ -n "${ISSUE_ID:-}" ]; then
-  VIEW=$(linear issue view "$ISSUE_ID" --json)
-  STATE=$(echo "$VIEW" | jq -r '.state.name')
-  PRIOR=$(echo "$VIEW" | jq -r '.description // empty')
+  STATE=$(linear issue view "$ISSUE_ID" --json | jq -r '.state.name')
 
   case "$STATE" in
     Todo|Backlog|Triage)
@@ -99,6 +97,10 @@ if [ -n "${ISSUE_ID:-}" ]; then
   esac
 fi
 ```
+
+Step 10's existing fetch (which captures `STATE`, `PRIOR`, `ISSUE_PROJECT`
+in one call) is not affected — it runs much later, sees `In Design`
+as the current state, and proceeds normally per Edit 4.
 
 Behavior notes:
 
@@ -158,10 +160,23 @@ runs the following sequence for each of `ENG` and `GAM`:
    insensitive match) already exists for this team, skip creation for
    this team and log "already present, skipping".
 4. Otherwise compute:
-   - `position`: midpoint between the existing `Todo` and `Approved`
-     states' positions. (Linear renders states in ascending position
-     order.) If either is missing, fail with a clear message — this is
-     not a state-machine the plugin recognizes.
+   - `position`: must satisfy `Todo.position < In Design.position <
+     Approved.position` and not collide with any existing state's
+     position. Use a gap-aware formula:
+     ```
+     gap = Approved.position - Todo.position
+     position = Todo.position + min(gap / 2, 0.25)
+     ```
+     For the current ENG workflow (Todo=1, Approved=1.5) this yields
+     `1.25`. For the current GAM workflow (Todo=0, Approved=2000) this
+     yields `0.25` — deliberately a small offset rather than the
+     numerical midpoint, because GAM has `Blocked` and `In Review`
+     both at `1000`, and a naive midpoint of `1000` would collide. After
+     computing, verify the value doesn't equal any existing state's
+     position; if it does, fail with a clear message (the workflow has
+     an unexpected layout). If `Todo` or `Approved` is missing on a
+     team, fail with a clear message — this is not a state machine
+     the plugin recognizes.
    - `color`: clone the `Approved` state's color. Operators can adjust
      in the Linear UI later.
    - `description`: `"Interactive design/spec session in progress
@@ -299,3 +314,12 @@ None. This issue stands alone — it depends on existing ralph plumbing
 - Color and position picked at creation time can be adjusted later in
   the Linear UI without breaking anything: the autonomous session
   reads state names, not colors or positions.
+- **GAM team workflow has pre-existing layout quirks** — `Triage`,
+  `In Progress`, `Todo`, and `Backlog` all share position `0`;
+  `Blocked` and `In Review` both sit at position `1000`; `Approved`
+  is at `2000`, after `In Review`'s `1000`. This issue does not try
+  to fix that layout — we only verify our local constraint
+  (`Todo < In Design < Approved` by position) and do not require a
+  globally-consistent ordering across the rest of the workflow. ENG
+  team's layout is clean (Todo=1, Approved=1.5) and the new state
+  slots in at 1.25.
