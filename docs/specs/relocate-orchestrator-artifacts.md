@@ -1,9 +1,14 @@
 # Relocate orchestrator artifacts under `.ralph/`
 
-ENG-255. Move the two main-checkout orchestrator artifacts
-(`progress.json`, `ordered_queue.txt`) into a subsystem-named hidden
-directory at the consumer-repo root, tightening the consumer gitignore
-from two filename entries to one directory entry.
+**Linear:** ENG-255
+**Status:** Approved
+**Project:** Sensible Ralph
+**Date:** 2026-04-25
+
+Move the two main-checkout orchestrator artifacts (`progress.json`,
+`ordered_queue.txt`) into a subsystem-named hidden directory at the
+consumer-repo root, tightening the consumer gitignore from two
+filename entries to one directory entry.
 
 ## Motivation
 
@@ -26,8 +31,10 @@ relation.
 
 ## In scope
 
-One atomic commit covering nine file groups. Paths below are relative to
-the plugin repo root (`sensible-ralph/`) unless noted.
+One atomic commit. Nine file surfaces examined below: seven definite
+edits, one conditional (only edit on grep hits), one examined and
+needs no edit. Paths below are relative to the plugin repo root
+(`sensible-ralph/`) unless noted.
 
 ### 1. `.gitignore` (plugin's own template)
 
@@ -87,10 +94,19 @@ function's atomic `mktemp + mv` pattern requires the destination
 directory to exist when `mktemp` runs — startup `mkdir` guarantees this
 once for the run.
 
-(c) Comment narrative referencing `progress.json` (lines ~10, 13, 75, 91,
-94, 131, 253). Path-bearing references update to `.ralph/progress.json`;
-path-independent narrative ("Append a record... to progress.json")
-stays as-is. Implementer judges per line.
+(c) Header comment line 13 is location-bearing and must be updated:
+
+```text
+# Before:
+# pre-sorted by toposort.sh. progress.json is written to the repo root
+# After:
+# pre-sorted by toposort.sh. .ralph/progress.json is written under the repo root
+```
+
+Other narrative references to `progress.json` in this file (lines 10, 75,
+91, 94, 131, 253) describe the record contents or atomicity properties,
+not the filesystem location — leave them as the bare `progress.json`
+identifier.
 
 ### 4. `skills/ralph-start/SKILL.md`
 
@@ -130,9 +146,11 @@ Line 9 — usage comment:
 
 ### 6. `skills/ralph-start/scripts/autonomous-preamble.md`
 
-Line 15 — comment narrative referencing `progress.json`. Update to
-`.ralph/progress.json` if location-bearing in context (implementer
-judges).
+Examined; no edit needed. Line 15 ("The orchestrator records this as
+`exit_clean_no_review` in `progress.json`") describes what gets written
+to the record, not where the file lives — the bare `progress.json`
+identifier reads naturally and the operator finds the file via
+`docs/usage.md` anyway.
 
 ### 7. `docs/usage.md`
 
@@ -218,9 +236,10 @@ This list may be empty; only edit on actual hits.
      | grep -v -E '\.ralph/(progress\.json|ordered_queue\.txt)'
    ```
    Any hit that IS location-bearing must be fixed before the commit
-   lands. (`docs/specs/*-design.md` is intentionally NOT in the grep
-   path — those files are out of scope. `docs/archive/**` is filtered
-   for the same reason.)
+   lands. The grep deliberately excludes `docs/specs/` (this spec file
+   itself contains many expected `progress.json` references; the three
+   `*-design.md` files in that directory are also out of scope) and
+   `docs/archive/**` (historical snapshots).
 
 6. `.ralph.json` (the consumer scope file at the repo root) is NOT
    ignored — `git check-ignore .ralph.json` returns no match (or a
