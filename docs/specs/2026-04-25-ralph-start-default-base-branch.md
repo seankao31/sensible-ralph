@@ -73,10 +73,18 @@ Inside `_scope_load_projects`, after the existing
 function's closing `}`, parse and export the new key:
 
 ```bash
-local default_base
-default_base="$(jq -r '.default_base_branch // "main"' "$scope_file")"
-if [[ -z "$default_base" || "$default_base" == "null" ]]; then
-  echo "scope: .ralph.json default_base_branch is empty — omit the key or set a non-empty string" >&2
+local default_base dbb_type
+dbb_type="$(jq -r 'if has("default_base_branch") then (.default_base_branch | type) else "absent" end' "$scope_file")"
+if [[ "$dbb_type" == "absent" ]]; then
+  default_base="main"
+elif [[ "$dbb_type" == "string" ]]; then
+  default_base="$(jq -r '.default_base_branch' "$scope_file")"
+  if [[ -z "$default_base" ]]; then
+    echo "scope: .ralph.json default_base_branch is empty — omit the key or set a non-empty string" >&2
+    return 1
+  fi
+else
+  echo "scope: .ralph.json default_base_branch must be a string, got $dbb_type" >&2
   return 1
 fi
 export RALPH_DEFAULT_BASE_BRANCH="$default_base"
@@ -85,9 +93,10 @@ export RALPH_DEFAULT_BASE_BRANCH="$default_base"
 Add `RALPH_DEFAULT_BASE_BRANCH` to the documented `Exports` list at
 the top of the file.
 
-The strict empty-string and explicit-null checks match the existing
-fail-loud pattern (no silent fallbacks for malformed config). Absent key
-falls through `jq`'s `// "main"` to the default.
+The type-safe guard matches the fail-loud pattern everywhere in scope.sh:
+absent key defaults to `"main"`, non-empty string is accepted, empty
+string and all non-string JSON types (number, boolean, array, object)
+are hard errors caught at load time — never at git-ref resolution time.
 
 ### `scripts/dag_base.sh` change
 
@@ -122,6 +131,48 @@ becomes:
 # Output: "<RALPH_DEFAULT_BASE_BRANCH>" | "<branch>" | "INTEGRATION <branch1> <branch2> ..."
 ```
 
+### `scripts/lib/worktree.sh` change
+
+`worktree_create_with_integration` creates the integration worktree from
+the literal ref `main`:
+
+```bash
+git worktree add "$path" -b "$branch" main
+```
+
+Replace with:
+
+```bash
+git worktree add "$path" -b "$branch" "${RALPH_DEFAULT_BASE_BRANCH}"
+```
+
+`RALPH_DEFAULT_BASE_BRANCH` is available because `scope.sh` is always
+sourced before `worktree.sh` is used (both `orchestrator.sh` and
+`dag_base.sh` source scope at the top via the conditional
+`RALPH_SCOPE_LOADED` marker block). Also update the function's leading
+comment to note this env-var dependency.
+
+### `scripts/orchestrator.sh` change
+
+In the INTEGRATION path of `_dispatch_issue`, the pre-merge `base_sha`
+capture hardcodes the trunk ref:
+
+```bash
+# Capture main's SHA BEFORE any parent merges …
+base_sha="$(git rev-parse main)"
+```
+
+Replace `main` with the configured trunk:
+
+```bash
+# Capture trunk SHA BEFORE any parent merges — that's the branch's true
+# creation point for prepare-for-review diff scoping.
+base_sha="$(git rev-parse "${RALPH_DEFAULT_BASE_BRANCH}")"
+```
+
+Update the surrounding comment to say "trunk" (or "default base branch")
+instead of the literal word "main".
+
 ### `skills/ralph-start/SKILL.md` change
 
 Update the "Scope resolution" section to document the new field. Add a
@@ -134,35 +185,62 @@ has no in-review parent in the queue. Defaults to `"main"` if absent.
 Example: `{ "projects": [...], "default_base_branch": "dev" }`.
 ```
 
-### Tests (`scripts/test/scope.bats`)
+### Tests
 
-Add three `@test` blocks following the existing fake-repo-root pattern
-(see the existing `setup` / `teardown` / `source_scope` helper in the
-file):
+**`scripts/test/scope.bats`** — add five `@test` blocks following the
+existing fake-repo-root pattern (`setup` / `teardown` / `source_scope`
+helper in the file):
 
 1. **`default_base_branch absent → RALPH_DEFAULT_BASE_BRANCH=main`** —
-   write a `.ralph.json` without the field, source scope, assert
-   `RALPH_DEFAULT_BASE_BRANCH=main` is in the captured exports.
+   write `.ralph.json` without the field, source scope, assert
+   `RALPH_DEFAULT_BASE_BRANCH=main` in the captured exports.
 2. **`default_base_branch set → exports the configured value`** — write
    `.ralph.json` with `"default_base_branch": "dev"`, assert
    `RALPH_DEFAULT_BASE_BRANCH=dev` in the captured exports.
 3. **`default_base_branch empty string → hard error`** — write
-   `.ralph.json` with `"default_base_branch": ""`, source scope, assert
-   exit status 1 and the error message contains `default_base_branch`.
+   `.ralph.json` with `"default_base_branch": ""`, assert exit 1 and
+   error message contains `default_base_branch`.
+4. **`default_base_branch non-string number → hard error`** — write
+   `.ralph.json` with `"default_base_branch": 123`, assert exit 1 and
+   error message contains `default_base_branch`.
+5. **`default_base_branch non-string boolean → hard error`** — write
+   `.ralph.json` with `"default_base_branch": false`, assert exit 1 and
+   error message contains `default_base_branch`.
+
+**`scripts/test/worktree.bats`** — add one `@test` block:
+
+6. **`worktree_create_with_integration uses RALPH_DEFAULT_BASE_BRANCH`**
+   — set `RALPH_DEFAULT_BASE_BRANCH=dev`, stub or confirm `git worktree
+   add` is called with `dev` as the base (not `main`). The existing
+   worktree tests use a real temp git repo; add a `dev` branch in setup
+   and pass it as `RALPH_DEFAULT_BASE_BRANCH` to confirm the ref
+   resolves without error.
 
 `dag_base.bats` does not need new cases — its existing no-parent test
-will continue to pass (the default `main` matches the prior literal).
+will continue to pass (the default `main` matches the prior literal
+when `RALPH_DEFAULT_BASE_BRANCH` is absent or `main`).
 
 ## Failure mode at the seam
 
-If a future caller manages to invoke `dag_base.sh` without first
-sourcing `scope.sh` (so `RALPH_DEFAULT_BASE_BRANCH` is unset), the
-`printf '%s\n' "$RALPH_DEFAULT_BASE_BRANCH"` will print an empty line.
-The orchestrator's existing dag_base output validation
-(the `if [[ -z "${base_out//[[:space:]]/}" ]]` block in
-`_dispatch_issue` that emits `dag_base_empty` as the failed step)
-already catches this and records the issue as `setup_failed`. No
-additional guard is needed.
+If a future caller manages to invoke `dag_base.sh` or
+`worktree_create_with_integration` without first sourcing `scope.sh`
+(so `RALPH_DEFAULT_BASE_BRANCH` is unset):
+
+- `dag_base.sh`: `printf '%s\n' "$RALPH_DEFAULT_BASE_BRANCH"` emits an
+  empty line. The orchestrator's existing dag_base output validation
+  (the `if [[ -z "${base_out//[[:space:]]/}" ]]` block in
+  `_dispatch_issue` that emits `dag_base_empty` as the failed step)
+  catches this and records `setup_failed`. No additional guard needed.
+- `worktree_create_with_integration`: `git worktree add "$path" -b
+  "$branch" ""` — git will reject the empty ref with a clear error,
+  which propagates as a non-zero return from
+  `worktree_create_with_integration`, triggering `_cleanup_worktree`
+  and `setup_failed` in the orchestrator's error path. No additional
+  guard needed.
+- `git rev-parse ""` in the INTEGRATION `base_sha` block — also fails
+  non-zero, hitting the same `setup_failed` path.
+
+All three unset-env cases are caught before any Linear mutation.
 
 ## Documentation updates
 
