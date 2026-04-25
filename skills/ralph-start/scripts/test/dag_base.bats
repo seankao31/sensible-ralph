@@ -13,6 +13,12 @@ setup() {
   export CLAUDE_PLUGIN_OPTION_REVIEW_STATE="In Review"
   export CLAUDE_PLUGIN_OPTION_APPROVED_STATE="Approved"
   export RALPH_PROJECTS="Test Project"
+  # The auto-source gate is bypassed in run_dag_base by setting RALPH_SCOPE_LOADED
+  # to match — so scope.sh never runs and never exports RALPH_DEFAULT_BASE_BRANCH.
+  # Set the default explicitly for the no-parent path (ENG-214 made this branch
+  # configurable; absence in production would fail under set -u, but tests
+  # bypass scope-loading by design and must restore the export themselves).
+  export RALPH_DEFAULT_BASE_BRANCH="main"
   export CLAUDE_PLUGIN_OPTION_FAILED_LABEL="ralph-failed"
   # Marker is set per-test in run_dag_base, after the per-test tmp_dir is
   # created — its value is what the script's auto-source gate compares against.

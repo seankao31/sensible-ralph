@@ -265,3 +265,96 @@ STUB
     return 1
   fi
 }
+
+# ---------------------------------------------------------------------------
+# 11. default_base_branch absent → RALPH_DEFAULT_BASE_BRANCH defaults to "main".
+#     Preserves today's behavior for every existing .ralph.json.
+# ---------------------------------------------------------------------------
+@test "default_base_branch absent defaults RALPH_DEFAULT_BASE_BRANCH to main" {
+  run source_scope
+
+  [ "$status" -eq 0 ]
+  if [[ "$output" != *"RALPH_DEFAULT_BASE_BRANCH=main"* ]]; then
+    echo "expected RALPH_DEFAULT_BASE_BRANCH=main, got: $output" >&2
+    return 1
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# 12. default_base_branch set → exports the configured value.
+# ---------------------------------------------------------------------------
+@test "default_base_branch set exports the configured value" {
+  cat > "$TEST_REPO_ROOT/.ralph.json" <<'EOF'
+{
+  "projects": ["Project A"],
+  "default_base_branch": "dev"
+}
+EOF
+
+  run source_scope
+
+  [ "$status" -eq 0 ]
+  if [[ "$output" != *"RALPH_DEFAULT_BASE_BRANCH=dev"* ]]; then
+    echo "expected RALPH_DEFAULT_BASE_BRANCH=dev, got: $output" >&2
+    return 1
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# 13. default_base_branch empty string → hard error. Forces operators to omit
+#     the key rather than silently defaulting an empty string to a git ref.
+# ---------------------------------------------------------------------------
+@test "default_base_branch empty string exits 1 with error" {
+  cat > "$TEST_REPO_ROOT/.ralph.json" <<'EOF'
+{
+  "projects": ["Project A"],
+  "default_base_branch": ""
+}
+EOF
+
+  run bash -c "cd '$TEST_REPO_ROOT' && source '$LINEAR_SH' && source '$SCOPE_SH'" 2>&1
+  [ "$status" -eq 1 ]
+  if [[ "$output" != *"default_base_branch"* ]]; then
+    echo "expected 'default_base_branch' in error, got: $output" >&2
+    return 1
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# 14. default_base_branch as JSON number → hard error. Catches type confusion
+#     at load time rather than letting it leak to git-ref resolution.
+# ---------------------------------------------------------------------------
+@test "default_base_branch as number exits 1 with error" {
+  cat > "$TEST_REPO_ROOT/.ralph.json" <<'EOF'
+{
+  "projects": ["Project A"],
+  "default_base_branch": 123
+}
+EOF
+
+  run bash -c "cd '$TEST_REPO_ROOT' && source '$LINEAR_SH' && source '$SCOPE_SH'" 2>&1
+  [ "$status" -eq 1 ]
+  if [[ "$output" != *"default_base_branch"* ]]; then
+    echo "expected 'default_base_branch' in error, got: $output" >&2
+    return 1
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# 15. default_base_branch as JSON boolean → hard error.
+# ---------------------------------------------------------------------------
+@test "default_base_branch as boolean exits 1 with error" {
+  cat > "$TEST_REPO_ROOT/.ralph.json" <<'EOF'
+{
+  "projects": ["Project A"],
+  "default_base_branch": false
+}
+EOF
+
+  run bash -c "cd '$TEST_REPO_ROOT' && source '$LINEAR_SH' && source '$SCOPE_SH'" 2>&1
+  [ "$status" -eq 1 ]
+  if [[ "$output" != *"default_base_branch"* ]]; then
+    echo "expected 'default_base_branch' in error, got: $output" >&2
+    return 1
+  fi
+}

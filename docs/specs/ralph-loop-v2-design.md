@@ -138,7 +138,7 @@ When dispatching issue `B` whose blockers are `{A1, A2, ...}`:
 
 | Blocker state | Base branch for B |
 |---|---|
-| No blockers, or all blockers merged (`Done`) | `main` |
+| No blockers, or all blockers merged (`Done`) | `$RALPH_DEFAULT_BASE_BRANCH` (default `"main"`, configurable via `.ralph.json`) |
 | One blocker in `In Review`, rest `Done` | That blocker's branch |
 | Multiple blockers in `In Review` | **Integration merge** (see below) |
 
@@ -154,7 +154,7 @@ The orchestrator attempts to merge the in-review parents sequentially in B's pre
 
 ```bash
 # Orchestrator:
-git worktree add .worktrees/eng-B-slug -b eng-B-slug main
+git worktree add .worktrees/eng-B-slug -b eng-B-slug "$RALPH_DEFAULT_BASE_BRANCH"  # default "main"
 cd .worktrees/eng-B-slug
 git merge <parent-A1-branch>  # single parent: may conflict (agent resolves)
 git merge <parent-A2-branch>  # multi-parent: abort on any conflict (see decision doc)
@@ -291,7 +291,7 @@ The queue is **fixed at invocation time**. New Approved issues added mid-run are
 Processes the ordered queue sequentially. Per issue:
 
 ```
-base       = dag_base(issue)           # "main" | parent-branch | {integration, parents}
+base       = dag_base(issue)           # $RALPH_DEFAULT_BASE_BRANCH | parent-branch | {integration, parents}
 worktree   = .worktrees/$branch        # relative to repo root (orchestrator cwd)
 session    = "$ISSUE_ID: $ISSUE_TITLE"
 
@@ -303,7 +303,7 @@ session    = "$ISSUE_ID: $ISSUE_TITLE"
 # outcome: "local_residue" WITHOUT mutating Linear — the issue is healthy;
 # only the local environment needs operator cleanup.
 if base is integration:
-    git worktree add $worktree -b $branch main
+    git worktree add $worktree -b $branch $RALPH_DEFAULT_BASE_BRANCH
     for parent_branch in base.parents:
         git -C $worktree merge $parent_branch
         # Single parent with conflict: leave in-place; agent resolves.
@@ -374,7 +374,7 @@ function dag_base(issue):
     review_parents = [b for b in blockers if b.state == "In Review"]
 
     if not review_parents:
-        return "main"
+        return RALPH_DEFAULT_BASE_BRANCH  # default "main", configurable via .ralph.json
     if len(review_parents) == 1:
         return review_parents[0].branch_name
     return {"type": "integration", "parents": review_parents}

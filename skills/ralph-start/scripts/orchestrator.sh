@@ -405,12 +405,16 @@ _dispatch_issue() {
   elif [[ "$base_out" == INTEGRATION\ * ]]; then
     # shellcheck disable=SC2206
     parents=(${base_out#INTEGRATION })
-    # Capture main's SHA BEFORE any parent merges — that's the branch's true
+    # Capture trunk SHA BEFORE any parent merges — that's the branch's true
     # creation point. Post-merge HEAD would pull parent commits into the
     # prepare-for-review diff, which must be scoped to this session's work.
-    base_sha="$(git rev-parse main)"
+    # The trunk is configured via .ralph.json `default_base_branch` (ENG-214);
+    # lib/scope.sh exports RALPH_DEFAULT_BASE_BRANCH (defaulting to "main").
+    base_sha="$(git rev-parse "${RALPH_DEFAULT_BASE_BRANCH}")"
     if [[ $? -ne 0 || -z "$base_sha" ]]; then
       set -e
+      # "rev_parse_main" is intentionally stable — renaming it to "rev_parse_trunk"
+      # would silently break any operator grep/jq on existing progress.json files.
       _record_setup_failure "$issue_id" "rev_parse_main" "$timestamp"
       return 1
     fi

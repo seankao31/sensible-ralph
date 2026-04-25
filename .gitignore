@@ -7,6 +7,7 @@
 /ordered_queue.txt
 /.worktrees/
 ralph-output.log
+/.ralph-base-sha
 
 # Handoff files between close-issue (sensible-ralph plugin skill) and the
 # project-local close-branch skill at .claude/skills/close-branch/. Written

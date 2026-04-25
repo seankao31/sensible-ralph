@@ -42,6 +42,8 @@ Which Linear projects this run drains is declared in `<repo-root>/.ralph.json` (
 { "initiative": "My Initiative" }
 ```
 
+**Default base branch.** An optional `default_base_branch` field (string) sets the branch ralph branches from when an Approved issue has no in-review parent in the queue. Defaults to `"main"` if absent. Example: `{ "projects": [...], "default_base_branch": "dev" }`.
+
 Rules (all hard errors at load time, no silent fallbacks):
 
 - `.ralph.json` must exist at the repo root. Missing file halts with a message pointing at the expected path.
