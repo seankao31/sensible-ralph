@@ -61,11 +61,17 @@ loop:
 
 1. **Inventory** all references:
    ```bash
-   grep -rEn '\bralph\b|RALPH_|\.ralph\b' \
+   grep -rEn '\bralph|RALPH_' \
      --include='*.md' --include='*.sh' --include='*.json' --include='*.bats' \
      . 2>/dev/null \
      | grep -v 'docs/archive/\|\.git/\|\.worktrees/'
    ```
+   The `\bralph` pattern catches every token starting with `ralph`
+   after a word boundary — `ralph-spec`, `.ralph.json`, `/.ralph/`,
+   `vanilla ralph`, `snarktank/ralph`. The implementer's job at
+   inventory time is to *see all of these* and then filter heritage
+   manually. (The narrower acceptance grep below excludes heritage by
+   construction.)
 2. **Filter** heritage carve-outs (see Out of scope).
 3. **Sweep** one surface category at a time.
 4. **Re-grep** to verify only heritage hits remain.
@@ -281,13 +287,21 @@ ralph-output.log
 1. **No `ralph` plugin-identity hits remain** outside heritage carve-outs.
    This grep returns only heritage:
    ```bash
-   grep -rEn '\b(\.ralph\b|\.ralph[-/]|RALPH_[A-Z_]+|/ralph-(start|spec|implement)\b|skills/ralph-)' \
+   grep -rEn '(\.ralph\b|\.ralph[-/]|RALPH_[A-Z_]+|/ralph-(start|spec|implement)\b|skills/ralph-)' \
      --include='*.md' --include='*.sh' --include='*.json' --include='*.bats' \
      . 2>/dev/null \
      | grep -v 'docs/archive/\|\.git/\|\.worktrees/' \
      | grep -v 'docs/specs/.*-design\.md' \
      | grep -v 'docs/specs/rename-to-sensible-ralph\.md'
    ```
+   (No leading `\b` — `.ralph` and `/ralph-` are preceded by non-word
+   characters in real hits like `/.ralph/` and `path/ralph-start`, so a
+   word boundary anchor at the start of the alternation would miss them.
+   The alternations are individually anchored: `\.ralph` requires a
+   literal `.`, `RALPH_[A-Z_]+` requires uppercase, `/ralph-` requires
+   a leading slash, `skills/ralph-` is path-anchored. Heritage strings
+   like `snarktank/ralph`, `vanilla ralph`, and `ralph technique` don't
+   match any alternation.)
    Each remaining line must be a heritage reference: vanilla ralph
    narrative, the technique citation, fork links, or a spec filename
    carve-out (`docs/specs/ralph-status-command.md` etc. — filenames
