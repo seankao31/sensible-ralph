@@ -6,7 +6,8 @@ set -euo pipefail
 # and print the ordered issue IDs (one per line) to stdout.
 #
 # Usage:
-#   mkdir -p .ralph && scripts/build_queue.sh > .ralph/ordered_queue.txt
+#   ralph_root="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/.ralph"
+#   mkdir -p "$ralph_root" && scripts/build_queue.sh > "$ralph_root/ordered_queue.txt"
 #
 # An issue is pickup-ready only if:
 #   - state == $CLAUDE_PLUGIN_OPTION_APPROVED_STATE
