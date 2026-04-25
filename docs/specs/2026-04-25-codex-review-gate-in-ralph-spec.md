@@ -174,6 +174,11 @@ invariant — "codex always runs detached at `SPEC_HEAD_SHA`." The
 `trap EXIT` is the safety net for aborted/errored runs so we never
 leak temporary worktrees.
 
+The `<codex-script>` and `<focus text>` placeholders are kept literal
+in `SKILL.md` — at runtime, the model substitutes the path discovered
+in sub-step 2 and either the default focus text from sub-step 4 below
+or a per-spec override.
+
 #### 4. Adversarial focus text default
 
 Use this default focus text verbatim unless the model identifies a
@@ -243,9 +248,11 @@ spec.
 
 After the edits, all of these checks must pass:
 
-1. `grep -nE "step 10|Step 10" skills/ralph-spec/SKILL.md` →
-   matches only the new step-10 (Codex review gate) heading and the
-   dot graph node label. No matches that imply finalize-is-step-10.
+1. `grep -nE "step 10|Step 10" skills/ralph-spec/SKILL.md` —
+   every match must refer to the new Codex review gate step (the
+   heading itself plus narrative cross-references like "the codex
+   gate (step 10)" in Edit 4 and "re-run the gate (step 10)" in
+   Edit 5). No match should reference the finalize step.
 
 2. `grep -nE "step 11|Step 11" skills/ralph-spec/SKILL.md` →
    matches the renamed Finalize heading in the checklist and the three
