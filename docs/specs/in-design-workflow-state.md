@@ -160,23 +160,17 @@ runs the following sequence for each of `ENG` and `GAM`:
    insensitive match) already exists for this team, skip creation for
    this team and log "already present, skipping".
 4. Otherwise compute:
-   - `position`: must satisfy `Todo.position < In Design.position <
-     Approved.position` and not collide with any existing state's
-     position. Use a gap-aware formula:
-     ```
-     gap = Approved.position - Todo.position
-     position = Todo.position + min(gap / 2, 0.25)
-     ```
-     For the current ENG workflow (Todo=1, Approved=1.5) this yields
-     `1.25`. For the current GAM workflow (Todo=0, Approved=2000) this
-     yields `0.25` — deliberately a small offset rather than the
-     numerical midpoint, because GAM has `Blocked` and `In Review`
-     both at `1000`, and a naive midpoint of `1000` would collide. After
-     computing, verify the value doesn't equal any existing state's
-     position; if it does, fail with a clear message (the workflow has
-     an unexpected layout). If `Todo` or `Approved` is missing on a
-     team, fail with a clear message — this is not a state machine
-     the plugin recognizes.
+   - `position`: midpoint between `Todo.position` and
+     `Approved.position`. The autonomous session **assumes both teams
+     share the canonical layout** (`Todo` at 1, `Approved` at 1.5), so
+     `In Design` lands at `1.25` on both. If the actual layout
+     diverges — `Approved.position - Todo.position > 0.5`, gap is
+     non-positive, midpoint collides with another state, or either
+     state is missing — the session fails with a clear message
+     describing what was expected vs. found, rather than silently
+     placing the new state in an arbitrary slot. (Pre-existing GAM
+     position drift is being remediated in a separate session before
+     ENG-273 dispatches; see operator notes.)
    - `color`: clone the `Approved` state's color. Operators can adjust
      in the Linear UI later.
    - `description`: `"Interactive design/spec session in progress
@@ -314,12 +308,13 @@ None. This issue stands alone — it depends on existing ralph plumbing
 - Color and position picked at creation time can be adjusted later in
   the Linear UI without breaking anything: the autonomous session
   reads state names, not colors or positions.
-- **GAM team workflow has pre-existing layout quirks** — `Triage`,
-  `In Progress`, `Todo`, and `Backlog` all share position `0`;
-  `Blocked` and `In Review` both sit at position `1000`; `Approved`
-  is at `2000`, after `In Review`'s `1000`. This issue does not try
-  to fix that layout — we only verify our local constraint
-  (`Todo < In Design < Approved` by position) and do not require a
-  globally-consistent ordering across the rest of the workflow. ENG
-  team's layout is clean (Todo=1, Approved=1.5) and the new state
-  slots in at 1.25.
+- **Operator precondition for GAM:** GAM's workflow position layout
+  was found to drift from ENG's (`Todo=0`, `Blocked=1000`,
+  `Approved=2000` instead of ENG's `1`, `1.75`, `1.5`). That drift is
+  being remediated **before** this issue dispatches via a separate
+  prompt-driven session. By the time the autonomous run begins, both
+  teams should share `Todo=1`, `Approved=1.5`, `Blocked=1.75`. The
+  position-computation guard above (fail-loud on layout divergence)
+  exists so that if the precondition isn't satisfied, the autonomous
+  session reports the mismatch instead of placing `In Design` in a
+  surprising slot.
