@@ -459,6 +459,43 @@ STUB
 }
 
 # ---------------------------------------------------------------------------
+# 3b. linear_get_issue_state — calls issue view, returns state.name
+# ---------------------------------------------------------------------------
+@test "linear_get_issue_state returns state name from issue view JSON" {
+  STUB_OUTPUT='{"identifier": "ENG-31", "branchName": "eng-31-x", "state": {"name": "In Review"}}'
+  export STUB_OUTPUT
+
+  run call_fn linear_get_issue_state ENG-31
+
+  [ "$status" -eq 0 ]
+  [ "$output" = "In Review" ]
+}
+
+@test "linear_get_issue_state returns non-zero with diagnostic when stub exits non-zero" {
+  STUB_EXIT=1
+  export STUB_EXIT
+
+  run call_fn linear_get_issue_state ENG-32
+
+  [ "$status" -ne 0 ]
+  if [[ "$output" != *"linear_get_issue_state: failed to view"* ]]; then
+    echo "expected diagnostic in output, got: $output" >&2
+    return 1
+  fi
+}
+
+@test "linear_get_issue_state calls issue view with --json --no-comments" {
+  STUB_OUTPUT='{"identifier": "ENG-33", "state": {"name": "Approved"}}'
+  export STUB_OUTPUT
+
+  call_fn linear_get_issue_state ENG-33
+
+  grep -q "issue view ENG-33" "$STUB_ARGS_FILE"
+  grep -q -- "--json" "$STUB_ARGS_FILE"
+  grep -q -- "--no-comments" "$STUB_ARGS_FILE"
+}
+
+# ---------------------------------------------------------------------------
 # 4. linear_set_state — calls issue update --state
 # ---------------------------------------------------------------------------
 @test "linear_set_state calls issue update with correct issue id and state" {
