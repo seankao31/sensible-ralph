@@ -315,15 +315,16 @@ After the implementation lands, all of the following must hold.
 4. **No stale source paths in any active consumer:**
    ```bash
    ! grep -rn "skills/ralph-start/scripts/lib/\(defaults\|linear\|scope\|branch_ancestry\)" \
-     skills/ docs/specs/ 2>/dev/null
+     skills/ 2>/dev/null
    ```
-   The grep excludes `docs/archive/` (historical records keep their
-   original paths). `docs/specs/` is included because it contains both
-   completed and active specs; once ENG-273 has landed, its spec file
-   becomes a historical record but stays in `docs/specs/` rather than
-   being moved to `docs/archive/`. The verification asserts that no
-   active-spec content still references the moved paths after this
-   issue completes.
+   The grep targets `skills/` only — that's where active consumer
+   code (SKILL.md and ralph-start internal scripts) lives. Historical
+   specs in `docs/specs/` and `docs/archive/` legitimately reference
+   the old paths as records of past work; this spec's own diff blocks
+   contain those paths too. Scoping the grep to `skills/` asserts the
+   property that matters at runtime ("no consumer sources from a
+   path that no longer exists") without false-positive matches on
+   prose records.
 
 5. **Each consumer skill markdown sources from the new location:**
    ```bash
