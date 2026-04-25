@@ -57,13 +57,13 @@ Field semantics:
 
 - `timestamp` retains its existing meaning: dispatch start time (the moment `claude -p` is about to be invoked). Same field name in both record types — no `started_at` / `completed_at` aliases. End time of an end record is `timestamp + duration_seconds`.
 - `run_id` retains its existing meaning: the orchestrator invocation ID, shared by every record from the same run.
-- The five end-record outcome variants are unchanged: `in_review`, `failed`, `exit_clean_no_review`, `setup_failed`, `skipped`, `local_residue`, `unknown_post_state`.
+- The seven end-record outcome variants are unchanged: `in_review`, `failed`, `exit_clean_no_review`, `setup_failed`, `skipped`, `local_residue`, `unknown_post_state`.
 
 **Legacy records** (written before this change, no `event` field) are not migrated. They will have older `run_id` timestamps and are filtered out before event-discrimination matters in any consumer that reads only the latest run.
 
 ### 2. New `/ralph-status` skill
 
-Read-only skill that prints a sectioned table for the latest ralph run. Reads `.ralph/progress.json`, `.ralph/ordered_queue.txt`, and the `.worktrees/` directory. **Zero writes** to Linear, git, or the filesystem. **No network calls** — purely local file reads.
+Read-only skill that prints a sectioned table for the latest ralph run. Reads `.ralph/progress.json` and `.ralph/ordered_queue.txt`. **Zero writes** to Linear, git, or the filesystem. **No network calls** — purely local file reads.
 
 #### Invocation
 
@@ -90,8 +90,10 @@ Three sections in fixed order: Done, Running, Queued. Empty section shows `(none
   ENG-213
 
 Run started: 2026-04-22T18:30:00Z
-Tip: tail .worktrees/eng-211-*/ralph-output.log to see live session output.
+Tip: tail .worktrees/eng-211-*/<stdout-log-filename> to see live session output.
 ```
+
+The tip line uses the configured stdout-log filename (`$CLAUDE_PLUGIN_OPTION_STDOUT_LOG_FILENAME`, default `ralph-output.log`) — the renderer reads this env var so the tip stays accurate when the operator overrides the default.
 
 Outcome rendering for the Done section:
 
@@ -186,7 +188,7 @@ Invocation:
 
 Run from anywhere inside the repo. The renderer resolves paths via `git rev-parse --show-toplevel`.
 
-[... brief usage notes, link to docs/usage.md "Checking progress mid-run" ...]
+Output is a sectioned table — Done / Running / Queued — for the latest ralph run. See `docs/usage.md` "Checking progress mid-run" for the operator-facing playbook, and `docs/specs/ralph-status-command.md` for the design rationale.
 ```
 
 The agent invokes `bash "$CLAUDE_PLUGIN_ROOT/skills/ralph-status/scripts/render_status.sh"` and prints its stdout verbatim.
