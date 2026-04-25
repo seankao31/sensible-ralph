@@ -142,11 +142,13 @@ changes.
 ### Linear state creation (autonomous, idempotent)
 
 Performed once per team at implementation time. The autonomous session
-runs the following sequence for each of `ENG` and `GAM`:
+runs the following sequence.
 
-1. Resolve the team UUID via `linear team list --json` (no hard-coded
-   IDs in any committed file).
-2. Query existing states for the team:
+**Phase 1 — Preflight both teams before mutating either.**
+
+1. Resolve team UUIDs for ENG and GAM via `linear team list --json`
+   (no hard-coded IDs in any committed file).
+2. For each team, query existing states:
    ```graphql
    query($teamId: String!) {
      team(id: $teamId) {
@@ -156,27 +158,37 @@ runs the following sequence for each of `ENG` and `GAM`:
      }
    }
    ```
-3. **Idempotency guard:** if a state named `"In Design"` (case-
-   insensitive match) already exists for this team, skip creation for
-   this team and log "already present, skipping".
-4. Otherwise compute:
-   - `position`: midpoint between `Todo.position` and
-     `Approved.position`. The autonomous session **assumes both teams
-     share the canonical layout** (`Todo` at 1, `Approved` at 1.5), so
-     `In Design` lands at `1.25` on both. If the actual layout
-     diverges — `Approved.position - Todo.position > 0.5`, gap is
-     non-positive, midpoint collides with another state, or either
-     state is missing — the session fails with a clear message
-     describing what was expected vs. found, rather than silently
-     placing the new state in an arbitrary slot. (Pre-existing GAM
-     position drift is being remediated in a separate session before
-     ENG-273 dispatches; see operator notes.)
-   - `color`: clone the `Approved` state's color. Operators can adjust
-     in the Linear UI later.
-   - `description`: `"Interactive design/spec session in progress
-     (e.g. /ralph-spec)."`
-   - `type`: `"unstarted"`.
-5. Create the state via `linear api`:
+3. For each team, run the **idempotency + near-match guard**:
+   - Normalize each existing state name: lowercase, remove all
+     non-alphanumeric characters (spaces, hyphens, etc.). E.g.:
+     `"In Design"` → `"indesign"`, `"In-Design"` → `"indesign"`.
+   - Normalize the target: `"In Design"` → `"indesign"`.
+   - If an existing state's normalized name **equals** the normalized
+     target: the state is already present — mark this team as
+     **skip** (already idempotent) and continue to the next team.
+   - If an existing state's normalized name **differs by 1–2
+     characters** from the normalized target (Levenshtein distance ≤ 2,
+     or any substring match): this is a near-match collision. **STOP
+     and abort the entire run** — report the near-match to the operator
+     and require manual review before retrying. Creating a second state
+     alongside a near-match variant risks a permanently ambiguous
+     workspace state.
+   - If no match or near-match: proceed.
+4. For each non-skipped team, validate the **position layout**:
+   - Locate `Todo` and `Approved` states. If either is missing: abort.
+   - Verify `Todo.position == 1` and `Approved.position == 1.5`
+     (the canonical layout this spec assumes). If diverged: abort.
+   - Compute `position = (Todo.position + Approved.position) / 2`
+     = `1.25`. Verify no existing state sits at `1.25`: if collision,
+     abort with a clear message.
+5. **If any team's preflight fails or near-match is found, abort the
+   entire run — do not mutate any team.** Report which teams passed and
+   which failed and why. This ensures no partial state is created:
+   either both teams get the new state or neither does.
+
+**Phase 2 — Create states (only reached when all teams pass preflight).**
+
+6. For each team where creation is needed (not marked skip), create:
    ```graphql
    mutation($input: WorkflowStateCreateInput!) {
      workflowStateCreate(input: $input) {
@@ -185,18 +197,30 @@ runs the following sequence for each of `ENG` and `GAM`:
      }
    }
    ```
-6. Verify by re-running the team-states query and asserting the new
-   state is present with `type: "unstarted"` and `Todo.position <
-   "In Design".position < Approved.position`.
+   with `input`:
+   - `name`: `"In Design"` (literal, from `$CLAUDE_PLUGIN_OPTION_DESIGN_STATE`)
+   - `type`: `"unstarted"`
+   - `color`: cloned from this team's `Approved` state
+   - `position`: `1.25` (computed in preflight)
+   - `description`: `"Interactive design/spec session in progress (e.g. /ralph-spec)."`
 
-If any team's mutation fails after the others have succeeded, the
-session leaves a Linear comment on ENG-273 listing which teams landed
-the state and which didn't, then exits clean. A follow-up rerun is
-idempotent because of step 3.
+   If creation fails mid-run (network/API error after creating on some
+   teams), leave a Linear comment on ENG-273 listing which teams
+   succeeded and which didn't, then exit clean. A follow-up rerun is
+   safe: teams that already have the state will be skipped by the
+   idempotency guard (exact-match case in step 3); teams that don't
+   will retry.
 
-**Reversibility:** if the state needs to be removed later, archive via
-`workflowStateArchive(id: <state-id>)`. Not automated; documented in
-the spec for operators.
+**Phase 3 — Verify.**
+
+7. Re-query both teams and assert `In Design` is present with
+   `type: "unstarted"` and `Todo.position < 1.25 < Approved.position`.
+   If verification fails for either team, leave a Linear comment and
+   exit clean.
+
+**Reversibility:** if the state needs to be removed, archive via
+`workflowStateArchive(id: <state-id>)`. Not automated; documented here
+for operators.
 
 ## Out of scope
 
