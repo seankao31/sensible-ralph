@@ -6,7 +6,7 @@ set -euo pipefail
 # and print the ordered issue IDs (one per line) to stdout.
 #
 # Usage:
-#   scripts/build_queue.sh > ordered_queue.txt
+#   mkdir -p .ralph && scripts/build_queue.sh > .ralph/ordered_queue.txt
 #
 # An issue is pickup-ready only if:
 #   - state == $CLAUDE_PLUGIN_OPTION_APPROVED_STATE
