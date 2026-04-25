@@ -170,20 +170,20 @@ First check whether a handoff comment for this specific revision was already pos
 
 ```bash
 CURRENT_SHA=$(git rev-parse HEAD)
-MARKER="<!-- review-sha: $CURRENT_SHA -->"
+MARKER=$(printf 'revision `%s`' "$CURRENT_SHA")
 ALREADY_POSTED=$(linear api 'query($issueId: String!, $marker: String!) { issue(id: $issueId) { comments(filter: { body: { contains: $marker } }, first: 1) { nodes { id } } } }' \
   --variable "issueId=$ISSUE_ID" \
   --variable "marker=$MARKER" 2>/dev/null \
   | jq '((.data.issue.comments.nodes) // []) | length > 0')
 ```
 
-The `<!-- review-sha: ... -->` marker is unique per HEAD, so the server-side `body.contains` filter returns at most one match regardless of how many comments the issue has. `linear issue comment list` isn't suitable here — it returns only the first ~50 comments with no cursor flag exposed, so a prior handoff comment on a long-running issue could sit on a later page and go undetected.
+The `` revision `<SHA>` `` marker (the literal word `revision`, a space, and the backtick-wrapped 40-char SHA) is unique per HEAD, so the server-side `body.contains` filter returns at most one match regardless of how many comments the issue has. `linear issue comment list` isn't suitable here — it returns only the first ~50 comments with no cursor flag exposed, so a prior handoff comment on a long-running issue could sit on a later page and go undetected.
 
 If `ALREADY_POSTED` is `true`, skip to Step 7.
 
 **If the `linear` CLI is unavailable:** Stop immediately — the handoff cannot complete without the CLI. The comment posting in the next step also requires it, so there's no point continuing.
 
-Include `<!-- review-sha: $CURRENT_SHA -->` as the first line of the `## Review Summary` section in the comment body so the SHA-based dedup check can find it on retry.
+Include the revision footer as the last line of the comment body so the SHA-based dedup check can find it on retry.
 
 Otherwise, post a comment using this template. Fill every section; empty sections signal the skill was run mechanically.
 
@@ -192,8 +192,8 @@ Write the body to a tempfile first (Linear CLI prefers `--body-file` for multi-p
 ```bash
 COMMENT_FILE=$(mktemp /tmp/ralph-handoff-XXXXXX)
 
-# Dynamic prefix: heading + dedup marker
-printf '## Review Summary\n<!-- review-sha: %s -->\n\n' "$CURRENT_SHA" > "$COMMENT_FILE"
+# Heading
+printf '## Review Summary\n\n' > "$COMMENT_FILE"
 
 # Static body — quoted heredoc keeps backticks (and $) literal
 cat >> "$COMMENT_FILE" <<'COMMENT'
@@ -216,9 +216,12 @@ cat >> "$COMMENT_FILE" <<'COMMENT'
 **Known gaps / deferred:** <anything intentionally left unfinished; "None" if complete>
 COMMENT
 
-# Dynamic footer: commits section header + actual git log output
+# Dynamic: commits section header + actual git log output
 printf '\n## Commits in this branch\n\n' >> "$COMMENT_FILE"
 git log --oneline "$BASE_SHA"..HEAD >> "$COMMENT_FILE"
+
+# Revision footer (visible dedup marker + provenance)
+printf '\n---\n\n_Posted by `/prepare-for-review` for revision `%s`_\n' "$CURRENT_SHA" >> "$COMMENT_FILE"
 
 linear issue comment add "$ISSUE_ID" --body-file "$COMMENT_FILE"
 rm -f "$COMMENT_FILE"
