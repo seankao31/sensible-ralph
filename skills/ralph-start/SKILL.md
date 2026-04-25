@@ -104,7 +104,8 @@ The orchestrator runs foreground — the user should expect the session to block
 
 After the orchestrator returns:
 
-- **`.ralph/progress.json`** at the repo root lists all dispatched/skipped issues with outcomes.
+- **`/ralph-status`** prints a sectioned Done / Running / Queued table for the latest run — faster than `jq`-ing `.ralph/progress.json` by hand. Also useful mid-run to see what's currently dispatching.
+- **`.ralph/progress.json`** at the repo root lists all dispatched/skipped issues with `event: "start"` (dispatch moment) and `event: "end"` (final outcome) records.
 - **`in_review` issues:** `cd` into the worktree, run a `claude --resume` if the session is still available, review code per the QA plan in the Linear comment, then run your project's merge ritual from a session at the main-checkout root — not from inside the worktree.
 - **`failed` / `exit_clean_no_review` issues** (labeled `ralph-failed`, descendants tainted): `cd` into the worktree, read `<worktree>/<CLAUDE_PLUGIN_OPTION_STDOUT_LOG_FILENAME>` for the session's final output. Decide: retry (remove the `ralph-failed` label and re-queue), cancel the issue, or debug interactively.
 - **`setup_failed` issues** (labeled `ralph-failed`, descendants tainted): orchestrator couldn't set up the worktree (branch lookup failed, dag_base returned garbage, etc.). Check the `failed_step` field in `.ralph/progress.json`. Worktree cleanup has already run for state this invocation created.

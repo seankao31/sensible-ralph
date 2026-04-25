@@ -116,6 +116,9 @@ Brief summary:
   issues, sorts them by blocked-by relations, previews the plan, and
   hands control to the orchestrator. The orchestrator creates worktrees,
   invokes `claude -p` sessions, and classifies outcomes.
+- **`/ralph-status`** — read-only mid-run status. Prints a Done / Running /
+  Queued table for the latest ralph run from `.ralph/progress.json` and
+  `.ralph/ordered_queue.txt`. Zero side effects, no network calls.
 - **`/ralph-implement`** — invoked INSIDE a dispatched session; reads the
   Linear issue as its spec and implements it end-to-end up to
   `/prepare-for-review`.

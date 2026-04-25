@@ -80,17 +80,26 @@ fi
 
 # Append a record (passed as a JSON object on stdin) to progress.json.
 #
-# Record schema (fields vary by outcome):
+# Record schema (fields vary by event/outcome):
+#   event             "start" (dispatch about to invoke claude) | "end" (final
+#                     per-issue outcome). Discriminator added in ENG-241 so
+#                     /ralph-status can render in-flight Running rows; pre-
+#                     ENG-241 records have no event field and are filtered
+#                     out by run_id selection (latest run only).
 #   issue             Linear issue id (always present)
-#   outcome           in_review | exit_clean_no_review | failed | setup_failed | skipped
-#   timestamp         ISO 8601 UTC — per-issue dispatch timestamp
+#   timestamp         ISO 8601 UTC — per-issue dispatch start (same field name
+#                     in both start and end records, no aliases)
 #   run_id            ISO 8601 UTC — invocation id, shared by every record from
 #                     the same orchestrator run (design Component 6). Groups
 #                     records for later auditing / cross-run diffing.
-#   branch, base      present on dispatched outcomes (in_review / exit_clean_no_review / failed)
-#   exit_code         claude exit code (dispatched outcomes only)
-#   duration_seconds  wall-clock dispatch duration (dispatched outcomes only)
-#   failed_step       setup step that failed (setup_failed only)
+#   branch, base      start records and dispatched-outcome end records
+#                     (in_review / exit_clean_no_review / failed / unknown_post_state)
+#   outcome           end records only:
+#                     in_review | exit_clean_no_review | failed | setup_failed |
+#                     local_residue | unknown_post_state | skipped
+#   exit_code         dispatched-outcome end records only
+#   duration_seconds  dispatched-outcome end records only
+#   failed_step       setup_failed end records only
 #
 # Atomicity: mktemp-in-same-dir + jq read-modify-write + `mv` is atomic on
 # POSIX for same-filesystem renames. A crash mid-write leaves the previous
@@ -223,7 +232,7 @@ _record_setup_failure() {
     --arg step "$failed_step" \
     --arg ts "$timestamp" \
     --arg run "$run_id" \
-    '{issue: $issue, outcome: $outcome, failed_step: $step, timestamp: $ts, run_id: $run}')"
+    '{event: "end", issue: $issue, outcome: $outcome, failed_step: $step, timestamp: $ts, run_id: $run}')"
   _progress_append "$record"
 }
 
@@ -247,7 +256,7 @@ _record_local_residue() {
     --arg branch "$residue_branch" \
     --arg ts "$timestamp" \
     --arg run "$run_id" \
-    '{issue: $issue, outcome: $outcome, residue_path: $path, residue_branch: $branch, timestamp: $ts, run_id: $run}')"
+    '{event: "end", issue: $issue, outcome: $outcome, residue_path: $path, residue_branch: $branch, timestamp: $ts, run_id: $run}')"
   _progress_append "$record"
 }
 
@@ -274,7 +283,7 @@ _record_unknown_post_state() {
     --argjson duration "$duration" \
     --arg ts "$timestamp" \
     --arg run "$run_id" \
-    '{issue: $issue, branch: $branch, base: $base, outcome: $outcome, exit_code: $exit_code, duration_seconds: $duration, timestamp: $ts, run_id: $run}')"
+    '{event: "end", issue: $issue, branch: $branch, base: $base, outcome: $outcome, exit_code: $exit_code, duration_seconds: $duration, timestamp: $ts, run_id: $run}')"
   _progress_append "$record"
 }
 
@@ -482,6 +491,31 @@ _dispatch_issue() {
   # exit with claude's exit code (not tee's). `set +e` / explicit capture keeps
   # the outer `set -e` from aborting on non-zero.
   local claude_exit=0
+
+  # Live-status start record. Written immediately before the claude -p subshell
+  # so /ralph-status can render an in-flight Running row. Best-effort —
+  # _progress_append failure does not abort dispatch (the matching end record
+  # still lands when claude exits, and /ralph-status would just be missing
+  # this issue from the Running count for the gap window).
+  #
+  # Use a fresh timestamp here — not the `timestamp` captured at the top of
+  # _dispatch_issue — so that /ralph-status elapsed time reflects when claude
+  # actually started, not when setup began (which can include Integration
+  # branch merges, Linear state transitions, etc.).
+  # Capture both the ISO timestamp and the matching epoch so the end record's
+  # `timestamp + duration_seconds` consistently means "claude end time".
+  local dispatch_timestamp; dispatch_timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  local dispatch_epoch; dispatch_epoch="$(date +%s)"
+  local start_record
+  start_record="$(jq -n \
+    --arg issue "$issue_id" \
+    --arg branch "$branch" \
+    --arg base "$base_out" \
+    --arg ts "$dispatch_timestamp" \
+    --arg run "$run_id" \
+    '{event: "start", issue: $issue, branch: $branch, base: $base, timestamp: $ts, run_id: $run}')"
+  _progress_append "$start_record" || true
+
   (
     cd "$path"
     set +e
@@ -491,7 +525,11 @@ _dispatch_issue() {
   ) || claude_exit=$?
 
   local end_epoch; end_epoch="$(date +%s)"
-  local duration=$(( end_epoch - start_epoch ))
+  # Duration measures the claude session itself — keyed off dispatch_epoch
+  # (claude-invocation moment), not start_epoch (function entry, pre-setup).
+  # This keeps the end record's `timestamp + duration_seconds` invariant: it
+  # always equals the claude-end wall-clock time.
+  local duration=$(( end_epoch - dispatch_epoch ))
 
   # Classify using exit code AND Linear state (Q2 finding). A transient
   # failure fetching the post-dispatch state must NOT collapse to
@@ -508,7 +546,7 @@ _dispatch_issue() {
   fi
 
   if [[ "$claude_exit" -eq 0 && "$state_fetch_ok" -eq 0 ]]; then
-    _record_unknown_post_state "$issue_id" "$branch" "$base_out" "$claude_exit" "$duration" "$timestamp"
+    _record_unknown_post_state "$issue_id" "$branch" "$base_out" "$claude_exit" "$duration" "$dispatch_timestamp"
     return 0
   fi
 
@@ -534,9 +572,9 @@ _dispatch_issue() {
     --arg outcome "$outcome" \
     --argjson exit_code "$claude_exit" \
     --argjson duration "$duration" \
-    --arg ts "$timestamp" \
+    --arg ts "$dispatch_timestamp" \
     --arg run "$run_id" \
-    '{issue: $issue, branch: $branch, base: $base, outcome: $outcome, exit_code: $exit_code, duration_seconds: $duration, timestamp: $ts, run_id: $run}')"
+    '{event: "end", issue: $issue, branch: $branch, base: $base, outcome: $outcome, exit_code: $exit_code, duration_seconds: $duration, timestamp: $ts, run_id: $run}')"
   _progress_append "$record"
   return 0
 }
@@ -553,7 +591,7 @@ for issue_id in "${queued_ids[@]}"; do
       --arg issue "$issue_id" \
       --arg ts "$timestamp" \
       --arg run "$run_id" \
-      '{issue: $issue, outcome: "skipped", timestamp: $ts, run_id: $run}')"
+      '{event: "end", issue: $issue, outcome: "skipped", timestamp: $ts, run_id: $run}')"
     _progress_append "$record"
     continue
   fi
