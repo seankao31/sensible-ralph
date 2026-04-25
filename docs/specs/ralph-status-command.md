@@ -109,18 +109,21 @@ Duration formatting: seconds → `Xh Ym` if ≥1h, `Xm` if ≥1min, `<1m` otherw
 
 1. Resolve repo root via `git rev-parse --show-toplevel`. If not in a git repo, exit 1 with a clear message.
 2. Locate `.ralph/progress.json`. If absent, print `No ralph runs recorded in this repo. Run /ralph-start to dispatch the queue.` and exit 0.
-3. Find the latest `run_id` — `jq -r '[.[].run_id] | unique | sort | last'` from progress.json.
+3. Find the latest `run_id` — `jq -r '[.[].run_id] | unique | map(select(. != null)) | sort_by(fromdateiso8601) | last // empty'` from progress.json. The orchestrator always writes `run_id` in normalized UTC form (`date -u +%Y-%m-%dT%H:%M:%SZ`), so `fromdateiso8601` is always parseable; explicit parse beats lexicographic string sort to make the chronological-ordering contract unambiguous in the spec.
 4. Filter records to that `run_id`.
 5. Partition by `event`:
    - `event == "start"` → start map keyed by `issue`.
    - `event == "end"` → end map keyed by `issue`.
 6. Classify per issue:
-   - Has end record → **Done** (use end record's `outcome`, `duration_seconds`, `exit_code`, `failed_step`).
+   - Has end record → **Done** (use end record's `outcome`, `duration_seconds`, `exit_code`, `failed_step`). The presence or absence of a corresponding start record is irrelevant to this classification — an end-only record (e.g., from a failed start-record write) still classifies as Done. The Done row format only uses end-record fields, so the missing start is invisible to the operator.
    - Has start, no end → **Running** (compute elapsed = `now - start.timestamp`).
 7. Read `.ralph/ordered_queue.txt`. Subtract Done + Running issues → **Queued** list (preserves queue order from the file).
 8. Render the three sections, then footer.
 
-Edge case: if the latest `run_id`'s record set is empty (shouldn't happen by construction), fall through to the "No ralph runs recorded" message.
+Edge cases:
+- Latest `run_id` returns null (no records, or all records lack `run_id`): fall through to the "No ralph runs recorded" message.
+- Latest `run_id`'s record set is empty after `event` partitioning (every record lacks the `event` field — only happens for legacy pre-event-field records, see "Out of scope" below): same fall-through. After the first new run completes, this case becomes unreachable for the latest `run_id`.
+- Failed start-record write: the issue exists in `ordered_queue.txt`, the orchestrator dispatched it (Linear is `In Progress`, claude is running), but no start record landed in `progress.json`. The renderer classifies it as Queued. This mis-render self-corrects when the end record lands. Failure modes that produce this state (disk full, permission denied, mid-write I/O error) are pathological and bound to break the orchestrator's other writes too — the broader breakage surfaces the gap; no per-call mitigation in this spec.
 
 #### Crash detection (deferred)
 
@@ -224,6 +227,8 @@ Also update `skills/ralph-start/SKILL.md`'s "What to expect" pointer to mention 
 12. **Legacy records (no `event` field)** → progress.json with one legacy record (older `run_id`, no event field) plus one new run; the legacy record is filtered out by `run_id` selection and never reaches event-discrimination logic.
 13. **Not in a git repo** → exit 1 with clear message.
 14. **Empty `.ralph/ordered_queue.txt`** → Queued section shows `(none)`.
+15. **Out-of-insertion-order `run_id`s** → progress.json containing run_ids in non-chronological array order (e.g. older run_id appears later in the file); the chronologically-latest `run_id` is selected via `sort_by(fromdateiso8601)`, not by array position.
+16. **End-only record** → progress.json with an end record but no matching start record for the same issue (simulates a failed start-record write); the issue classifies as Done and renders normally from end-record fields (NOT as Running and NOT as Queued).
 
 All bats tests must pass.
 
@@ -246,6 +251,7 @@ All bats tests must pass.
 - **Historical run inspection / `--run` flag** — latest `run_id` only.
 - **Live-refreshing TUI / continuous mode** — `/ralph-status` is one-shot. Operators who want live refresh use `watch -n 5 /ralph-status` externally.
 - **Pruning / retention policy for `progress.json`** — separate concern.
+- **Backward compatibility with pre-event-field `progress.json` records** — this is a v0.1.0 breaking change. Pre-change records remain readable (the schema is still a JSON array of objects) but `/ralph-status` may render the latest legacy run as "no records available" until the first new `/ralph-start` completes. After that one run, the latest `run_id` always belongs to a new-schema run and the gap closes for all future `/ralph-status` invocations. No migration script.
 
 ## Commit shape
 
