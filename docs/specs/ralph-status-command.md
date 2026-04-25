@@ -90,10 +90,10 @@ Three sections in fixed order: Done, Running, Queued. Empty section shows `(none
   ENG-213
 
 Run started: 2026-04-22T18:30:00Z
-Tip: tail .worktrees/eng-211-*/<stdout-log-filename> to see live session output.
+Tip: tail <worktree-base>/eng-211-*/<stdout-log-filename> to see live session output.
 ```
 
-The tip line uses the configured stdout-log filename (`$CLAUDE_PLUGIN_OPTION_STDOUT_LOG_FILENAME`, default `ralph-output.log`) — the renderer reads this env var so the tip stays accurate when the operator overrides the default.
+The tip line uses both configured paths — `$CLAUDE_PLUGIN_OPTION_WORKTREE_BASE` (default `.worktrees`) and `$CLAUDE_PLUGIN_OPTION_STDOUT_LOG_FILENAME` (default `ralph-output.log`). The renderer reads both env vars so the tip stays accurate when the operator overrides either default.
 
 Outcome rendering for the Done section:
 
@@ -107,7 +107,7 @@ Duration formatting: seconds → `Xh Ym` if ≥1h, `Xm` if ≥1min, `<1m` otherw
 
 `skills/ralph-status/scripts/render_status.sh`:
 
-1. Resolve repo root via `git rev-parse --show-toplevel`. If not in a git repo, exit 1 with a clear message.
+1. Resolve repo root via `_resolve_repo_root` from `skills/ralph-start/scripts/lib/worktree.sh` (uses `git rev-parse --git-common-dir`, then `dirname`). This is the same helper the orchestrator uses to anchor `progress.json` writes — critical because `git rev-parse --show-toplevel` returns the linked-worktree path when invoked from a worktree, but `.ralph/` lives at the main checkout root. The renderer must source the helper from `$CLAUDE_PLUGIN_ROOT/skills/ralph-start/scripts/lib/worktree.sh` (matches the source pattern used by `close-issue` and `ralph-spec`). If not in a git repo, exit 1 with a clear message.
 2. Locate `.ralph/progress.json`. If absent, print `No ralph runs recorded in this repo. Run /ralph-start to dispatch the queue.` and exit 0.
 3. Find the latest `run_id` — `jq -r '[.[].run_id] | unique | map(select(. != null)) | sort_by(fromdateiso8601) | last // empty'` from progress.json. The orchestrator always writes `run_id` in normalized UTC form (`date -u +%Y-%m-%dT%H:%M:%SZ`), so `fromdateiso8601` is always parseable; explicit parse beats lexicographic string sort to make the chronological-ordering contract unambiguous in the spec.
 4. Filter records to that `run_id`.
@@ -140,7 +140,7 @@ Both are post-ENG-254 work. Neither blocks ENG-241.
 
 ### Orchestrator changes — `skills/ralph-start/scripts/orchestrator.sh`
 
-In `_dispatch_issue`, after `linear_set_state` succeeds (currently around line 445) and before the dispatch prompt is constructed (currently around line 462), write the start record:
+In `_dispatch_issue`, write the start record **immediately before the `claude -p` invocation** — that is, after the `local prompt=...` construction and after the `local claude_exit=0` initialization, but before the subshell that runs `claude -p`. This narrows the failure window between the start record landing and claude actually starting; a failure during prompt construction (e.g. unreadable `autonomous-preamble.md`) would otherwise leave a permanent "Running" row with no claude session ever invoked and no end record ever written.
 
 ```bash
 local start_record
