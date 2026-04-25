@@ -75,6 +75,13 @@ close_issue_label_stale_children() {
   a_short=$(git rev-parse --short "$a_sha")
   local WARN=()
   local stale_count=0
+  # Working variables declared local here — the original inline Step 3.5 body
+  # did not need `local` because it ran in a transient shell context (no
+  # function return). After extraction into a sourced function, omitting `local`
+  # would silently overwrite same-named variables in the caller's shell on
+  # every invocation.
+  local label_rc blocks_json children child_id
+  local resolve_rc child_branch child_slug fresh_rc apply_rc
 
   # Verify the workspace-scoped stale-parent label exists BEFORE touching any
   # children. Linear's `issue update --label` silently no-ops on a nonexistent

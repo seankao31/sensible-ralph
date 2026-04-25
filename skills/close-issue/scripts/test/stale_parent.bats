@@ -353,3 +353,78 @@ blocks_json() {
   ! grep -q "^ENG-100$" "$STUB_COMMENT_LOG"
   [ ! -s "$STUB_LABEL_LOG" ]
 }
+
+# ===========================================================================
+# 9. Realistic resolved branch name — freshness stub keys on resolved branch
+#    name (not issue id), so STUB_BRANCH_* + STUB_FRESH_<branch_key> must
+#    both be set consistently when using non-default names. Verifies the
+#    branch-ref handoff between resolve_branch_for_issue and is_branch_fresh_vs_sha.
+# ===========================================================================
+@test "close_issue_label_stale_children: freshness stub works with realistic resolved branch name" {
+  export STUB_BLOCKS_JSON
+  STUB_BLOCKS_JSON="$(blocks_json ENG-100 "In Review")"
+  # Resolve ENG-100 to a realistic slug (not the issue id itself).
+  export STUB_BRANCH_ENG_100="eng-100-some-title"
+  # Freshness is keyed on the RESOLVED branch name (hyphens→underscores).
+  # When STUB_BRANCH_ENG_100 is set, the stub passes "eng-100-some-title" to
+  # is_branch_fresh_vs_sha as refs/heads/eng-100-some-title; stripping
+  # refs/heads/ and converting hyphens→underscores via `tr '-' '_'` yields
+  # eng_100_some_title (lowercase preserved — _stub_key does NOT uppercase).
+  export STUB_FRESH_eng_100_some_title=1  # stale
+
+  run call_fn close_issue_label_stale_children "ENG-200" "$A_SHA"
+
+  [ "$status" -eq 0 ]
+  grep -q "^ENG-100$" "$STUB_COMMENT_LOG"
+  grep -q "^ENG-100|stale-parent$" "$STUB_LABEL_LOG"
+  [[ "$output" == *"applied stale-parent label to 1 child(ren)"* ]]
+}
+
+# ===========================================================================
+# 10. Caller-variable isolation — working variables (label_rc, blocks_json,
+#     children, etc.) must not leak from close_issue_label_stale_children into
+#     the caller's shell after invocation. Regression for codex finding:
+#     variable leakage is silent (function always returns 0) and can corrupt
+#     later steps in a caller shell that reuses the same names.
+# ===========================================================================
+@test "close_issue_label_stale_children: working variables do not leak into caller scope" {
+  export STUB_BLOCKS_JSON
+  STUB_BLOCKS_JSON="$(blocks_json ENG-100 "In Review")"
+  export STUB_FRESH_ENG_100=1  # stale — exercises the full body path
+
+  run bash -c "
+    set -euo pipefail
+    source '$STUB_DIR/lib/linear.sh'
+    source '$STUB_DIR/lib/branch_ancestry.sh'
+    source '$STUB_DIR/lib/stale_parent.sh'
+
+    # Set caller-owned sentinel values for every working variable the function
+    # internally uses.
+    label_rc=SENTINEL_LABEL_RC
+    blocks_json=SENTINEL_BLOCKS
+    children=SENTINEL_CHILDREN
+    child_id=SENTINEL_CHILD_ID
+    resolve_rc=SENTINEL_RESOLVE_RC
+    child_branch=SENTINEL_BRANCH
+    child_slug=SENTINEL_SLUG
+    fresh_rc=SENTINEL_FRESH_RC
+    apply_rc=SENTINEL_APPLY_RC
+
+    close_issue_label_stale_children 'ENG-200' '$A_SHA' > /dev/null
+
+    # After return, caller sentinels must be unchanged.
+    [ \"\$label_rc\"    = 'SENTINEL_LABEL_RC' ]   || { printf 'label_rc leaked\n'    >&2; exit 1; }
+    [ \"\$blocks_json\" = 'SENTINEL_BLOCKS' ]      || { printf 'blocks_json leaked\n' >&2; exit 1; }
+    [ \"\$children\"    = 'SENTINEL_CHILDREN' ]    || { printf 'children leaked\n'    >&2; exit 1; }
+    [ \"\$child_id\"    = 'SENTINEL_CHILD_ID' ]    || { printf 'child_id leaked\n'    >&2; exit 1; }
+    [ \"\$resolve_rc\"  = 'SENTINEL_RESOLVE_RC' ]  || { printf 'resolve_rc leaked\n'  >&2; exit 1; }
+    [ \"\$child_branch\" = 'SENTINEL_BRANCH' ]     || { printf 'child_branch leaked\n'>&2; exit 1; }
+    [ \"\$child_slug\"  = 'SENTINEL_SLUG' ]        || { printf 'child_slug leaked\n'  >&2; exit 1; }
+    [ \"\$fresh_rc\"    = 'SENTINEL_FRESH_RC' ]    || { printf 'fresh_rc leaked\n'    >&2; exit 1; }
+    [ \"\$apply_rc\"    = 'SENTINEL_APPLY_RC' ]    || { printf 'apply_rc leaked\n'    >&2; exit 1; }
+    echo ISOLATION_OK
+  "
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"ISOLATION_OK"* ]]
+}
