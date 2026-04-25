@@ -27,7 +27,7 @@ The autonomous session consumes **one artifact**: the PRD written into the Linea
 
 ### 2. Minimal prompt template; trust CLAUDE.md and skill descriptions
 
-> **Superseded by ENG-206** — see `2026-04-21-ralph-implement-skill-design.md`. The prompt template described below was replaced by a dispatched skill, `ralph-implement`, in April 2026. The rationale and tradeoffs captured here remain useful as a point-in-time record.
+> **Superseded by ENG-206** — see `ralph-implement-skill-design.md`. The prompt template described below was replaced by a dispatched skill, `ralph-implement`, in April 2026. The rationale and tradeoffs captured here remain useful as a point-in-time record.
 
 The prompt template given to each `claude -p` invocation:
 
@@ -150,7 +150,7 @@ The orchestrator attempts to merge the in-review parents sequentially in B's pre
 
 - **Clean merge (single or multi-parent):** worktree is ready; agent implements the feature normally.
 - **Single-parent conflict:** worktree has unresolved conflicts; agent resolves during dispatch (the prompt template tells it to check `git status` first). Opus 4.7 with auto mode can reason about standard merge conflicts — it has access to both parent branches via git log/diff.
-- **Multi-parent conflict:** orchestrator aborts the merge and records `setup_failed` (see `docs/decisions/2026-04-20-ralph-v2-multi-parent-integration-abort.md`). Git's MERGING state forbids continuing through the parent list after a first conflict — the only tractable implementation is fail-fast. Operator resolves manually (merge one parent to main, re-sequence, etc.) before re-queuing.
+- **Multi-parent conflict:** orchestrator aborts the merge and records `setup_failed` (see `docs/archive/decisions/ralph-v2-multi-parent-integration-abort.md`). Git's MERGING state forbids continuing through the parent list after a first conflict — the only tractable implementation is fail-fast. Operator resolves manually (merge one parent to main, re-sequence, etc.) before re-queuing.
 
 ```bash
 # Orchestrator:
@@ -308,7 +308,7 @@ if base is integration:
         git -C $worktree merge $parent_branch
         # Single parent with conflict: leave in-place; agent resolves.
         # Multi-parent with conflict: abort + record setup_failed. See
-        # `docs/decisions/2026-04-20-ralph-v2-multi-parent-integration-abort.md`
+        # `docs/archive/decisions/ralph-v2-multi-parent-integration-abort.md`
         # for why git semantics forbid "leave and continue" across multiple parents.
 else:
     git worktree add $worktree -b $branch $base
@@ -360,7 +360,7 @@ Six outcomes. The spec's original two-outcome model (`in_review` / `failed`) pro
 | `local_residue` | target path or branch pre-existed at start of dispatch | **no** | **no** |
 | `unknown_post_state` | exit 0 AND post-state fetch failed transiently | **no** | **no** |
 
-`local_residue` and `unknown_post_state` are the only outcomes that deliberately leave Linear untouched and descendants un-tainted. Rationale in `docs/decisions/2026-04-20-ralph-v2-ambiguous-outcome-handling.md` — briefly, in both cases the orchestrator cannot distinguish a real failure from operator state (residue) or a transient API blip (unknown), so mutating Linear would destroy correct work in the false-positive direction.
+`local_residue` and `unknown_post_state` are the only outcomes that deliberately leave Linear untouched and descendants un-tainted. Rationale in `docs/archive/decisions/ralph-v2-ambiguous-outcome-handling.md` — briefly, in both cases the orchestrator cannot distinguish a real failure from operator state (residue) or a transient API blip (unknown), so mutating Linear would destroy correct work in the false-positive direction.
 
 #### 3. Topological sort: `toposort.sh`
 
@@ -472,7 +472,7 @@ Upstream tools (brainstorming, plan-writing) must produce:
 
 1. **A Linear issue** in the configured project, in state `Approved`.
 2. **A PRD written into the issue description.** Format is not rigidly prescribed — any markdown that gives Opus 4.7 enough context to implement without further human input. ENG-178 (rescoped 2026-04-22 to cover the full three-phase workflow evaluation) experiments with the recommended shape across idea → PRD, PRD → plan, and plan → code stages. Design doc: `docs/specs/2026-04-22-ralph-v2-workflow-evaluation-design.md`.
-3. **Explicit `blocked-by` relations** for any prerequisite issues. The orchestrator uses these for DAG ordering and base-branch selection. **v2 scope limit:** blocker relations are resolved only within the configured project. Cross-project `blocked-by` edges are returned by Linear but fail the "Approved blocker must be in this run's queue" membership check, so cross-project parents appear stuck in preflight. Multi-project dispatch is designed and implemented under ENG-205 (see `2026-04-21-ralph-scope-model-design.md`); once that work lands, the scope is a project list (or initiative shorthand) declared in per-repo `.ralph.json`, and blockers within any in-scope project resolve automatically. ENG-203 was canceled as subsumed.
+3. **Explicit `blocked-by` relations** for any prerequisite issues. The orchestrator uses these for DAG ordering and base-branch selection. **v2 scope limit:** blocker relations are resolved only within the configured project. Cross-project `blocked-by` edges are returned by Linear but fail the "Approved blocker must be in this run's queue" membership check, so cross-project parents appear stuck in preflight. Multi-project dispatch is designed and implemented under ENG-205 (see `ralph-scope-model-design.md`); once that work lands, the scope is a project list (or initiative shorthand) declared in per-repo `.ralph.json`, and blockers within any in-scope project resolve automatically. ENG-203 was canceled as subsumed.
 
 That's the entire input contract. Everything downstream (branch name, worktree path, session name) is derived by the orchestrator from the Linear issue.
 

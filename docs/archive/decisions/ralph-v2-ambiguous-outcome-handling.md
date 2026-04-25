@@ -1,5 +1,7 @@
 # Ralph v2: Ambiguous Outcome Handling (local_residue + unknown_post_state)
 
+**Date:** 2026-04-20
+
 ## Context
 
 The orchestrator classifies each dispatch as `in_review`, `exit_clean_no_review`, `failed`, `setup_failed`, `local_residue`, or `unknown_post_state`. Two of these — `local_residue` and `unknown_post_state` — deliberately skip adding the `ralph-failed` Linear label and skip tainting downstream dependents. This is non-obvious: other failure outcomes DO taint, so a future agent might "fix" these two to match.

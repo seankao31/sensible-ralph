@@ -9,7 +9,7 @@ allowed-tools: Bash, Read, Glob, Grep
 
 Dispatch the autonomous spec-queue: sort Approved Linear issues into a DAG-aware order, preview the dispatch plan, and hand control to the orchestrator which creates worktrees, invokes `claude -p` sessions, and classifies their outcomes.
 
-**Source of truth for behavior:** `docs/specs/2026-04-17-ralph-loop-v2-design.md`.
+**Source of truth for behavior:** `docs/specs/ralph-loop-v2-design.md`.
 
 ## Prerequisites
 

@@ -1,5 +1,7 @@
 # Ralph v2: Multi-Parent Integration Merge Aborts on Conflict
 
+**Date:** 2026-04-20
+
 ## Context
 
 The design spec (Decision 7, "Branch DAG awareness") describes integration-merge setup as: create the worktree from `main`, sequentially `git merge` each in-review parent, and if any merge conflicts, "leave them. The agent resolves." The rationale emphasized v2's distinguishing property — "v1 would have skipped B and blocked progress; v2's whole point is keeping chains moving."

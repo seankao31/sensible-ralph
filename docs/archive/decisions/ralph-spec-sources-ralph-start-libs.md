@@ -1,5 +1,7 @@
 # Ralph-spec sources ralph-start's config and linear libs
 
+**Date:** 2026-04-22
+
 > **Historical note (post-extraction, 2026-04-24):** this decision was
 > written when ralph lived in the chezmoi repo with skills symlinked
 > into `$HOME/.claude/skills/`. The decision — ralph-spec reuses

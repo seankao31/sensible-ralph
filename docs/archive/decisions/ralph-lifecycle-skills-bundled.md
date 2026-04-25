@@ -1,5 +1,7 @@
 # Ralph lifecycle skills bundled into the plugin (close-issue, prepare-for-review)
 
+**Date:** 2026-04-24
+
 ## Context
 
 ENG-243 specified moving ralph-start, ralph-spec, and ralph-implement into the

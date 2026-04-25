@@ -2,7 +2,7 @@
 
 Session-by-session narrative for the ralph v2 rollout. Newest entry first. Each entry records: date, session summary, current state of each ticket, any blockers/decisions for the next session to pick up.
 
-Design spec (source of truth): `../specs/2026-04-17-ralph-loop-v2-design.md`. The rollout plan (`../plans/2026-04-18-ralph-v2-rollout.md`) was deleted after all tickets completed.
+Design spec (source of truth): `../../specs/ralph-loop-v2-design.md`. The rollout plan (`../plans/2026-04-18-ralph-v2-rollout.md`) was deleted after all tickets completed.
 
 ---
 
@@ -34,7 +34,7 @@ New design doc: `agent-config/docs/specs/2026-04-22-ralph-v2-workflow-evaluation
 After closing the ENG-184 worktree, did a real drift check against the design spec. Findings:
 
 **Three drifts captured durably:**
-1. **Multi-parent integration merge aborts on conflict** (diverges from spec's "leave conflicts for agent" philosophy — forced by git's MERGING state). Captured in new decision doc `docs/decisions/2026-04-20-ralph-v2-multi-parent-integration-abort.md`. Spec Decision 7 now cross-references the doc.
+1. **Multi-parent integration merge aborts on conflict** (diverges from spec's "leave conflicts for agent" philosophy — forced by git's MERGING state). Captured in new decision doc `docs/archive/decisions/ralph-v2-multi-parent-integration-abort.md`. Spec Decision 7 now cross-references the doc.
 2. **Outcome model grew from 2 to 6** (`in_review`, `exit_clean_no_review`, `failed`, `setup_failed`, `local_residue`, `unknown_post_state`). Spec Component 2 was still showing the original two-outcome pseudo-code. Updated with the full six-outcome model + classification table + cross-reference to the ambiguous-outcome-handling decision doc.
 3. **`worktree_path_for_issue` uses `--show-toplevel`**, which nests new worktrees when invoked from a linked worktree. Already captured as ENG-202; no new doc work needed.
 

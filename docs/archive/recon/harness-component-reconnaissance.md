@@ -395,7 +395,7 @@ Our SDD override (and upstream `executing-plans`) terminates at `superpowers:fin
 Two ADRs are filed alongside this recon. They capture recommendations that change our stack immediately, per PRD open question #2 ("ADR to adopt if the recommendation is clear").
 
 1. `2026-04-23-adopt-verification-before-completion-in-ralph-implement.md` — invoke `superpowers:verification-before-completion` from `ralph-implement` Step 4.
-2. `2026-04-23-ralph-implement-step-3-scope-tightening.md` — expand `ralph-implement` Step 3 with an explicit scope-adherence checkpoint before Step 4 verification.
+2. `ralph-implement-step-3-scope-tightening.md` — expand `ralph-implement` Step 3 with an explicit scope-adherence checkpoint before Step 4 verification.
 
 A third ADR (`2026-04-23-hitl-afk-label-for-linear-issues.md`) was initially filed and then reverted on re-review — see Cross-cutting finding #4 for the rationale.
 

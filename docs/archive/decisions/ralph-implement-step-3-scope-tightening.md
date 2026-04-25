@@ -1,5 +1,7 @@
 # Tighten ralph-implement Step 3 with explicit scope-adherence checkpoint
 
+**Date:** 2026-04-23
+
 ## Context
 
 `ralph-implement`'s Step 3 ("Implement per the PRD") is terse:

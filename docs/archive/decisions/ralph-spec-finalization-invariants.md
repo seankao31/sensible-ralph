@@ -1,5 +1,7 @@
 # Ralph-spec finalization: verify at spec time, not dispatch time
 
+**Date:** 2026-04-22
+
 ## Context
 
 `ralph-spec` produces Approved Linear issues that `/ralph-start` picks up

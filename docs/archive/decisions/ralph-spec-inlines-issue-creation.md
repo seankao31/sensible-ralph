@@ -1,5 +1,7 @@
 # ralph-spec inlines issue creation instead of delegating to linear-workflow
 
+**Date:** 2026-04-24
+
 ## Context
 
 ralph-spec's finalization Step 3 previously delegated issue creation to an external

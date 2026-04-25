@@ -2,7 +2,7 @@
 
 **Linear issue:** ENG-205
 **Date:** 2026-04-21
-**Extends:** `2026-04-17-ralph-loop-v2-design.md` (ENG-176)
+**Extends:** `ralph-loop-v2-design.md` (ENG-176)
 **Subsumes:** ENG-203 (cross-project blockers within an initiative)
 
 ## Problem
@@ -169,7 +169,7 @@ Nothing else in the v2 contract changes. The state machine, the pickup rule, the
 | `skills/ralph-start/scripts/build_queue.sh` | Match new `_chain_runnable` semantics |
 | `skills/ralph-start/SKILL.md` | Prerequisites: drop `project`, add `.ralph.json`; new section on scope resolution |
 | `docs/playbooks/ralph-v2-usage.md` | Revise "When to run" and the single-project scope language |
-| `docs/specs/2026-04-17-ralph-loop-v2-design.md` | Contract-summary note about v2 single-project limit updated to reference this design |
+| `docs/specs/ralph-loop-v2-design.md` | Contract-summary note about v2 single-project limit updated to reference this design |
 | `.ralph.json` at chezmoi repo root (new) | `{ "projects": ["Project A", "Project B"] }` |
 | `.chezmoiignore` (chezmoi source repo only) | Add `.ralph.json` so chezmoi does not apply it as a user dotfile — this file is repo-scope config, not a `$HOME` dotfile |
 | `skills/ralph-start/test/…` | Existing tests updated; new tests for scope resolution and multi-project queue building |

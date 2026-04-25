@@ -2,7 +2,7 @@
 
 **Linear issue:** ENG-206
 **Date:** 2026-04-21
-**Revises:** `2026-04-17-ralph-loop-v2-design.md` Decision 2 ("Minimal prompt template; trust CLAUDE.md and skill descriptions")
+**Revises:** `ralph-loop-v2-design.md` Decision 2 ("Minimal prompt template; trust CLAUDE.md and skill descriptions")
 
 ## Problem
 
@@ -92,7 +92,7 @@ The orchestrator still computes `issue_id`, `title`, `branch`, `path` the same w
 - **Modified:** `skills/ralph-start/scripts/test/config.bats`
 - **Modified:** `skills/ralph-start/scripts/test/orchestrator.bats`
 - **Modified:** `skills/prepare-for-review/SKILL.md` — two prose references at lines 14 and 21 mention "prompt template"; reword to "`ralph-implement` skill" / "invocation argument."
-- **Note added to:** `docs/specs/2026-04-17-ralph-loop-v2-design.md` — Decision 2 is superseded; add a brief pointer at the top of that section referencing ENG-206 and this design. The ralph v2 doc is a frozen-in-time decision record and is not rewritten.
+- **Note added to:** `docs/specs/ralph-loop-v2-design.md` — Decision 2 is superseded; add a brief pointer at the top of that section referencing ENG-206 and this design. The ralph v2 doc is a frozen-in-time decision record and is not rewritten.
 
 Not touched (historical / unrelated):
 - `docs/specs/2026-04-15-spec-queue-orchestrator-design.md` — superseded v1 spec.

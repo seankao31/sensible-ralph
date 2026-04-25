@@ -1,5 +1,7 @@
 # Ralph scope discovery uses --show-toplevel, not --git-common-dir
 
+**Date:** 2026-04-22
+
 ## Context
 
 `lib/config.sh` discovers the `.ralph.json` scope file by resolving the current

@@ -133,7 +133,7 @@ Two fail-closed hinges, both required to keep "no output means proceed" trustwor
 
 - **Non-zero exit** — either the helper failed or its JSON didn't match the expected shape; a diagnostic is on stderr. STOP and surface to the user; the blocker set is unknown and proceeding is unsafe.
 - **No output from `jq`** — no unresolved blockers; proceed.
-- **Any output from `jq`** — each line is `<blocker-id>\t<state>`. STOP. Print the list and refuse to close. Tell the user: `Canceled` blockers are NOT treated as resolved (per ralph v2 Decision 6 in `docs/specs/2026-04-17-ralph-loop-v2-design.md`); the supported way to declare "this is no longer a blocker" is to remove the relation in Linear via `linear issue relation delete "$ISSUE_ID" blocked-by <blocker-id>` and re-run. No `--force` escape hatch.
+- **Any output from `jq`** — each line is `<blocker-id>\t<state>`. STOP. Print the list and refuse to close. Tell the user: `Canceled` blockers are NOT treated as resolved (per ralph v2 Decision 6 in `docs/specs/ralph-loop-v2-design.md`); the supported way to declare "this is no longer a blocker" is to remove the relation in Linear via `linear issue relation delete "$ISSUE_ID" blocked-by <blocker-id>` and re-run. No `--force` escape hatch.
 
 Why this belongs in pre-flight: ralph v2 dispatches child branches before their parents are Done. If the child closes first, the child's branch still carries the parent's un-reviewed commits — close-branch's rebase reconciles content but doesn't know which commits belong to which issue, and close-branch's fast-forward merge then lands the parent's work on the base branch as a side effect of closing the child. Guarding at the child's close time keeps the "nothing merges until it's been reviewed" invariant intact.
 

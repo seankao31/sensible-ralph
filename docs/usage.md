@@ -1,6 +1,6 @@
 # Usage
 
-End-user playbook for the autonomous spec-queue orchestrator (`/ralph-start`). For design details see `docs/specs/2026-04-17-ralph-loop-v2-design.md`; for the SKILL contract see `skills/ralph-start/SKILL.md`.
+End-user playbook for the autonomous spec-queue orchestrator (`/ralph-start`). For design details see `docs/specs/ralph-loop-v2-design.md`; for the SKILL contract see `skills/ralph-start/SKILL.md`.
 
 ## Producing Approved issues
 
