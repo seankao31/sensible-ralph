@@ -205,8 +205,8 @@ blocks_json() {
   [ "$status" -eq 0 ]
   [ ! -s "$STUB_COMMENT_LOG" ]
   [ ! -s "$STUB_LABEL_LOG" ]
-  if [[ "$output" == *"Step 3.5 notes"* ]]; then
-    echo "expected no Step 3.5 notes header, got: $output" >&2
+  if [[ "$output" == *"Step 6 notes"* ]]; then
+    echo "expected no Step 6 notes header, got: $output" >&2
     return 1
   fi
 }

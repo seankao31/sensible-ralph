@@ -49,7 +49,7 @@ fi
 
 Source from the bundled ralph-start skill at `$CLAUDE_PLUGIN_ROOT/skills/ralph-start/`. This is the same source pattern `/ralph-spec` uses; `$CLAUDE_PLUGIN_ROOT` is exported by the Claude Code harness whenever the plugin is enabled.
 
-Source `lib/linear.sh` first — it defines helpers used throughout Pre-flight, Step 3.5, and Step 6 (`linear_get_issue_blockers`, `linear_label_exists`, `linear_get_issue_blocks`, `linear_comment`, `linear_add_label`, `linear_get_issue_state`) and is a load-time dependency of `scope.sh` (the latter's guard rejects callers that forget) and `preflight.sh` (`close_issue_check_review_state` calls `linear_get_issue_state` at run time). Then source `scope.sh` to resolve the repo's `.ralph.json` (only needed if this skill later references `$RALPH_PROJECTS`; harmless if not). `branch_ancestry.sh` is sourced explicitly for `resolve_branch_for_issue`, `is_branch_fresh_vs_sha`, and `list_commits_ahead`. `close-issue/scripts/lib/preflight.sh` is sourced last for `close_issue_check_review_state` (used in Pre-flight §1). Workflow state-name values (`$CLAUDE_PLUGIN_OPTION_REVIEW_STATE`, `$CLAUDE_PLUGIN_OPTION_DONE_STATE`, `$CLAUDE_PLUGIN_OPTION_STALE_PARENT_LABEL`) are already exported by the plugin harness — no source call needed.
+Source `lib/linear.sh` first — it defines helpers used throughout Pre-flight, Step 6, and Step 7 (`linear_get_issue_blockers`, `linear_label_exists`, `linear_get_issue_blocks`, `linear_comment`, `linear_add_label`, `linear_get_issue_state`) and is a load-time dependency of `scope.sh` (the latter's guard rejects callers that forget) and `preflight.sh` (`close_issue_check_review_state` calls `linear_get_issue_state` at run time). Then source `scope.sh` to resolve the repo's `.ralph.json` (only needed if this skill later references `$RALPH_PROJECTS`; harmless if not). `branch_ancestry.sh` is sourced explicitly for `resolve_branch_for_issue`, `is_branch_fresh_vs_sha`, and `list_commits_ahead`. `close-issue/scripts/lib/preflight.sh` is sourced last for `close_issue_check_review_state` (used in Pre-flight §1). Workflow state-name values (`$CLAUDE_PLUGIN_OPTION_REVIEW_STATE`, `$CLAUDE_PLUGIN_OPTION_DONE_STATE`, `$CLAUDE_PLUGIN_OPTION_STALE_PARENT_LABEL`) are already exported by the plugin harness — no source call needed.
 
 ```bash
 RALPH_LIB="$CLAUDE_PLUGIN_ROOT/skills/ralph-start/scripts/lib"
@@ -154,7 +154,7 @@ If this lists any files, stop and ask the user what to do with each one. Options
 
 Never silently discard untracked files. `plan.md` files have been lost this way before — the whole reason this pre-flight exists. Run this BEFORE invoking `close-branch`: it's a data-safety gate for the worktree-removal step later in this skill, not a precondition for rebase.
 
-## Invoke `close-branch`
+## Step 4: Invoke `close-branch`
 
 Hand off VCS integration to the project-local `close-branch` skill via the `Skill` tool. `close-branch` owns every project-specific decision: base branch, rebase policy, merge strategy, push model, branch-delete semantics.
 
@@ -187,7 +187,7 @@ sq_escape() {
 
 Invoke `close-branch`. It sources and deletes the inputs file at entry. On non-zero exit from `close-branch`, print the diagnostic and stop — **no cleanup runs on failure**. Linear Done transition, stale-parent labeling, and worktree removal are all skipped. Partial state is `close-branch`'s concern to report; the operator decides recovery.
 
-## Read result file
+## Step 5: Read result file
 
 After `close-branch` returns successfully, read the return values via a result file at `$MAIN_REPO/.close-branch-result`. Bash `export` is scoped to its subprocess and is not visible across `Skill`-tool invocation boundaries, so return values flow via a shell-sourceable `KEY='VALUE'` file:
 
@@ -210,7 +210,7 @@ If the file is absent (e.g., `close-branch` succeeded but did not produce a land
 
 `.close-branch-result` is gitignored.
 
-## Step 3.5: Label In-Review children that built on pre-amendment content
+## Step 6: Label In-Review children that built on pre-amendment content
 
 Ralph v2 dispatches multi-level DAGs: parent `A` may still be In Review when child `B` (whose `blocked-by` is `A`) is already being built. If `A` gets amended during review and then lands via this ritual, any In-Review child `B` that was dispatched before the amendments is structurally stale — the reviewer signed off on `B` against a base that no longer exists.
 
@@ -224,7 +224,7 @@ close_issue_label_stale_children "$ISSUE_ID" "$INTEGRATION_SHA"
 
 **Known limitations.** SHA-ancestry flags a child as stale even if the parent's amendment was a pure rebase with content unchanged — the operator dismisses the label manually. No auto-rebase of stale children; the operator decides whether to rebase and re-review, accept the review gap, or reopen review. Projects that override ralph's default branch naming see the helper gracefully skip each child via the "no local branch matching slug" WARN path.
 
-## Step 6: Transition Linear issue to Done
+## Step 7: Transition Linear issue to Done
 
 Check current state, skip the write if it's already Done (harmless but avoids noise), otherwise transition:
 
@@ -245,7 +245,7 @@ fi
 
 Direct `linear` CLI call — no delegation to a separate Linear-workflow skill. The `--json`-then-branch pattern preserves the "don't write if already there" guarantee that keeps Linear's activity feed clean.
 
-## Step 7: Reap the worktree's codex broker, then remove the worktree
+## Step 8: Reap the worktree's codex broker, then remove the worktree
 
 Last step. CWD is the main checkout, so worktree removal no longer threatens the session. Keeping it last means that if removal fails (dirty worktree, process holding files), the high-value state transitions — merge, push, branch delete, Linear Done — have already been applied cleanly.
 

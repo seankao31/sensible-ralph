@@ -11,7 +11,7 @@
 #   - $CLAUDE_PLUGIN_OPTION_REVIEW_STATE
 #
 # Functions:
-#   close_issue_label_stale_children       — public entry point (Step 3.5)
+#   close_issue_label_stale_children       — public entry point (Step 6)
 #   _close_issue_stale_label_and_comment   — module-private; comment+label one child
 
 # Comment-first, label-second: the comment explains WHY the label was applied.
@@ -57,7 +57,7 @@ COMMENT
   linear_add_label "$child_id" "$CLAUDE_PLUGIN_OPTION_STALE_PARENT_LABEL" || return 2
 }
 
-# Step 3.5 entry point. Always returns 0 — labeling is observational, not a
+# Step 6 entry point. Always returns 0 — labeling is observational, not a
 # merge-safety gate; every failure path is a WARN entry, never an exit.
 # Empty $a_sha → silent no-op (caller's close-branch did not produce a
 # landed SHA; PR-pending workflows have no canonical parent HEAD to compare
@@ -75,7 +75,7 @@ close_issue_label_stale_children() {
   a_short=$(git rev-parse --short "$a_sha")
   local WARN=()
   local stale_count=0
-  # Working variables declared local here — the original inline Step 3.5 body
+  # Working variables declared local here — the original inline body
   # did not need `local` because it ran in a transient shell context (no
   # function return). After extraction into a sourced function, omitting `local`
   # would silently overwrite same-named variables in the caller's shell on
@@ -85,7 +85,7 @@ close_issue_label_stale_children() {
 
   # Verify the workspace-scoped stale-parent label exists BEFORE touching any
   # children. Linear's `issue update --label` silently no-ops on a nonexistent
-  # or team-scoped name, which would otherwise let Step 3.5 increment the
+  # or team-scoped name, which would otherwise let Step 6 increment the
   # "labeled N children" counter against ghosts. ralph-start's preflight
   # plumbs the same check; this skill doesn't run that preflight, so we gate
   # here once per close event.
@@ -126,7 +126,7 @@ close_issue_label_stale_children() {
   }
 
   # Redundant reset (already `local stale_count=0` above) — preserved verbatim
-  # from the original Step 3.5 body per ENG-236 AC#6. Do NOT remove.
+  # from the original inline body per ENG-236 AC#6. Do NOT remove.
   stale_count=0
   while IFS= read -r child_id; do
     [ -z "$child_id" ] && continue
@@ -166,7 +166,7 @@ close_issue_label_stale_children() {
   # Emit accumulated notes immediately so Linear mutations performed here are
   # always visible to the operator, even if a later step aborts the ritual.
   if [ "${#WARN[@]}" -gt 0 ]; then
-    printf '\n⚠️  Step 3.5 notes:\n'
+    printf '\n⚠️  Step 6 notes:\n'
     printf '  - %s\n' "${WARN[@]}"
   fi
 
