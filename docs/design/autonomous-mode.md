@@ -65,7 +65,7 @@ the user's global `CLAUDE.md`:
 | `CLAUDE.md` rule | Autonomous-mode behavior |
 |---|---|
 | "STOP and ask for clarification rather than making assumptions" | Post a Linear comment describing the unclear point; exit clean. |
-| "STOP and ask how to handle uncommitted changes or untracked files when starting work" | Treat the worktree state as the starting point. The orchestrator pre-created the worktree at a clean SHA — there is nothing to ask about. |
+| "STOP and ask how to handle uncommitted changes or untracked files when starting work" | Treat the worktree state as the starting point — the orchestrator pre-created it. If the orchestrator pre-merged a parent branch and left conflicts, resolve them before implementing (per `sr-implement` Step 2); no escalation needed. |
 | "We discuss architectural decisions together before implementation" | Implement the design as the PRD specifies. If the PRD does not specify, or if implementation requires deviating from it, the escape hatch fires — post a comment, exit clean. |
 
 When a decision's class is unclear, the preamble's default is to take
