@@ -36,8 +36,8 @@ keep recognizing.
 | 2 | Main-checkout subsystem dir (gitignored, runtime) | `.ralph/` | `.sensible-ralph/` |
 | 3 | Per-worktree base-SHA marker | `.ralph-base-sha` | `.sensible-ralph-base-sha` |
 | 4 | Internal env vars | `RALPH_PROJECTS`, `RALPH_SCOPE_LOADED` | `SENSIBLE_RALPH_PROJECTS`, `SENSIBLE_RALPH_SCOPE_LOADED` |
-| 5 | Slash commands | `/ralph-{start,spec,implement}` | `/sr-{start,spec,implement}` |
-| 6 | Skill directories | `skills/ralph-{start,spec,implement}/` | `skills/sr-{start,spec,implement}/` |
+| 5 | Slash commands | `/ralph-{start,spec,implement,status}` | `/sr-{start,spec,implement,status}` |
+| 6 | Skill directories | `skills/ralph-{start,spec,implement,status}/` | `skills/sr-{start,spec,implement,status}/` |
 | H1 | Default `failed_label` | `ralph-failed` | **stays heritage** (verb-noun) |
 | H2 | Default `stdout_log_filename` | `ralph-output.log` | **stays heritage** (verb-noun) |
 | H3 | Per-worktree stdout log | `ralph-output.log` | **stays heritage** (follows H2) |
@@ -163,33 +163,41 @@ leave alone.
 
 ### Category 5 — Slash commands and skill directories
 
-Three `git mv` operations:
+Four `git mv` operations:
 
 - `skills/ralph-start/` → `skills/sr-start/`
 - `skills/ralph-spec/` → `skills/sr-spec/`
 - `skills/ralph-implement/` → `skills/sr-implement/`
+- `skills/ralph-status/` → `skills/sr-status/`
 
 Then update slash-command references in:
 
 - `README.md` — the Brief summary (lists `/ralph-start`, `/ralph-spec`,
-  `/ralph-implement`) and Design notes (`disable-model-invocation`
-  callout names them).
-- `docs/usage.md` — multiple narrative mentions.
+  `/ralph-implement`, `/ralph-status`) and Design notes
+  (`disable-model-invocation` callout names them).
+- `docs/usage.md` — multiple narrative mentions, including the
+  "Checking progress mid-run" section that documents `/ralph-status`.
 - `skills/close-issue/SKILL.md`,
   `skills/prepare-for-review/SKILL.md` — cross-references.
 - `skills/sr-start/SKILL.md`,
   `skills/sr-spec/SKILL.md`,
-  `skills/sr-implement/SKILL.md` — self- and cross-references in their
-  own narratives.
-- `skills/sr-start/scripts/test/*.bats` — any references to skill
-  directory paths.
+  `skills/sr-implement/SKILL.md`,
+  `skills/sr-status/SKILL.md` — self- and cross-references in their
+  own narratives, including the `name:` frontmatter field on each
+  SKILL.md and the user-facing `"ralph-status: …"` error strings in
+  `skills/sr-status/scripts/render_status.sh` (they name the command,
+  not the dispatcher).
+- `skills/sr-start/scripts/test/*.bats`,
+  `skills/sr-status/scripts/test/*.bats` — any references to skill
+  directory paths or to the command name in test descriptions.
 
 The `sr-spec` skill's own checklist refers to itself as `/ralph-spec`
-in places — update to `/sr-spec`. Same for `sr-start` and `sr-implement`.
+in places — update to `/sr-spec`. Same for `sr-start`, `sr-implement`,
+and `sr-status`.
 
 This category has the largest path-hit count because every reference
 to a skill directory file (`skills/ralph-start/scripts/lib/...`)
-contains the old name. Use `git mv` for the three top-level dir
+contains the old name. Use `git mv` for the four top-level dir
 renames; the path references update in code/markdown via the same
 sweep.
 
@@ -300,7 +308,7 @@ ralph-output.log
 1. **No `ralph` plugin-identity hits remain** outside heritage carve-outs.
    This grep returns only heritage:
    ```bash
-   grep -rEn '(\.ralph\b|\.ralph[-/]|RALPH_[A-Z_]+|\bralph-(start|spec|implement)\b|\bralph_[a-z]|skills/ralph-)' \
+   grep -rEn '(\.ralph\b|\.ralph[-/]|\bRALPH_[A-Z_]+|\bralph-(start|spec|implement|status)\b|\bralph_[a-z]|skills/ralph-)' \
      --include='*.md' --include='*.sh' --include='*.json' --include='*.bats' \
      . 2>/dev/null \
      | grep -v 'docs/archive/\|\.git/\|\.worktrees/' \
@@ -309,14 +317,21 @@ ralph-output.log
    ```
    Pattern notes: `\.ralph` and `skills/ralph-` are path-anchored and
    need no leading `\b` (they start with non-word chars). The command
-   patterns use `\bralph-(start|spec|implement)\b` (word boundary, no
-   literal slash) to catch both `/ralph-start` and bare `ralph-start` in
-   prose — `ralph-failed` and `ralph-output` don't match because neither
-   `failed` nor `output` appears in the alternation, so heritage
-   verb-noun forms are safe. `\bralph_[a-z]` catches underscore-form
-   identifiers like the `ralph_spec` token in graphviz diagrams.
-   Heritage strings (`snarktank/ralph`, `vanilla ralph`, `ralph
-   technique`) don't match any alternation.
+   patterns use `\bralph-(start|spec|implement|status)\b` (word
+   boundary, no literal slash) to catch both `/ralph-start` and bare
+   `ralph-start` in prose — `ralph-failed` and `ralph-output` don't
+   match because neither `failed` nor `output` appears in the
+   alternation, so heritage verb-noun forms are safe. The alternation
+   is intentionally closed (rather than `\bralph-[a-z]+\b`) so heritage
+   verb-noun additions stay safe; new identity-bearing commands get
+   added to this list explicitly. `\bRALPH_[A-Z_]+` is anchored with
+   `\b` to avoid matching the renamed `SENSIBLE_RALPH_*` substring (the
+   `_` between `SENSIBLE` and `RALPH` is a word character, so the
+   boundary doesn't fire — without `\b` every successfully-renamed env
+   var would still trip the grep). `\bralph_[a-z]` catches
+   underscore-form identifiers like the `ralph_spec` token in graphviz
+   diagrams. Heritage strings (`snarktank/ralph`, `vanilla ralph`,
+   `ralph technique`) don't match any alternation.
 
    Each remaining line must be a heritage reference: vanilla ralph
    narrative, the technique citation, fork links, or a spec filename
@@ -330,16 +345,18 @@ ralph-output.log
    `stdout_log_filename: "ralph-output.log"`.
 4. **All bats tests pass.**
    ```bash
-   bats skills/sr-start/scripts/test/*.bats
+   bats skills/sr-start/scripts/test/*.bats \
+        skills/sr-status/scripts/test/*.bats
    ```
 5. **Fresh `/sr-start` invocation creates `.sensible-ralph/progress.json`**
    (not `.ralph/progress.json`), verified through the bats suite above.
 6. **`.gitignore` lists `/.sensible-ralph/`** and does NOT list
    `/.ralph/`. The `/.worktrees/` and `ralph-output.log` lines unchanged.
 7. **Plugin namespace resolves.** `sensible-ralph:sr-start`,
-   `sensible-ralph:sr-spec`, `sensible-ralph:sr-implement` (and the
-   unprefixed `/sr-start`, `/sr-spec`, `/sr-implement`) load via
-   Claude Code's skill discovery from `.claude-plugin/`.
+   `sensible-ralph:sr-spec`, `sensible-ralph:sr-implement`,
+   `sensible-ralph:sr-status` (and the unprefixed `/sr-start`,
+   `/sr-spec`, `/sr-implement`, `/sr-status`) load via Claude Code's
+   skill discovery from `.claude-plugin/`.
 8. **Env-var guard checks pass at runtime.** Every shell script that
    gates on `[[ "${SENSIBLE_RALPH_SCOPE_LOADED:-}" != "$EXPECTED_SCOPE_LOADED" ]]`
    loads scope correctly when the new env var is set.
@@ -357,8 +374,9 @@ ralph-output.log
 
 ## Verification (run in this order)
 
-1. `bats skills/sr-start/scripts/test/*.bats` — load-bearing
-   integration check.
+1. `bats skills/sr-start/scripts/test/*.bats
+   skills/sr-status/scripts/test/*.bats` — load-bearing integration
+   check.
 2. The acceptance grep from criterion 1 — only heritage carve-outs may
    remain.
 3. From a scratch consumer repo with the new gitignore template, run
@@ -391,8 +409,8 @@ fix: rename ralph plugin-identity surfaces to sensible-ralph
 Align plugin-identity surfaces with the actual plugin name. Renamed:
 .ralph.json → .sensible-ralph.json, .ralph/ → .sensible-ralph/,
 .ralph-base-sha → .sensible-ralph-base-sha, RALPH_* env vars →
-SENSIBLE_RALPH_*, slash commands /ralph-{start,spec,implement} →
-/sr-{start,spec,implement} and their skill directories.
+SENSIBLE_RALPH_*, slash commands /ralph-{start,spec,implement,status}
+→ /sr-{start,spec,implement,status} and their skill directories.
 
 Heritage references unchanged: "vanilla ralph" narrative, snarktank
 and frankbria fork links, archived docs, design records, the

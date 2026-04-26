@@ -9,7 +9,7 @@
     "design_state": {
       "type": "string",
       "title": "In-Design state name",
-      "description": "Linear workflow state while an interactive /ralph-spec session is open (default: In Design)",
+      "description": "Linear workflow state while an interactive /sr-spec session is open (default: In Design)",
       "default": "In Design"
     },
     "approved_state": {

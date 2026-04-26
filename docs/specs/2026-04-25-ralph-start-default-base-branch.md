@@ -1,4 +1,4 @@
-# Make default base branch configurable via `.ralph.json`
+# Make default base branch configurable via `.sensible-ralph.json`
 
 **Status:** Approved (ENG-214)
 **Project:** Sensible Ralph
@@ -15,7 +15,7 @@ if [[ $review_count -eq 0 ]]; then
 ```
 
 This bakes a chezmoi-ism into ralph-v2. ENG-205 made the project scope
-multi-project / per-repo via `.ralph.json`, so a project whose primary
+multi-project / per-repo via `.sensible-ralph.json`, so a project whose primary
 trunk is `dev`, `master`, `release-YYYY`, or anything other than `main`
 cannot use ralph as-is — `dag_base.sh` would tell `git worktree add` to
 branch from a ref that doesn't exist locally, and the orchestrator's
@@ -45,12 +45,12 @@ brainstorming dialogue narrowed this:
 
 That leaves **default base branch resolution** as the single concern
 that legitimately varies per-repo and cannot be plugin-decided. A single
-string field in `.ralph.json` is sufficient — no skill, no new
+string field in `.sensible-ralph.json` is sufficient — no skill, no new
 composition mechanism.
 
 ## Design
 
-### `.ralph.json` schema
+### `.sensible-ralph.json` schema
 
 Add an optional key `default_base_branch` (string). Example with the new
 field set:
@@ -63,13 +63,13 @@ field set:
 ```
 
 When the key is absent, the default is `"main"` — preserving today's
-behavior for every existing `.ralph.json`. The field is independent of
+behavior for every existing `.sensible-ralph.json`. The field is independent of
 the existing `projects` / `initiative` shape: both shapes accept it.
 
 ### `scripts/lib/scope.sh` change
 
 Inside `_scope_load_projects`, after the existing
-`export RALPH_PROJECTS="$projects_newline"` line and before the
+`export SENSIBLE_RALPH_PROJECTS="$projects_newline"` line and before the
 function's closing `}`, parse and export the new key:
 
 ```bash
@@ -80,17 +80,17 @@ if [[ "$dbb_type" == "absent" ]]; then
 elif [[ "$dbb_type" == "string" ]]; then
   default_base="$(jq -r '.default_base_branch' "$scope_file")"
   if [[ -z "$default_base" ]]; then
-    echo "scope: .ralph.json default_base_branch is empty — omit the key or set a non-empty string" >&2
+    echo "scope: .sensible-ralph.json default_base_branch is empty — omit the key or set a non-empty string" >&2
     return 1
   fi
 else
-  echo "scope: .ralph.json default_base_branch must be a string, got $dbb_type" >&2
+  echo "scope: .sensible-ralph.json default_base_branch must be a string, got $dbb_type" >&2
   return 1
 fi
-export RALPH_DEFAULT_BASE_BRANCH="$default_base"
+export SENSIBLE_RALPH_DEFAULT_BASE_BRANCH="$default_base"
 ```
 
-Add `RALPH_DEFAULT_BASE_BRANCH` to the documented `Exports` list at
+Add `SENSIBLE_RALPH_DEFAULT_BASE_BRANCH` to the documented `Exports` list at
 the top of the file.
 
 The type-safe guard matches the fail-loud pattern everywhere in scope.sh:
@@ -111,11 +111,11 @@ with:
 
 ```bash
 if [[ $review_count -eq 0 ]]; then
-  printf '%s\n' "$RALPH_DEFAULT_BASE_BRANCH"
+  printf '%s\n' "$SENSIBLE_RALPH_DEFAULT_BASE_BRANCH"
 ```
 
 `dag_base.sh` already sources `scope.sh` at the top of the file via
-the conditional `RALPH_SCOPE_LOADED` marker block (the same gated
+the conditional `SENSIBLE_RALPH_SCOPE_LOADED` marker block (the same gated
 re-source pattern `orchestrator.sh` uses), so the env var is in scope
 by the time the no-parent branch is reached.
 
@@ -128,7 +128,7 @@ Also update the file header comment:
 becomes:
 
 ```
-# Output: "<RALPH_DEFAULT_BASE_BRANCH>" | "<branch>" | "INTEGRATION <branch1> <branch2> ..."
+# Output: "<SENSIBLE_RALPH_DEFAULT_BASE_BRANCH>" | "<branch>" | "INTEGRATION <branch1> <branch2> ..."
 ```
 
 ### `scripts/lib/worktree.sh` change
@@ -143,13 +143,13 @@ git worktree add "$path" -b "$branch" main
 Replace with:
 
 ```bash
-git worktree add "$path" -b "$branch" "${RALPH_DEFAULT_BASE_BRANCH}"
+git worktree add "$path" -b "$branch" "${SENSIBLE_RALPH_DEFAULT_BASE_BRANCH}"
 ```
 
-`RALPH_DEFAULT_BASE_BRANCH` is available because `scope.sh` is always
+`SENSIBLE_RALPH_DEFAULT_BASE_BRANCH` is available because `scope.sh` is always
 sourced before `worktree.sh` is used (both `orchestrator.sh` and
 `dag_base.sh` source scope at the top via the conditional
-`RALPH_SCOPE_LOADED` marker block). Also update the function's leading
+`SENSIBLE_RALPH_SCOPE_LOADED` marker block). Also update the function's leading
 comment to note this env-var dependency.
 
 ### `scripts/orchestrator.sh` change
@@ -167,13 +167,13 @@ Replace `main` with the configured trunk:
 ```bash
 # Capture trunk SHA BEFORE any parent merges — that's the branch's true
 # creation point for prepare-for-review diff scoping.
-base_sha="$(git rev-parse "${RALPH_DEFAULT_BASE_BRANCH}")"
+base_sha="$(git rev-parse "${SENSIBLE_RALPH_DEFAULT_BASE_BRANCH}")"
 ```
 
 Update the surrounding comment to say "trunk" (or "default base branch")
 instead of the literal word "main".
 
-### `skills/ralph-start/SKILL.md` change
+### `skills/sr-start/SKILL.md` change
 
 Update the "Scope resolution" section to document the new field. Add a
 short subsection after the two-shape jsonc example:
@@ -191,42 +191,42 @@ Example: `{ "projects": [...], "default_base_branch": "dev" }`.
 existing fake-repo-root pattern (`setup` / `teardown` / `source_scope`
 helper in the file):
 
-1. **`default_base_branch absent → RALPH_DEFAULT_BASE_BRANCH=main`** —
-   write `.ralph.json` without the field, source scope, assert
-   `RALPH_DEFAULT_BASE_BRANCH=main` in the captured exports.
+1. **`default_base_branch absent → SENSIBLE_RALPH_DEFAULT_BASE_BRANCH=main`** —
+   write `.sensible-ralph.json` without the field, source scope, assert
+   `SENSIBLE_RALPH_DEFAULT_BASE_BRANCH=main` in the captured exports.
 2. **`default_base_branch set → exports the configured value`** — write
-   `.ralph.json` with `"default_base_branch": "dev"`, assert
-   `RALPH_DEFAULT_BASE_BRANCH=dev` in the captured exports.
+   `.sensible-ralph.json` with `"default_base_branch": "dev"`, assert
+   `SENSIBLE_RALPH_DEFAULT_BASE_BRANCH=dev` in the captured exports.
 3. **`default_base_branch empty string → hard error`** — write
-   `.ralph.json` with `"default_base_branch": ""`, assert exit 1 and
+   `.sensible-ralph.json` with `"default_base_branch": ""`, assert exit 1 and
    error message contains `default_base_branch`.
 4. **`default_base_branch non-string number → hard error`** — write
-   `.ralph.json` with `"default_base_branch": 123`, assert exit 1 and
+   `.sensible-ralph.json` with `"default_base_branch": 123`, assert exit 1 and
    error message contains `default_base_branch`.
 5. **`default_base_branch non-string boolean → hard error`** — write
-   `.ralph.json` with `"default_base_branch": false`, assert exit 1 and
+   `.sensible-ralph.json` with `"default_base_branch": false`, assert exit 1 and
    error message contains `default_base_branch`.
 
 **`scripts/test/worktree.bats`** — add one `@test` block:
 
-6. **`worktree_create_with_integration uses RALPH_DEFAULT_BASE_BRANCH`**
-   — set `RALPH_DEFAULT_BASE_BRANCH=dev`, stub or confirm `git worktree
+6. **`worktree_create_with_integration uses SENSIBLE_RALPH_DEFAULT_BASE_BRANCH`**
+   — set `SENSIBLE_RALPH_DEFAULT_BASE_BRANCH=dev`, stub or confirm `git worktree
    add` is called with `dev` as the base (not `main`). The existing
    worktree tests use a real temp git repo; add a `dev` branch in setup
-   and pass it as `RALPH_DEFAULT_BASE_BRANCH` to confirm the ref
+   and pass it as `SENSIBLE_RALPH_DEFAULT_BASE_BRANCH` to confirm the ref
    resolves without error.
 
 `dag_base.bats` does not need new cases — its existing no-parent test
 will continue to pass (the default `main` matches the prior literal
-when `RALPH_DEFAULT_BASE_BRANCH` is absent or `main`).
+when `SENSIBLE_RALPH_DEFAULT_BASE_BRANCH` is absent or `main`).
 
 ## Failure mode at the seam
 
 If a future caller manages to invoke `dag_base.sh` or
 `worktree_create_with_integration` without first sourcing `scope.sh`
-(so `RALPH_DEFAULT_BASE_BRANCH` is unset):
+(so `SENSIBLE_RALPH_DEFAULT_BASE_BRANCH` is unset):
 
-- `dag_base.sh`: `printf '%s\n' "$RALPH_DEFAULT_BASE_BRANCH"` emits an
+- `dag_base.sh`: `printf '%s\n' "$SENSIBLE_RALPH_DEFAULT_BASE_BRANCH"` emits an
   empty line. The orchestrator's existing dag_base output validation
   (the `if [[ -z "${base_out//[[:space:]]/}" ]]` block in
   `_dispatch_issue` that emits `dag_base_empty` as the failed step)
@@ -244,7 +244,7 @@ All three unset-env cases are caught before any Linear mutation.
 
 ## Documentation updates
 
-- `skills/ralph-start/SKILL.md` — Scope resolution section (above).
+- `skills/sr-start/SKILL.md` — Scope resolution section (above).
 - `scripts/dag_base.sh` — header comment (above).
 - `scripts/lib/scope.sh` — Exports list at the top.
 - `README.md` and `docs/usage.md` — check whether either references the
@@ -253,9 +253,9 @@ All three unset-env cases are caught before any Linear mutation.
 
 ## Linear issue retitle
 
-Retitle ENG-214 from `ralph-start: factor branch/worktree creation into
-project-local start-branch` to `ralph-start: make default base branch
-configurable via .ralph.json` so the issue title matches the re-scoped
+Retitle ENG-214 from `sr-start: factor branch/worktree creation into
+project-local start-branch` to `sr-start: make default base branch
+configurable via .sensible-ralph.json` so the issue title matches the re-scoped
 work. The original framing (factor into start-branch) is preserved in
 this spec's "Re-scoped from the original ticket" section above for
 audit trail.
@@ -278,14 +278,14 @@ audit trail.
   magic that the operator still has to override per-project, so it
   doesn't reduce config burden.
 - **Per-project (within a multi-project repo) base overrides.** A
-  `.ralph.json` with `"projects": ["A", "B"]` could in principle want
+  `.sensible-ralph.json` with `"projects": ["A", "B"]` could in principle want
   different bases per project, but there is no observed need and
   per-repo is enough.
 
 ## Alternatives considered
 
 **Plugin userConfig key (`$CLAUDE_PLUGIN_OPTION_DEFAULT_BASE_BRANCH`)
-instead of `.ralph.json` field.** Rejected: userConfig is per-user,
+instead of `.sensible-ralph.json` field.** Rejected: userConfig is per-user,
 shared across all repos the user works in. Default base is per-repo —
 chezmoi could use `main` while another repo uses `dev` for the same
 operator. The field belongs with the rest of the per-repo scope config.

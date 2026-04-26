@@ -1,11 +1,11 @@
-# Add codex review gate to `/ralph-spec` before Linear finalization
+# Add codex review gate to `/sr-spec` before Linear finalization
 
 **Linear:** ENG-252
 **Date:** 2026-04-25
 
 ## Goal
 
-Insert a codex review gate into `/ralph-spec`'s checklist between the
+Insert a codex review gate into `/sr-spec`'s checklist between the
 user-review step and the Linear-finalization step. The gate runs
 `codex-review-gate` (standard + adversarial) scoped to this session's
 spec commits, presents findings to the user, and either applies fixes
@@ -25,7 +25,7 @@ wrong.
 
 ## Scope
 
-Edit one file: `skills/ralph-spec/SKILL.md`.
+Edit one file: `skills/sr-spec/SKILL.md`.
 
 ### Edit 1 — Insert new step 10 in the Checklist; renumber finalize → 11
 
@@ -78,7 +78,7 @@ third reference and must also update.
 ### Edit 3 — Add the Codex node and edges to the Process Flow dot graph
 
 Add this node declaration (in the node-declaration block near the top
-of the `digraph ralph_spec { ... }` body):
+of the `digraph sr_spec { ... }` body):
 
 ```
 "Codex review gate\n(standard + adversarial)" [shape=diamond];
@@ -164,21 +164,21 @@ If non-empty, continue to the next sub-step.
 Exact shell:
 
 ```bash
-WT=$(mktemp -d) || { echo "ralph-spec: mktemp failed; gate aborted" >&2; exit 1; }
+WT=$(mktemp -d) || { echo "sr-spec: mktemp failed; gate aborted" >&2; exit 1; }
 trap 'git worktree remove --force "$WT" 2>/dev/null; rm -rf "$WT"' EXIT
 git worktree add --detach "$WT" "$SPEC_HEAD_SHA" || {
-  echo "ralph-spec: git worktree add failed; gate aborted" >&2
+  echo "sr-spec: git worktree add failed; gate aborted" >&2
   exit 1
 }
 pushd "$WT" >/dev/null
 
 node <codex-script> review --json --base "$SPEC_BASE_SHA" || {
-  echo "ralph-spec: standard codex review failed; gate aborted" >&2
+  echo "sr-spec: standard codex review failed; gate aborted" >&2
   popd >/dev/null
   exit 1
 }
 node <codex-script> adversarial-review --json --base "$SPEC_BASE_SHA" "<focus text>" || {
-  echo "ralph-spec: adversarial codex review failed; gate aborted" >&2
+  echo "sr-spec: adversarial codex review failed; gate aborted" >&2
   popd >/dev/null
   exit 1
 }
@@ -238,7 +238,7 @@ a backstop, not a ceiling.
 
 #### 5. Three finding buckets (caller policy)
 
-The caller (`/ralph-spec`) classifies each finding into one of three
+The caller (`/sr-spec`) classifies each finding into one of three
 buckets. The model classifies by default; the user may override at any
 time.
 
@@ -286,17 +286,17 @@ spec.
 
 After the edits, all of these checks must pass:
 
-1. `grep -nE "step 10|Step 10" skills/ralph-spec/SKILL.md` —
+1. `grep -nE "step 10|Step 10" skills/sr-spec/SKILL.md` —
    every match must refer to the new Codex review gate step (the
    heading itself plus narrative cross-references like "the codex
    gate (step 10)" in Edit 4 and "re-run the gate (step 10)" in
    Edit 5). No match should reference the finalize step.
 
-2. `grep -nE "step 11|Step 11" skills/ralph-spec/SKILL.md` →
+2. `grep -nE "step 11|Step 11" skills/sr-spec/SKILL.md` →
    matches the renamed Finalize heading in the checklist and the three
    forward references (former lines 31, 36, 85).
 
-3. `grep -nE "^[0-9]+\." skills/ralph-spec/SKILL.md | head -11` →
+3. `grep -nE "^[0-9]+\." skills/sr-spec/SKILL.md | head -11` →
    exactly 11 contiguous numbered items, no gaps.
 
 4. The Process Flow dot graph contains the new
@@ -312,7 +312,7 @@ After the edits, all of these checks must pass:
 6. `SPEC_BASE_SHA` and `SPEC_HEAD_SHA` each appear at least twice
    (capture + use) in the file.
 
-7. `grep -n "skipping codex spec review" skills/ralph-spec/SKILL.md` →
+7. `grep -n "skipping codex spec review" skills/sr-spec/SKILL.md` →
    exactly one match (the literal warning string in Edit 5 sub-step 2).
 
 No automated test suite covers this file; verification is manual review
@@ -323,14 +323,14 @@ of the resulting `SKILL.md` for internal consistency.
 - `codex-review-gate` itself (e.g., adding a `--head <sha>` flag).
   This ticket only adds an invocation site; the primitive's CLI
   surface stays as-is.
-- `/ralph-implement` — adding the same gate there is a separate design
+- `/sr-implement` — adding the same gate there is a separate design
   question.
 - `/prepare-for-review` — already runs codex review (Step 5).
 - Automating decision-tracking from Codex findings into spec updates.
   The model presents findings; the user decides.
-- Pre-flight checks on `/ralph-spec` (e.g., requiring a clean working
+- Pre-flight checks on `/sr-spec` (e.g., requiring a clean working
   tree before spec write).
-- Recommending or enforcing a branching workflow for `/ralph-spec`
+- Recommending or enforcing a branching workflow for `/sr-spec`
   sessions broadly. The always-worktree pattern fully isolates the
   upper bound (post-spec HEAD drift) and narrows the lower-bound race
   to a sub-second window, which is acceptable for the shared-main-tree
@@ -389,7 +389,7 @@ None. The spec handles `codex-review-gate` skill absence gracefully
 ## Notes
 
 - This repo (the sensible-ralph plugin's own source tree) does not
-  ship a `.ralph.json`, so the standard `/ralph-spec` finalization
+  ship a `.sensible-ralph.json`, so the standard `/sr-spec` finalization
   flow that sources `scope.sh` cannot run here. Linear finalization
   for ENG-252 is handled out-of-band; that's a one-time
   finalization-flow concern, not a spec-edit concern.

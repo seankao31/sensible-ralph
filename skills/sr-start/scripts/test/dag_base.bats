@@ -12,13 +12,13 @@ LINEAR_SH="$SCRIPT_DIR/lib/linear.sh"
 setup() {
   export CLAUDE_PLUGIN_OPTION_REVIEW_STATE="In Review"
   export CLAUDE_PLUGIN_OPTION_APPROVED_STATE="Approved"
-  export RALPH_PROJECTS="Test Project"
-  # The auto-source gate is bypassed in run_dag_base by setting RALPH_SCOPE_LOADED
-  # to match — so scope.sh never runs and never exports RALPH_DEFAULT_BASE_BRANCH.
+  export SENSIBLE_RALPH_PROJECTS="Test Project"
+  # The auto-source gate is bypassed in run_dag_base by setting SENSIBLE_RALPH_SCOPE_LOADED
+  # to match — so scope.sh never runs and never exports SENSIBLE_RALPH_DEFAULT_BASE_BRANCH.
   # Set the default explicitly for the no-parent path (ENG-214 made this branch
   # configurable; absence in production would fail under set -u, but tests
   # bypass scope-loading by design and must restore the export themselves).
-  export RALPH_DEFAULT_BASE_BRANCH="main"
+  export SENSIBLE_RALPH_DEFAULT_BASE_BRANCH="main"
   export CLAUDE_PLUGIN_OPTION_FAILED_LABEL="ralph-failed"
   # Marker is set per-test in run_dag_base, after the per-test tmp_dir is
   # created — its value is what the script's auto-source gate compares against.
@@ -38,7 +38,7 @@ run_dag_base() {
   # Strategy: write a wrapper script that defines the stub, sources dag_base
   # by injecting via PATH shim on lib/linear.sh is complex — instead,
   # create a temp linear.sh that only defines the stub function, then
-  # set RALPH_LINEAR_SH_OVERRIDE so dag_base.sh picks it up.
+  # set SENSIBLE_RALPH_LINEAR_SH_OVERRIDE so dag_base.sh picks it up.
   #
   # Simpler approach: create a temp dir with a fake lib/linear.sh that only
   # defines the stub, and override the SCRIPT_DIR seen by dag_base.sh is
@@ -52,7 +52,7 @@ run_dag_base() {
   local stub_plugin_root
   stub_plugin_root="$(mktemp -d)"
   mkdir -p "$stub_plugin_root/lib"
-  mkdir -p "$stub_plugin_root/skills/ralph-start/scripts"
+  mkdir -p "$stub_plugin_root/skills/sr-start/scripts"
 
   # Write stub plugin-root lib/linear.sh — only defines the function we need.
   # dag_base.sh now sources moved libs from $CLAUDE_PLUGIN_ROOT/lib.
@@ -62,20 +62,20 @@ linear_get_issue_blockers() {
 }
 STUB
 
-  cp "$DAG_BASE" "$stub_plugin_root/skills/ralph-start/scripts/dag_base.sh"
+  cp "$DAG_BASE" "$stub_plugin_root/skills/sr-start/scripts/dag_base.sh"
   cp "$SCRIPT_DIR/../../../lib/defaults.sh" "$stub_plugin_root/lib/defaults.sh"
 
-  # Set the scope-loaded marker to the current repo + .ralph.json hash so
+  # Set the scope-loaded marker to the current repo + .sensible-ralph.json hash so
   # dag_base.sh's auto-source gate skips loading scope.sh.
   local _repo_root _scope_hash
   _repo_root="$(git rev-parse --show-toplevel)"
   _scope_hash=""
-  if [[ -f "$_repo_root/.ralph.json" ]]; then
-    _scope_hash="$(shasum -a 1 < "$_repo_root/.ralph.json" | awk '{print $1}')"
+  if [[ -f "$_repo_root/.sensible-ralph.json" ]]; then
+    _scope_hash="$(shasum -a 1 < "$_repo_root/.sensible-ralph.json" | awk '{print $1}')"
   fi
-  RALPH_SCOPE_LOADED="$_repo_root|$_scope_hash" \
+  SENSIBLE_RALPH_SCOPE_LOADED="$_repo_root|$_scope_hash" \
   CLAUDE_PLUGIN_ROOT="$stub_plugin_root" \
-    run bash "$stub_plugin_root/skills/ralph-start/scripts/dag_base.sh" "$issue_id"
+    run bash "$stub_plugin_root/skills/sr-start/scripts/dag_base.sh" "$issue_id"
   rm -rf "$stub_plugin_root"
 }
 

@@ -11,7 +11,7 @@ Hand-off checklist for "implementation is done, tests pass, now it needs human r
 
 ## When to Use
 
-- **At the end of an autonomous sensible-ralph session** — the `ralph-implement` skill's terminal step invokes `/prepare-for-review`.
+- **At the end of an autonomous sensible-ralph session** — the `sr-implement` skill's terminal step invokes `/prepare-for-review`.
 - **At the end of an interactive implementation session** — when the user finishes a feature and wants the handoff polish done consistently.
 
 Do NOT use this skill to cover up an incomplete implementation. If tests fail or the work isn't done, fix that first.
@@ -37,7 +37,7 @@ source "$CLAUDE_PLUGIN_ROOT/lib/defaults.sh"
 
 ## Determine the Linear issue ID
 
-In sensible-ralph sessions, the agent receives the issue ID as the `/ralph-implement` invocation argument and exposes it as `$ISSUE_ID`. In interactive sessions, derive it from the branch name:
+In sensible-ralph sessions, the agent receives the issue ID as the `/sr-implement` invocation argument and exposes it as `$ISSUE_ID`. In interactive sessions, derive it from the branch name:
 
 ```bash
 ISSUE_ID=$(git rev-parse --abbrev-ref HEAD | grep -oiE '[A-Z]+-[0-9]+' | head -1)
@@ -80,9 +80,9 @@ Once the working tree is clean, any untracked files that appear during Steps 1�
 
 The base SHA is used in Steps 1, 5, and 6. Compute it once now so all steps stay consistent:
 
-1. If `.ralph-base-sha` exists in the worktree root, read it:
+1. If `.sensible-ralph-base-sha` exists in the worktree root, read it:
    ```bash
-   BASE_SHA=$(cat .ralph-base-sha)
+   BASE_SHA=$(cat .sensible-ralph-base-sha)
    ```
 
 2. Otherwise (interactive session), detect the trunk:
@@ -98,7 +98,7 @@ The base SHA is used in Steps 1, 5, and 6. Compute it once now so all steps stay
      [ -z "$TRUNK_REF" ] && git show-ref --verify --quiet refs/remotes/origin/main && TRUNK_REF=refs/remotes/origin/main
      [ -z "$TRUNK_REF" ] && git show-ref --verify --quiet refs/remotes/origin/master && TRUNK_REF=refs/remotes/origin/master
      if [ -z "$TRUNK_REF" ]; then
-       echo "Cannot determine trunk. Set .ralph-base-sha or pass base SHA explicitly." >&2; exit 1
+       echo "Cannot determine trunk. Set .sensible-ralph-base-sha or pass base SHA explicitly." >&2; exit 1
      fi
      BASE_SHA=$(git merge-base HEAD "$TRUNK_REF")
    fi

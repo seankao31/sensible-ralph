@@ -14,9 +14,9 @@ setup() {
   export STUB_PLUGIN_ROOT
   export CLAUDE_PLUGIN_ROOT="$STUB_PLUGIN_ROOT"
 
-  # Env vars the plugin harness exports from userConfig, plus RALPH_PROJECTS
+  # Env vars the plugin harness exports from userConfig, plus SENSIBLE_RALPH_PROJECTS
   # (the per-repo scope var, from lib/scope.sh).
-  export RALPH_PROJECTS="Agent Config"
+  export SENSIBLE_RALPH_PROJECTS="Agent Config"
   export CLAUDE_PLUGIN_OPTION_APPROVED_STATE="Approved"
   export CLAUDE_PLUGIN_OPTION_FAILED_LABEL="ralph-failed"
   export CLAUDE_PLUGIN_OPTION_STALE_PARENT_LABEL="stale-parent"
@@ -27,10 +27,10 @@ setup() {
   local _repo_root _scope_hash
   _repo_root="$(git rev-parse --show-toplevel)"
   _scope_hash=""
-  if [[ -f "$_repo_root/.ralph.json" ]]; then
-    _scope_hash="$(shasum -a 1 < "$_repo_root/.ralph.json" | awk '{print $1}')"
+  if [[ -f "$_repo_root/.sensible-ralph.json" ]]; then
+    _scope_hash="$(shasum -a 1 < "$_repo_root/.sensible-ralph.json" | awk '{print $1}')"
   fi
-  export RALPH_SCOPE_LOADED="$_repo_root|$_scope_hash"
+  export SENSIBLE_RALPH_SCOPE_LOADED="$_repo_root|$_scope_hash"
 
   # Default stub values — override per test
   export STUB_APPROVED_IDS=""       # newline-separated issue IDs
@@ -43,9 +43,9 @@ setup() {
   export STUB_DEFAULT_LABEL_EXISTS="0"
 
   # Stub plugin root mirrors the real plugin layout: shared libs under lib/,
-  # ralph-start-only libs alongside the script under skills/ralph-start/scripts/lib/.
+  # sr-start-only libs alongside the script under skills/sr-start/scripts/lib/.
   mkdir -p "$STUB_PLUGIN_ROOT/lib"
-  mkdir -p "$STUB_PLUGIN_ROOT/skills/ralph-start/scripts/lib"
+  mkdir -p "$STUB_PLUGIN_ROOT/skills/sr-start/scripts/lib"
 
   # Write a fake lib/linear.sh that sources its stubs from env
   cat > "$STUB_PLUGIN_ROOT/lib/linear.sh" <<'LINEARSH'
@@ -119,11 +119,11 @@ STUBLINEAR
   # Copy preflight_scan.sh into the stub plugin's scripts dir; the script
   # reads moved libs (defaults.sh, linear.sh) from $CLAUDE_PLUGIN_ROOT/lib
   # and the still-resident preflight_labels.sh via $SCRIPT_DIR/lib/.
-  cp "$PREFLIGHT_SH" "$STUB_PLUGIN_ROOT/skills/ralph-start/scripts/preflight_scan.sh"
+  cp "$PREFLIGHT_SH" "$STUB_PLUGIN_ROOT/skills/sr-start/scripts/preflight_scan.sh"
   cp "$SCRIPT_DIR/../../../lib/defaults.sh" "$STUB_PLUGIN_ROOT/lib/defaults.sh"
   # Copy the real preflight_labels.sh — exercising the real helper against the
   # stubbed linear_label_exists above, not a hand-rolled second stub.
-  cp "$SCRIPT_DIR/lib/preflight_labels.sh" "$STUB_PLUGIN_ROOT/skills/ralph-start/scripts/lib/preflight_labels.sh"
+  cp "$SCRIPT_DIR/lib/preflight_labels.sh" "$STUB_PLUGIN_ROOT/skills/sr-start/scripts/lib/preflight_labels.sh"
 }
 
 teardown() {
@@ -134,7 +134,7 @@ teardown() {
 # Helper: run preflight_scan.sh from the temp dir
 # ---------------------------------------------------------------------------
 run_preflight() {
-  run bash "$STUB_PLUGIN_ROOT/skills/ralph-start/scripts/preflight_scan.sh"
+  run bash "$STUB_PLUGIN_ROOT/skills/sr-start/scripts/preflight_scan.sh"
 }
 
 # ---------------------------------------------------------------------------
@@ -285,15 +285,15 @@ ENG-33"
 }
 
 # ---------------------------------------------------------------------------
-# 5d-2. Approved blocker in a project NOT in RALPH_PROJECTS → out-of-scope
+# 5d-2. Approved blocker in a project NOT in SENSIBLE_RALPH_PROJECTS → out-of-scope
 # anomaly. Distinguished from "in-scope but not queueable" because the fix
-# is different — the operator adds the project to .ralph.json or resolves
+# is different — the operator adds the project to .sensible-ralph.json or resolves
 # the relationship.
 # ---------------------------------------------------------------------------
 @test "approved blocker in out-of-scope project is reported as out-of-scope" {
   export STUB_APPROVED_IDS="ENG-55"
   # ENG-55 is blocked by ENG-56 (Approved) in project "Other", which is NOT
-  # in RALPH_PROJECTS (which only has "Agent Config" per setup).
+  # in SENSIBLE_RALPH_PROJECTS (which only has "Agent Config" per setup).
   export STUB_BLOCKERS_ENG_55='[{"id":"ENG-56","state":"Approved","branch":"eng-56","project":"Other"}]'
   export STUB_BLOCKERS_ENG_56='[]'
   export STUB_DESC_CHARS=300
@@ -309,8 +309,8 @@ ENG-33"
     echo "expected project name 'Other' in output, got: $output" >&2
     return 1
   fi
-  if [[ "$output" != *".ralph.json"* ]]; then
-    echo "expected '.ralph.json' hint in output, got: $output" >&2
+  if [[ "$output" != *".sensible-ralph.json"* ]]; then
+    echo "expected '.sensible-ralph.json' hint in output, got: $output" >&2
     return 1
   fi
 }
@@ -611,7 +611,7 @@ ENG-Q"
   export STUB_DESC_CHARS=300
   export STUB_DESC_WHITESPACE_CHARS_ENG_99=10000
 
-  run timeout 15 bash "$STUB_PLUGIN_ROOT/skills/ralph-start/scripts/preflight_scan.sh"
+  run timeout 15 bash "$STUB_PLUGIN_ROOT/skills/sr-start/scripts/preflight_scan.sh"
 
   [ "$status" -eq 0 ]
   [[ "$output" == *"all clear"* ]]

@@ -1,14 +1,14 @@
 #!/usr/bin/env bats
 # Tests for skills/close-issue/scripts/lib/preflight.sh
-# Modeled after skills/ralph-start/scripts/test/orchestrator.bats —
+# Modeled after skills/sr-start/scripts/test/orchestrator.bats —
 # function-level stubbing via STUB_DIR mirrored layout. See linear.bats
-# in ralph-start for the alternative PATH-stub pattern (used when testing
+# in sr-start for the alternative PATH-stub pattern (used when testing
 # helpers that wrap the linear CLI directly).
 #
 # This file uses the STUB_DIR pattern because preflight.sh consumes
 # linear_get_issue_state — we want to control what that helper returns
 # without going through the linear CLI. linear_get_issue_state itself is
-# already covered (PATH-stubbed) in ralph-start's linear.bats.
+# already covered (PATH-stubbed) in sr-start's linear.bats.
 
 SCRIPT_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
 PREFLIGHT_SH="$SCRIPT_DIR/lib/preflight.sh"

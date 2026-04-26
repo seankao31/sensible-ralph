@@ -5,7 +5,7 @@ set -euo pipefail
 # missing/trivial PRD. Scans all Approved issues and reports anomalies.
 # Exits non-zero if any anomalies found so the operator can fix before dispatch.
 #
-# Requires RALPH_PROJECTS (from lib/scope.sh) and CLAUDE_PLUGIN_OPTION_APPROVED_STATE,
+# Requires SENSIBLE_RALPH_PROJECTS (from lib/scope.sh) and CLAUDE_PLUGIN_OPTION_APPROVED_STATE,
 # CLAUDE_PLUGIN_OPTION_FAILED_LABEL, CLAUDE_PLUGIN_OPTION_REVIEW_STATE,
 # CLAUDE_PLUGIN_OPTION_DONE_STATE (from the plugin harness).
 #
@@ -23,14 +23,14 @@ source "$PLUGIN_ROOT/lib/defaults.sh"
 # scope-file content. See orchestrator.sh for rationale.
 RESOLVED_REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || RESOLVED_REPO_ROOT=""
 RESOLVED_SCOPE_HASH=""
-if [[ -n "$RESOLVED_REPO_ROOT" && -f "$RESOLVED_REPO_ROOT/.ralph.json" ]]; then
-  RESOLVED_SCOPE_HASH="$(shasum -a 1 < "$RESOLVED_REPO_ROOT/.ralph.json" | awk '{print $1}')"
+if [[ -n "$RESOLVED_REPO_ROOT" && -f "$RESOLVED_REPO_ROOT/.sensible-ralph.json" ]]; then
+  RESOLVED_SCOPE_HASH="$(shasum -a 1 < "$RESOLVED_REPO_ROOT/.sensible-ralph.json" | awk '{print $1}')"
 fi
 # shellcheck source=../../../lib/linear.sh
 source "$PLUGIN_ROOT/lib/linear.sh"
 
 EXPECTED_SCOPE_LOADED="${RESOLVED_REPO_ROOT}|${RESOLVED_SCOPE_HASH}"
-if [[ "${RALPH_SCOPE_LOADED:-}" != "$EXPECTED_SCOPE_LOADED" ]]; then
+if [[ "${SENSIBLE_RALPH_SCOPE_LOADED:-}" != "$EXPECTED_SCOPE_LOADED" ]]; then
   # shellcheck source=../../../lib/scope.sh
   source "$PLUGIN_ROOT/lib/scope.sh"
 fi
@@ -58,14 +58,14 @@ _blocker_is_resolved() {
   [[ "$state" == "$CLAUDE_PLUGIN_OPTION_REVIEW_STATE" || "$state" == "$CLAUDE_PLUGIN_OPTION_DONE_STATE" ]]
 }
 
-# Check whether a project name (exact match, whole line) is in RALPH_PROJECTS.
-# Returns 0 if in scope, 1 otherwise. Pure bash — RALPH_PROJECTS values can
+# Check whether a project name (exact match, whole line) is in SENSIBLE_RALPH_PROJECTS.
+# Returns 0 if in scope, 1 otherwise. Pure bash — SENSIBLE_RALPH_PROJECTS values can
 # contain spaces ("Agent Config"), so substring match is unsafe.
 _project_in_scope() {
   local needle="$1" line
   while IFS= read -r line; do
     [[ "$line" == "$needle" ]] && return 0
-  done <<< "$RALPH_PROJECTS"
+  done <<< "$SENSIBLE_RALPH_PROJECTS"
   return 1
 }
 
@@ -205,7 +205,7 @@ while IFS= read -r issue_id; do
       if _project_in_scope "$b_project"; then
         anomalies+=("[WARN] $issue_id: stuck blocker chain — blocker $b_id is Approved in project '$b_project' (in scope) but not in this run's queue (likely ralph-failed-labeled)")
       else
-        anomalies+=("[WARN] $issue_id: out-of-scope blocker — blocker $b_id is in project '$b_project', outside this run's scope. Add the project to .ralph.json or resolve the blocker relationship.")
+        anomalies+=("[WARN] $issue_id: out-of-scope blocker — blocker $b_id is in project '$b_project', outside this run's scope. Add the project to .sensible-ralph.json or resolve the blocker relationship.")
       fi
       continue
     fi

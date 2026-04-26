@@ -13,7 +13,7 @@ setup() {
   export STUB_PLUGIN_ROOT
   export CLAUDE_PLUGIN_ROOT="$STUB_PLUGIN_ROOT"
 
-  export RALPH_PROJECTS="Agent Config"
+  export SENSIBLE_RALPH_PROJECTS="Agent Config"
   export CLAUDE_PLUGIN_OPTION_APPROVED_STATE="Approved"
   export CLAUDE_PLUGIN_OPTION_REVIEW_STATE="In Review"
   export CLAUDE_PLUGIN_OPTION_DONE_STATE="Done"
@@ -23,9 +23,9 @@ setup() {
   export STUB_PRIORITY_DEFAULT=2
 
   # Stub plugin root layout: shared libs under lib/, build_queue.sh under
-  # skills/ralph-start/scripts/.
+  # skills/sr-start/scripts/.
   mkdir -p "$STUB_PLUGIN_ROOT/lib"
-  mkdir -p "$STUB_PLUGIN_ROOT/skills/ralph-start/scripts"
+  mkdir -p "$STUB_PLUGIN_ROOT/skills/sr-start/scripts"
   cat > "$STUB_PLUGIN_ROOT/lib/linear.sh" <<'LINEARSH'
 linear_list_approved_issues() {
   printf '%s' "$STUB_APPROVED_IDS"
@@ -57,13 +57,13 @@ STUBLINEAR
   local _repo_root _scope_hash
   _repo_root="$(git rev-parse --show-toplevel)"
   _scope_hash=""
-  if [[ -f "$_repo_root/.ralph.json" ]]; then
-    _scope_hash="$(shasum -a 1 < "$_repo_root/.ralph.json" | awk '{print $1}')"
+  if [[ -f "$_repo_root/.sensible-ralph.json" ]]; then
+    _scope_hash="$(shasum -a 1 < "$_repo_root/.sensible-ralph.json" | awk '{print $1}')"
   fi
-  export RALPH_SCOPE_LOADED="$_repo_root|$_scope_hash"
+  export SENSIBLE_RALPH_SCOPE_LOADED="$_repo_root|$_scope_hash"
 
-  cp "$BUILD_QUEUE_SH" "$STUB_PLUGIN_ROOT/skills/ralph-start/scripts/build_queue.sh"
-  cp "$TOPOSORT_SH" "$STUB_PLUGIN_ROOT/skills/ralph-start/scripts/toposort.sh"
+  cp "$BUILD_QUEUE_SH" "$STUB_PLUGIN_ROOT/skills/sr-start/scripts/build_queue.sh"
+  cp "$TOPOSORT_SH" "$STUB_PLUGIN_ROOT/skills/sr-start/scripts/toposort.sh"
   cp "$SCRIPT_DIR/../../../lib/defaults.sh" "$STUB_PLUGIN_ROOT/lib/defaults.sh"
 }
 
@@ -77,7 +77,7 @@ teardown() {
 @test "no approved issues outputs nothing and exits 0" {
   export STUB_APPROVED_IDS=""
 
-  run bash "$STUB_PLUGIN_ROOT/skills/ralph-start/scripts/build_queue.sh"
+  run bash "$STUB_PLUGIN_ROOT/skills/sr-start/scripts/build_queue.sh"
 
   [ "$status" -eq 0 ]
   [ -z "$output" ]
@@ -90,7 +90,7 @@ teardown() {
   export STUB_APPROVED_IDS="ENG-1"
   export STUB_BLOCKERS_ENG_1="[]"
 
-  run bash "$STUB_PLUGIN_ROOT/skills/ralph-start/scripts/build_queue.sh"
+  run bash "$STUB_PLUGIN_ROOT/skills/sr-start/scripts/build_queue.sh"
 
   [ "$status" -eq 0 ]
   [ "$output" = "ENG-1" ]
@@ -109,7 +109,7 @@ ENG-3"
   export STUB_BLOCKERS_ENG_2="[]"
   export STUB_BLOCKERS_ENG_3='[{"id":"ENG-2","state":"Approved","branch":"eng-2"}]'
 
-  run bash "$STUB_PLUGIN_ROOT/skills/ralph-start/scripts/build_queue.sh"
+  run bash "$STUB_PLUGIN_ROOT/skills/sr-start/scripts/build_queue.sh"
 
   [ "$status" -eq 0 ]
   # Both must be emitted; parent (ENG-2) before child (ENG-3)
@@ -130,7 +130,7 @@ ENG-3"
   export STUB_APPROVED_IDS="ENG-4"
   export STUB_BLOCKERS_ENG_4='[{"id":"ENG-99","state":"Todo","branch":"eng-99"}]'
 
-  run bash "$STUB_PLUGIN_ROOT/skills/ralph-start/scripts/build_queue.sh"
+  run bash "$STUB_PLUGIN_ROOT/skills/sr-start/scripts/build_queue.sh"
 
   [ "$status" -eq 0 ]
   ! [[ "$output" == *"ENG-4"* ]]
@@ -144,7 +144,7 @@ ENG-3"
   export STUB_APPROVED_IDS="ENG-5"
   export STUB_BLOCKERS_ENG_5='[{"id":"ENG-50","state":"In Review","branch":"eng-50"}]'
 
-  run bash "$STUB_PLUGIN_ROOT/skills/ralph-start/scripts/build_queue.sh"
+  run bash "$STUB_PLUGIN_ROOT/skills/sr-start/scripts/build_queue.sh"
 
   [ "$status" -eq 0 ]
   [ "$output" = "ENG-5" ]
@@ -163,7 +163,7 @@ ENG-3"
   export STUB_APPROVED_IDS="ENG-6"
   export STUB_BLOCKERS_ENG_6='[{"id":"ENG-99","state":"Approved","branch":"eng-99","project":"Agent Config"}]'
 
-  run bash "$STUB_PLUGIN_ROOT/skills/ralph-start/scripts/build_queue.sh"
+  run bash "$STUB_PLUGIN_ROOT/skills/sr-start/scripts/build_queue.sh"
 
   [ "$status" -eq 0 ]
   ! [[ "$output" == *"ENG-6"* ]]
@@ -178,16 +178,16 @@ ENG-3"
 }
 
 # ---------------------------------------------------------------------------
-# 6b. A child whose approved blocker is in a project OUTSIDE RALPH_PROJECTS
-#     is skipped with a distinct out-of-scope message pointing at .ralph.json.
+# 6b. A child whose approved blocker is in a project OUTSIDE SENSIBLE_RALPH_PROJECTS
+#     is skipped with a distinct out-of-scope message pointing at .sensible-ralph.json.
 # ---------------------------------------------------------------------------
 @test "child whose approved blocker is out-of-scope is skipped with scope message" {
   # ENG-6 is the only Agent Config issue in the queue. ENG-99 is Approved in
-  # "Machine Config" which is NOT in RALPH_PROJECTS here ("Agent Config").
+  # "Machine Config" which is NOT in SENSIBLE_RALPH_PROJECTS here ("Agent Config").
   export STUB_APPROVED_IDS="ENG-6"
   export STUB_BLOCKERS_ENG_6='[{"id":"ENG-99","state":"Approved","branch":"eng-99","project":"Machine Config"}]'
 
-  run bash "$STUB_PLUGIN_ROOT/skills/ralph-start/scripts/build_queue.sh"
+  run bash "$STUB_PLUGIN_ROOT/skills/sr-start/scripts/build_queue.sh"
 
   [ "$status" -eq 0 ]
   ! [[ "$output" == *"ENG-6"* ]]   # ENG-6 not emitted on stdout
@@ -195,8 +195,8 @@ ENG-3"
     echo "expected out-of-scope phrase in output, got: $output" >&2
     return 1
   fi
-  if [[ "$output" != *".ralph.json"* ]]; then
-    echo "expected '.ralph.json' hint in output, got: $output" >&2
+  if [[ "$output" != *".sensible-ralph.json"* ]]; then
+    echo "expected '.sensible-ralph.json' hint in output, got: $output" >&2
     return 1
   fi
   if [[ "$output" != *"Machine Config"* ]]; then

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Read-only renderer for /ralph-status. Reads .ralph/progress.json and
-# .ralph/ordered_queue.txt at the repo root, partitions records from the
+# Read-only renderer for /sr-status. Reads .sensible-ralph/progress.json and
+# .sensible-ralph/ordered_queue.txt at the repo root, partitions records from the
 # chronologically-latest run_id into Done / Running / Queued, and prints a
 # sectioned table.
 #
@@ -8,31 +8,31 @@
 
 set -euo pipefail
 
-# Source plugin-wide libs from $CLAUDE_PLUGIN_ROOT/lib/ and ralph-start's
+# Source plugin-wide libs from $CLAUDE_PLUGIN_ROOT/lib/ and sr-start's
 # worktree helper from its scripts/lib/. CLAUDE_PLUGIN_ROOT is exported by
 # the Claude Code harness whenever the sensible-ralph plugin is enabled.
 if [[ -z "${CLAUDE_PLUGIN_ROOT:-}" ]]; then
-  echo "ralph-status: \$CLAUDE_PLUGIN_ROOT not set (sensible-ralph plugin not enabled?)" >&2
+  echo "sr-status: \$CLAUDE_PLUGIN_ROOT not set (sensible-ralph plugin not enabled?)" >&2
   exit 1
 fi
-# shellcheck source=../../ralph-start/scripts/lib/worktree.sh
-source "$CLAUDE_PLUGIN_ROOT/skills/ralph-start/scripts/lib/worktree.sh"
+# shellcheck source=../../sr-start/scripts/lib/worktree.sh
+source "$CLAUDE_PLUGIN_ROOT/skills/sr-start/scripts/lib/worktree.sh"
 # shellcheck source=../../../lib/defaults.sh
 source "$CLAUDE_PLUGIN_ROOT/lib/defaults.sh"
 
 # Repo root resolution must use _resolve_repo_root (not git rev-parse
 # --show-toplevel) — the latter returns the linked-worktree path when
-# invoked from a worktree, but .ralph/ lives at the main checkout root.
+# invoked from a worktree, but .sensible-ralph/ lives at the main checkout root.
 if ! repo_root="$(_resolve_repo_root 2>/dev/null)"; then
-  echo "ralph-status: not inside a git repository." >&2
+  echo "sr-status: not inside a git repository." >&2
   exit 1
 fi
 
-progress_file="$repo_root/.ralph/progress.json"
-queue_file="$repo_root/.ralph/ordered_queue.txt"
+progress_file="$repo_root/.sensible-ralph/progress.json"
+queue_file="$repo_root/.sensible-ralph/ordered_queue.txt"
 
 _no_runs_message() {
-  echo "No ralph runs recorded in this repo. Run /ralph-start to dispatch the queue."
+  echo "No ralph runs recorded in this repo. Run /sr-start to dispatch the queue."
 }
 
 if [[ ! -f "$progress_file" ]]; then

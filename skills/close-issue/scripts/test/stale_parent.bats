@@ -1,8 +1,8 @@
 #!/usr/bin/env bats
 # Tests for skills/close-issue/scripts/lib/stale_parent.sh
-# Modeled after skills/ralph-start/scripts/test/orchestrator.bats —
+# Modeled after skills/sr-start/scripts/test/orchestrator.bats —
 # function-level stubbing via STUB_DIR mirrored layout. See linear.bats in
-# ralph-start for the alternative PATH-stub pattern (used when testing the
+# sr-start for the alternative PATH-stub pattern (used when testing the
 # helpers themselves rather than logic that consumes them).
 #
 # This file uses the STUB_DIR pattern because stale_parent.sh consumes
@@ -59,7 +59,7 @@ setup() {
   #   STUB_LABEL_FAIL_<key>     per-child rc for linear_add_label
   #
   # `<key>` = issue id with hyphens converted to underscores (ENG-100 → ENG_100),
-  # matching the convention used in ralph-start/scripts/test/orchestrator.bats.
+  # matching the convention used in sr-start/scripts/test/orchestrator.bats.
   cat > "$STUB_DIR/lib/linear.sh" <<'LINEARSH'
 _stub_key() { printf '%s' "$1" | tr '-' '_'; }
 

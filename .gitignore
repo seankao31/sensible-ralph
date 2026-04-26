@@ -3,11 +3,10 @@
 # ralph consumer of its own skills), but shipped so the list is easy to
 # copy-paste from here if the plugin's own development ever involves a
 # dispatch.
-/.ralph/
+/.sensible-ralph/
 /.worktrees/
-/.ralph-base-sha
+/.sensible-ralph-base-sha
 ralph-output.log
-/.ralph-base-sha
 
 # Handoff files between close-issue (sensible-ralph plugin skill) and the
 # project-local close-branch skill at .claude/skills/close-branch/. Written

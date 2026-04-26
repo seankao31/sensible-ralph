@@ -3,9 +3,9 @@
 # Sourced (not executed); do NOT call `set` or `exit` at top level.
 #
 # Dependencies (caller must source before invoking):
-#   - lib/linear.sh (ralph-start): linear_label_exists, linear_get_issue_blocks,
+#   - lib/linear.sh (sr-start): linear_label_exists, linear_get_issue_blocks,
 #     linear_comment, linear_add_label
-#   - lib/branch_ancestry.sh (ralph-start): is_branch_fresh_vs_sha,
+#   - lib/branch_ancestry.sh (sr-start): is_branch_fresh_vs_sha,
 #     list_commits_ahead, resolve_branch_for_issue
 #   - $CLAUDE_PLUGIN_OPTION_STALE_PARENT_LABEL
 #   - $CLAUDE_PLUGIN_OPTION_REVIEW_STATE
@@ -86,14 +86,14 @@ close_issue_label_stale_children() {
   # Verify the workspace-scoped stale-parent label exists BEFORE touching any
   # children. Linear's `issue update --label` silently no-ops on a nonexistent
   # or team-scoped name, which would otherwise let Step 6 increment the
-  # "labeled N children" counter against ghosts. ralph-start's preflight
+  # "labeled N children" counter against ghosts. sr-start's preflight
   # plumbs the same check; this skill doesn't run that preflight, so we gate
   # here once per close event.
   label_rc=0
   linear_label_exists "$CLAUDE_PLUGIN_OPTION_STALE_PARENT_LABEL" || label_rc=$?
   if [ "$label_rc" -ne 0 ]; then
     case "$label_rc" in
-      1) WARN+=("workspace label $CLAUDE_PLUGIN_OPTION_STALE_PARENT_LABEL does not exist — skipping stale-parent check (see ralph-start SKILL.md Prerequisites)") ;;
+      1) WARN+=("workspace label $CLAUDE_PLUGIN_OPTION_STALE_PARENT_LABEL does not exist — skipping stale-parent check (see sr-start SKILL.md Prerequisites)") ;;
       *) WARN+=("could not verify workspace label $CLAUDE_PLUGIN_OPTION_STALE_PARENT_LABEL exists — skipping stale-parent check") ;;
     esac
     blocks_json='[]'

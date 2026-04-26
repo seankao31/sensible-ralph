@@ -1,5 +1,5 @@
 ---
-name: ralph-spec
+name: sr-spec
 description: Use when turning an idea into an Approved Linear issue that the ralph autonomous pipeline can pick up. Runs the brainstorming dialogue, writes the spec to docs/specs/<topic>.md, overwrites the Linear issue description with the approved spec, sets blocked-by relations, and transitions the issue to the configured approved state. Accepts an optional issue-id argument.
 effort: max
 argument-hint: "[issue-id]"
@@ -7,17 +7,17 @@ argument-hint: "[issue-id]"
 
 # Ralph Spec
 
-Turn an idea into an Approved Linear issue that `/ralph-start` can dispatch. Same collaborative dialogue as `superpowers:brainstorming`, but the terminal state is a Linear issue in the ralph pipeline's `approved_state` — not a handoff to `writing-plans`.
+Turn an idea into an Approved Linear issue that `/sr-start` can dispatch. Same collaborative dialogue as `superpowers:brainstorming`, but the terminal state is a Linear issue in the ralph pipeline's `approved_state` — not a handoff to `writing-plans`.
 
 Invocation:
 
 ```
-/ralph-spec           # no existing ticket yet; create at the end
-/ralph-spec ENG-220   # populate an existing ticket
+/sr-spec           # no existing ticket yet; create at the end
+/sr-spec ENG-220   # populate an existing ticket
 ```
 
 <HARD-GATE>
-The terminal state of this skill is the Approved Linear issue. Do NOT invoke any implementation skill, write any code, scaffold any project, or call `writing-plans`. Implementation happens later, in a different session, when `/ralph-start` dispatches the issue.
+The terminal state of this skill is the Approved Linear issue. Do NOT invoke any implementation skill, write any code, scaffold any project, or call `writing-plans`. Implementation happens later, in a different session, when `/sr-start` dispatches the issue.
 </HARD-GATE>
 
 ## Anti-Pattern: "This Is Too Simple To Need A Design"
@@ -42,7 +42,7 @@ You MUST create a task for each of these items and complete them in order:
 ## Process Flow
 
 ```dot
-digraph ralph_spec {
+digraph sr_spec {
     "Resolve issue context\n(arg → fetch existing)" [shape=box];
     "Explore project context" [shape=box];
     "Visual questions ahead?" [shape=diamond];
@@ -73,7 +73,7 @@ digraph ralph_spec {
 }
 ```
 
-**The terminal state is the Approved Linear issue.** Do NOT invoke `writing-plans`, `subagent-driven-development`, or any other implementation skill. Implementation begins in a separate session via `/ralph-start`.
+**The terminal state is the Approved Linear issue.** Do NOT invoke `writing-plans`, `subagent-driven-development`, or any other implementation skill. Implementation begins in a separate session via `/sr-start`.
 
 ## The Process
 
@@ -92,7 +92,7 @@ digraph ralph_spec {
         # If update succeeds, note: "transitioned $ISSUE_ID from $STATE to In Design"
         # If update fails, note: "transition failed, continuing"
         linear issue update "$ISSUE_ID" --state "$CLAUDE_PLUGIN_OPTION_DESIGN_STATE" \
-          || echo "ralph-spec: failed to transition $ISSUE_ID to '$CLAUDE_PLUGIN_OPTION_DESIGN_STATE'; continuing with dialogue" >&2
+          || echo "sr-spec: failed to transition $ISSUE_ID to '$CLAUDE_PLUGIN_OPTION_DESIGN_STATE'; continuing with dialogue" >&2
         ;;
     esac
   fi
@@ -100,7 +100,7 @@ digraph ralph_spec {
 
 - Check out the current project state (files, docs, recent commits).
 - Before asking detailed questions, assess scope: if the request describes multiple independent subsystems (e.g., "build a platform with chat, file storage, billing, and analytics"), flag this immediately. Don't spend questions refining details of a project that needs to be decomposed first.
-- If the project is too large for a single spec, help the user decompose into sub-projects: what are the independent pieces, how do they relate, what order should they be built? Each sub-project gets its own spec → its own ralph-spec invocation. Prerequisite relationships become `blocked-by` edges in step 10.
+- If the project is too large for a single spec, help the user decompose into sub-projects: what are the independent pieces, how do they relate, what order should they be built? Each sub-project gets its own spec → its own sr-spec invocation. Prerequisite relationships become `blocked-by` edges in step 10.
 - For appropriately-scoped projects, ask questions one at a time. Prefer multiple choice; open-ended is fine too. One question per message.
 - Focus on understanding: purpose, constraints, success criteria.
 
@@ -114,7 +114,7 @@ digraph ralph_spec {
 - Scale each section to its complexity: a few sentences if straightforward, up to 200-300 words if nuanced.
 - Ask after each section whether it looks right so far.
 - Cover: architecture, components, data flow, error handling, testing.
-- **Also cover prerequisites:** any Linear issues that must land before this one — in any project declared in the repo's `.ralph.json` scope. Cross-project blockers are fine as long as the prerequisite's project is in scope. These become `blocked-by` relations. Prerequisites outside the scope will trip `/ralph-start`'s out-of-scope blocker preflight; call that out now rather than letting it fail at dispatch.
+- **Also cover prerequisites:** any Linear issues that must land before this one — in any project declared in the repo's `.sensible-ralph.json` scope. Cross-project blockers are fine as long as the prerequisite's project is in scope. These become `blocked-by` relations. Prerequisites outside the scope will trip `/sr-start`'s out-of-scope blocker preflight; call that out now rather than letting it fail at dispatch.
 - Be ready to go back and clarify if something doesn't make sense.
 
 **Design for isolation and clarity:**
@@ -145,7 +145,7 @@ After writing the spec, look at it with fresh eyes:
 
 1. **Placeholder scan:** Any "TBD", "TODO", incomplete sections, or vague requirements? Fix them.
 2. **Internal consistency:** Do any sections contradict each other? Does the architecture match the feature descriptions?
-3. **Scope check:** Is this focused enough for a single autonomous implementation? If not, decompose into separate ralph-spec runs.
+3. **Scope check:** Is this focused enough for a single autonomous implementation? If not, decompose into separate sr-spec runs.
 4. **Ambiguity check:** Could any requirement be interpreted two different ways? Pick one and make it explicit — the autonomous session has no one to ask.
 5. **Autonomous-session readiness:** Does the spec give the autonomous implementer enough context to proceed without further human input? Requirements, interfaces, testing expectations, out-of-scope callouts — all explicit.
 
@@ -162,11 +162,11 @@ Wait for the user's response. If they request changes, make them and re-run the 
 
 Terminal step. Run substeps in order. Steps 1-2 are mandatory preflight gates — no mutation (comment, description, relation, state) happens until both pass. If any later step fails, STOP before the state transition.
 
-**Shell note:** the snippets below share state across blocks (`RALPH_PROJECTS`, `STATE`, `PRIOR`, `ISSUE_ID`, `linear_get_issue_blockers`, …), so the whole finalization must run in a **single** shell session — not per-snippet `bash -c` calls, which spawn a fresh subshell each time and lose that state. Run them in one continuous session (any shell — `lib/scope.sh` is portable between bash 3.2+ and zsh).
+**Shell note:** the snippets below share state across blocks (`SENSIBLE_RALPH_PROJECTS`, `STATE`, `PRIOR`, `ISSUE_ID`, `linear_get_issue_blockers`, …), so the whole finalization must run in a **single** shell session — not per-snippet `bash -c` calls, which spawn a fresh subshell each time and lose that state. Run them in one continuous session (any shell — `lib/scope.sh` is portable between bash 3.2+ and zsh).
 
 ### 1. Load the plugin's scope loader
 
-Workflow state-name values (`CLAUDE_PLUGIN_OPTION_APPROVED_STATE` etc.) are already exported by the Claude Code plugin harness from the plugin's userConfig — no source call needed for them. What we DO need to source is the plugin's `linear.sh` (for the `linear_get_issue_blockers` helper used in step 5) and `scope.sh` (which parses the repo's `.ralph.json` and exports `RALPH_PROJECTS`). Both live in the plugin's top-level `lib/` directory.
+Workflow state-name values (`CLAUDE_PLUGIN_OPTION_APPROVED_STATE` etc.) are already exported by the Claude Code plugin harness from the plugin's userConfig — no source call needed for them. What we DO need to source is the plugin's `linear.sh` (for the `linear_get_issue_blockers` helper used in step 5) and `scope.sh` (which parses the repo's `.sensible-ralph.json` and exports `SENSIBLE_RALPH_PROJECTS`). Both live in the plugin's top-level `lib/` directory.
 
 ```bash
 # Reuse the plugin's own loaders so behavior doesn't drift.
@@ -175,23 +175,23 @@ Workflow state-name values (`CLAUDE_PLUGIN_OPTION_APPROVED_STATE` etc.) are alre
 # enable-time config dialog, so the shell-side `:=` assignments keep
 # state-name comparisons working either way.
 # These exports become available after sourcing:
-#   RALPH_PROJECTS — newline-joined in-scope project names
-#                    (scope.sh expands initiative-shaped .ralph.json)
+#   SENSIBLE_RALPH_PROJECTS — newline-joined in-scope project names
+#                    (scope.sh expands initiative-shaped .sensible-ralph.json)
 #   CLAUDE_PLUGIN_OPTION_* — workflow state/label/path defaults
 # And these helpers become callable:
 #   linear_get_issue_blockers — used in step 5 for blocker verification
 source "$CLAUDE_PLUGIN_ROOT/lib/defaults.sh"
 source "$CLAUDE_PLUGIN_ROOT/lib/linear.sh" || {
-  echo "ralph-spec: failed to source linear.sh — \$CLAUDE_PLUGIN_ROOT may be unset (sensible-ralph plugin not enabled?). Re-enable the plugin and re-run." >&2
+  echo "sr-spec: failed to source linear.sh — \$CLAUDE_PLUGIN_ROOT may be unset (sensible-ralph plugin not enabled?). Re-enable the plugin and re-run." >&2
   exit 1
 }
 source "$CLAUDE_PLUGIN_ROOT/lib/scope.sh" || {
-  echo "ralph-spec: failed to load scope. Fix \$(git rev-parse --show-toplevel)/.ralph.json and re-run." >&2
+  echo "sr-spec: failed to load scope. Fix \$(git rev-parse --show-toplevel)/.sensible-ralph.json and re-run." >&2
   exit 1
 }
 ```
 
-If either source command fails, stop — don't hand-roll `.ralph.json` parsing. `scope.sh` is the source of truth and its validators are load-bearing (e.g. `.ralph.json` missing vs both-shapes-set vs initiative-zero-expansion).
+If either source command fails, stop — don't hand-roll `.sensible-ralph.json` parsing. `scope.sh` is the source of truth and its validators are load-bearing (e.g. `.sensible-ralph.json` missing vs both-shapes-set vs initiative-zero-expansion).
 
 ### 2. Preflight the target issue (gate before any mutation)
 
@@ -213,21 +213,21 @@ Branch on `$STATE` before running anything below. Use the state names the plugin
 - **Equals `$CLAUDE_PLUGIN_OPTION_IN_PROGRESS_STATE` or `$CLAUDE_PLUGIN_OPTION_REVIEW_STATE`**: stop and ask. Re-speccing an active issue usually means the operator is on the wrong ticket.
 - **Anything else** (typically `Todo`, `Backlog`, `Triage`, or `$CLAUDE_PLUGIN_OPTION_DESIGN_STATE`): proceed.
 
-Then validate `$ISSUE_PROJECT` against `$RALPH_PROJECTS`:
+Then validate `$ISSUE_PROJECT` against `$SENSIBLE_RALPH_PROJECTS`:
 
-- **In `$RALPH_PROJECTS`**: proceed.
-- **Not in `$RALPH_PROJECTS`**: stop. `/ralph-start` queries only in-scope projects to build its queue, so an Approved out-of-scope issue is *invisible* to the dispatcher — not flagged as an anomaly, just never picked up. If you noted in step 1 that this invocation successfully transitioned the issue to `In Design` from an idle state, check the issue's current state before rolling back (the operator may have manually moved it during the dialogue — don't overwrite that): if the current state is still `$CLAUDE_PLUGIN_OPTION_DESIGN_STATE`, issue `linear issue update "$ISSUE_ID" --state "<original-state>"` (the state name you noted in step 1, e.g. `Todo`). If the rollback command fails, tell the user explicitly: "Warning: failed to restore `$ISSUE_ID` to `<original-state>`; it is currently in `In Design`. Move it back manually: `linear issue update $ISSUE_ID --state <original-state>`". If no transition happened in step 1 (the issue was already in `In Design`, the update failed, or the current state has since changed), skip the rollback. Then ask the user to either move the issue to an in-scope project first (`linear issue update "$ISSUE_ID" --project "<name>"`) or widen `.ralph.json`. Do not finalize until one of those lands.
+- **In `$SENSIBLE_RALPH_PROJECTS`**: proceed.
+- **Not in `$SENSIBLE_RALPH_PROJECTS`**: stop. `/sr-start` queries only in-scope projects to build its queue, so an Approved out-of-scope issue is *invisible* to the dispatcher — not flagged as an anomaly, just never picked up. If you noted in step 1 that this invocation successfully transitioned the issue to `In Design` from an idle state, check the issue's current state before rolling back (the operator may have manually moved it during the dialogue — don't overwrite that): if the current state is still `$CLAUDE_PLUGIN_OPTION_DESIGN_STATE`, issue `linear issue update "$ISSUE_ID" --state "<original-state>"` (the state name you noted in step 1, e.g. `Todo`). If the rollback command fails, tell the user explicitly: "Warning: failed to restore `$ISSUE_ID` to `<original-state>`; it is currently in `In Design`. Move it back manually: `linear issue update $ISSUE_ID --state <original-state>`". If no transition happened in step 1 (the issue was already in `In Design`, the update failed, or the current state has since changed), skip the rollback. Then ask the user to either move the issue to an in-scope project first (`linear issue update "$ISSUE_ID" --project "<name>"`) or widen `.sensible-ralph.json`. Do not finalize until one of those lands.
 
 Only after state and project checks both pass (and the user has confirmed any warnings) may you move on to step 3.
 
 ### 3. Resolve target project and ensure the issue exists
 
-If `ISSUE_ID` is set, skip this step — step 2 already validated the issue's project against `$RALPH_PROJECTS` and stopped on mismatch, so if we're here the project is in scope.
+If `ISSUE_ID` is set, skip this step — step 2 already validated the issue's project against `$SENSIBLE_RALPH_PROJECTS` and stopped on mismatch, so if we're here the project is in scope.
 
-If `ISSUE_ID` is unset, the new issue must land in a project listed in `$RALPH_PROJECTS` (already resolved by step 1, regardless of whether `.ralph.json` is `projects`- or `initiative`-shaped):
+If `ISSUE_ID` is unset, the new issue must land in a project listed in `$SENSIBLE_RALPH_PROJECTS` (already resolved by step 1, regardless of whether `.sensible-ralph.json` is `projects`- or `initiative`-shaped):
 
 - **One project**: use it directly — bind to `$TARGET_PROJECT`.
-- **Multiple projects**: ask the user. Accept only an answer that appears in `$RALPH_PROJECTS` — reject anything else and re-ask. Bind the chosen name to `$TARGET_PROJECT`.
+- **Multiple projects**: ask the user. Accept only an answer that appears in `$SENSIBLE_RALPH_PROJECTS` — reject anything else and re-ask. Bind the chosen name to `$TARGET_PROJECT`.
 
 #### Duplicate prevention
 
@@ -281,11 +281,11 @@ Capture the new ID as `ISSUE_ID` and set `PRIOR=""` — a freshly-created issue 
 if [ -n "$PRIOR" ]; then
   TMP=$(mktemp)
   {
-    printf '%s\n\n---\n\n' "**Original ask (pre-spec)** — preserved before \`/ralph-spec\` overwrote the description."
+    printf '%s\n\n---\n\n' "**Original ask (pre-spec)** — preserved before \`/sr-spec\` overwrote the description."
     printf '%s\n' "$PRIOR"
   } > "$TMP"
   linear issue comment add "$ISSUE_ID" --body-file "$TMP" || {
-    echo "ralph-spec: failed to post preservation comment; aborting before description overwrite" >&2
+    echo "sr-spec: failed to post preservation comment; aborting before description overwrite" >&2
     rm -f "$TMP"; exit 1;
   }
   rm -f "$TMP"
@@ -296,7 +296,7 @@ fi
 
 ### 5. Push spec, set blockers, verify (all-or-nothing before approval)
 
-Blockers and description must all land cleanly before the state transition. A partial blocker set with the issue in `$CLAUDE_PLUGIN_OPTION_APPROVED_STATE` is materially unsafe — `/ralph-start` would dispatch the issue before the missing prerequisite completed.
+Blockers and description must all land cleanly before the state transition. A partial blocker set with the issue in `$CLAUDE_PLUGIN_OPTION_APPROVED_STATE` is materially unsafe — `/sr-start` would dispatch the issue before the missing prerequisite completed.
 
 **Before running anything in this step, explicitly initialize `PREREQS`** from the prerequisites identified during design. Bash treats an unset array as empty, so forgetting this line makes the relation-add loop a no-op AND makes the later verification trivially pass (empty `ACTUAL` matches empty `EXPECTED`) — the guard silently collapses. Declare the array explicitly, even when there are no prerequisites:
 
@@ -311,20 +311,20 @@ If the design surfaced prerequisites but the user hasn't supplied them explicitl
 
 ```bash
 linear issue update "$ISSUE_ID" --description-file docs/specs/<topic>.md || {
-  echo "ralph-spec: description update failed; issue left in $STATE" >&2; exit 1;
+  echo "sr-spec: description update failed; issue left in $STATE" >&2; exit 1;
 }
 
 # Cross-project blockers are fine as long as the blocker's project is in
-# $RALPH_PROJECTS — out-of-scope blockers will trip ralph-start's preflight.
+# $SENSIBLE_RALPH_PROJECTS — out-of-scope blockers will trip sr-start's preflight.
 for p in "${PREREQS[@]}"; do
   linear issue relation add "$ISSUE_ID" blocked-by "$p" || {
-    echo "ralph-spec: failed to add blocked-by $p; issue left in $STATE with partial blockers" >&2
+    echo "sr-spec: failed to add blocked-by $p; issue left in $STATE with partial blockers" >&2
     exit 1;
   }
 done
 
 # Verify the post-add blocker set matches what we asked for. Uses the same
-# helper ralph-start's orchestrator uses, so the verification sees exactly
+# helper sr-start's orchestrator uses, so the verification sees exactly
 # what dispatch will see.
 # Capture the helper's output and exit code separately — a naïve
 # `helper | jq | sort` pipeline would take sort's exit code and silently
@@ -332,13 +332,13 @@ done
 # With PREREQS also empty (no prerequisites case), that would falsely match
 # and let the state transition proceed with unverified blockers.
 BLOCKERS_JSON=$(linear_get_issue_blockers "$ISSUE_ID") || {
-  echo "ralph-spec: linear_get_issue_blockers failed for $ISSUE_ID — cannot verify blocker set; issue left in $STATE" >&2
+  echo "sr-spec: linear_get_issue_blockers failed for $ISSUE_ID — cannot verify blocker set; issue left in $STATE" >&2
   exit 1
 }
 ACTUAL=$(printf '%s' "$BLOCKERS_JSON" | jq -r '.[].id' | sort -u)
 EXPECTED=$(printf '%s\n' "${PREREQS[@]}" | sort -u)
 if [ "$ACTUAL" != "$EXPECTED" ]; then
-  echo "ralph-spec: blocked-by set mismatch on $ISSUE_ID" >&2
+  echo "sr-spec: blocked-by set mismatch on $ISSUE_ID" >&2
   echo "  expected: $(echo "$EXPECTED" | tr '\n' ' ')" >&2
   echo "  actual:   $(echo "$ACTUAL" | tr '\n' ' ')" >&2
   echo "Leaving issue in $STATE — investigate before re-running." >&2
@@ -354,7 +354,7 @@ Only reached when steps 1-5 all succeeded.
 
 ```bash
 linear issue update "$ISSUE_ID" --state "$CLAUDE_PLUGIN_OPTION_APPROVED_STATE" || {
-  echo "ralph-spec: state transition to $CLAUDE_PLUGIN_OPTION_APPROVED_STATE failed for $ISSUE_ID." >&2
+  echo "sr-spec: state transition to $CLAUDE_PLUGIN_OPTION_APPROVED_STATE failed for $ISSUE_ID." >&2
   echo "  Description and blocker relations already landed; issue is still in $STATE." >&2
   echo "  Retry the transition by hand: linear issue update $ISSUE_ID --state \"$CLAUDE_PLUGIN_OPTION_APPROVED_STATE\"" >&2
   exit 1
@@ -363,7 +363,7 @@ linear issue update "$ISSUE_ID" --state "$CLAUDE_PLUGIN_OPTION_APPROVED_STATE" |
 
 Only after the transition succeeds, tell the user:
 
-> "`$ISSUE_ID` is now in `$CLAUDE_PLUGIN_OPTION_APPROVED_STATE`. Run `/ralph-start` at your next work session to dispatch it (along with any other Approved issues in the queue)."
+> "`$ISSUE_ID` is now in `$CLAUDE_PLUGIN_OPTION_APPROVED_STATE`. Run `/sr-start` at your next work session to dispatch it (along with any other Approved issues in the queue)."
 
 If the transition failed, do NOT emit that message — the prior mutations landed but the issue is not dispatchable.
 

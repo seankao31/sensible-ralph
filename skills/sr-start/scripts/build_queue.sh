@@ -6,8 +6,8 @@ set -euo pipefail
 # and print the ordered issue IDs (one per line) to stdout.
 #
 # Usage:
-#   ralph_root="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/.ralph"
-#   mkdir -p "$ralph_root" && scripts/build_queue.sh > "$ralph_root/ordered_queue.txt"
+#   sr_root="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/.sensible-ralph"
+#   mkdir -p "$sr_root" && scripts/build_queue.sh > "$sr_root/ordered_queue.txt"
 #
 # An issue is pickup-ready only if:
 #   - state == $CLAUDE_PLUGIN_OPTION_APPROVED_STATE
@@ -28,27 +28,27 @@ source "$PLUGIN_ROOT/lib/defaults.sh"
 # scope-file content. See orchestrator.sh for rationale.
 RESOLVED_REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || RESOLVED_REPO_ROOT=""
 RESOLVED_SCOPE_HASH=""
-if [[ -n "$RESOLVED_REPO_ROOT" && -f "$RESOLVED_REPO_ROOT/.ralph.json" ]]; then
-  RESOLVED_SCOPE_HASH="$(shasum -a 1 < "$RESOLVED_REPO_ROOT/.ralph.json" | awk '{print $1}')"
+if [[ -n "$RESOLVED_REPO_ROOT" && -f "$RESOLVED_REPO_ROOT/.sensible-ralph.json" ]]; then
+  RESOLVED_SCOPE_HASH="$(shasum -a 1 < "$RESOLVED_REPO_ROOT/.sensible-ralph.json" | awk '{print $1}')"
 fi
 # shellcheck source=../../../lib/linear.sh
 source "$PLUGIN_ROOT/lib/linear.sh"
 
 EXPECTED_SCOPE_LOADED="${RESOLVED_REPO_ROOT}|${RESOLVED_SCOPE_HASH}"
-if [[ "${RALPH_SCOPE_LOADED:-}" != "$EXPECTED_SCOPE_LOADED" ]]; then
+if [[ "${SENSIBLE_RALPH_SCOPE_LOADED:-}" != "$EXPECTED_SCOPE_LOADED" ]]; then
   # shellcheck source=../../../lib/scope.sh
   source "$PLUGIN_ROOT/lib/scope.sh"
 fi
 
-# Check whether a project name (exact match, whole line) is in RALPH_PROJECTS.
-# Returns 0 if in scope, 1 otherwise. Pure bash — RALPH_PROJECTS values can
+# Check whether a project name (exact match, whole line) is in SENSIBLE_RALPH_PROJECTS.
+# Returns 0 if in scope, 1 otherwise. Pure bash — SENSIBLE_RALPH_PROJECTS values can
 # contain spaces ("Agent Config"), so space-delimited substring match is
 # unsafe.
 _project_in_scope() {
   local needle="$1" line
   while IFS= read -r line; do
     [[ "$line" == "$needle" ]] && return 0
-  done <<< "$RALPH_PROJECTS"
+  done <<< "$SENSIBLE_RALPH_PROJECTS"
   return 1
 }
 
@@ -93,7 +93,7 @@ while IFS= read -r issue_id; do
       if _project_in_scope "$blocker_project"; then
         printf "build_queue: skipping %s — Approved blocker %s in project '%s' is in scope but not queueable here (likely ralph-failed-labeled)\n" "$issue_id" "$blocker_id" "$blocker_project" >&2
       else
-        printf "build_queue: skipping %s — Approved blocker %s is in project '%s', outside this run's scope. Add the project to .ralph.json or resolve the blocker relationship.\n" "$issue_id" "$blocker_id" "$blocker_project" >&2
+        printf "build_queue: skipping %s — Approved blocker %s is in project '%s', outside this run's scope. Add the project to .sensible-ralph.json or resolve the blocker relationship.\n" "$issue_id" "$blocker_id" "$blocker_project" >&2
       fi
       warning_emitted=1
       pickup_ready=0

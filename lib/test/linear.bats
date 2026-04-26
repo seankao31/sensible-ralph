@@ -35,10 +35,10 @@ STUB
   export PATH="$STUB_DIR:$PATH"
 
   # Set required env vars (as config.sh would export them).
-  # RALPH_PROJECTS is newline-joined; most tests use a single project (same
+  # SENSIBLE_RALPH_PROJECTS is newline-joined; most tests use a single project (same
   # as before the multi-project change), but the multi-project tests below
   # override this.
-  export RALPH_PROJECTS="Agent Config"
+  export SENSIBLE_RALPH_PROJECTS="Agent Config"
   export CLAUDE_PLUGIN_OPTION_APPROVED_STATE="Approved"
   export CLAUDE_PLUGIN_OPTION_FAILED_LABEL="ralph-failed"
 }
@@ -105,7 +105,7 @@ call_fn() {
   [ -z "$output" ]
 }
 
-@test "linear_list_approved_issues queries each project in RALPH_PROJECTS" {
+@test "linear_list_approved_issues queries each project in SENSIBLE_RALPH_PROJECTS" {
   # Smart stub: emits different IDs depending on --project value so we can
   # verify the union spans both projects.
   cat > "$STUB_DIR/linear" <<'STUB'
@@ -124,7 +124,7 @@ esac
 STUB
   chmod +x "$STUB_DIR/linear"
 
-  export RALPH_PROJECTS=$'Agent Config\nMachine Config'
+  export SENSIBLE_RALPH_PROJECTS=$'Agent Config\nMachine Config'
 
   run call_fn linear_list_approved_issues
 
@@ -158,7 +158,7 @@ printf '%s' '{"nodes":[]}'
 STUB
   chmod +x "$STUB_DIR/linear"
 
-  export RALPH_PROJECTS=$'Agent Config\nBad'
+  export SENSIBLE_RALPH_PROJECTS=$'Agent Config\nBad'
 
   run call_fn linear_list_approved_issues
 
@@ -172,7 +172,7 @@ STUB
 # ---------------------------------------------------------------------------
 # 1b. linear_list_initiative_projects — expand an initiative name to its
 #     member project names via `linear api` GraphQL. Used by config.sh when
-#     .ralph.json carries an `initiative` key instead of a `projects` list.
+#     .sensible-ralph.json carries an `initiative` key instead of a `projects` list.
 # ---------------------------------------------------------------------------
 @test "linear_list_initiative_projects returns newline-joined project names" {
   STUB_OUTPUT='{"data":{"initiatives":{"nodes":[{"name":"AI Collab","projects":{"pageInfo":{"hasNextPage":false},"nodes":[{"name":"Agent Config"},{"name":"I Said Yes"}]}}]}}}'

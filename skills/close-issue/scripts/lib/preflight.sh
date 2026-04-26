@@ -3,7 +3,7 @@
 # Sourced (not executed); do NOT call `set` or `exit` at top level.
 #
 # Dependencies (caller must have these in scope before sourcing):
-#   - linear_get_issue_state from ralph-start's lib/linear.sh
+#   - linear_get_issue_state from sr-start's lib/linear.sh
 #   - $CLAUDE_PLUGIN_OPTION_REVIEW_STATE
 #   - $CLAUDE_PLUGIN_OPTION_IN_PROGRESS_STATE
 #   - $CLAUDE_PLUGIN_OPTION_DONE_STATE

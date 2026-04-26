@@ -47,9 +47,9 @@ fi
 
 ## Source plugin libs
 
-Source from the plugin's top-level `lib/` directory at `$CLAUDE_PLUGIN_ROOT/lib/`. This is the same source pattern `/ralph-spec` uses; `$CLAUDE_PLUGIN_ROOT` is exported by the Claude Code harness whenever the plugin is enabled.
+Source from the plugin's top-level `lib/` directory at `$CLAUDE_PLUGIN_ROOT/lib/`. This is the same source pattern `/sr-spec` uses; `$CLAUDE_PLUGIN_ROOT` is exported by the Claude Code harness whenever the plugin is enabled.
 
-Source `lib/linear.sh` first — it defines helpers used throughout Pre-flight, Step 6, and Step 7 (`linear_get_issue_blockers`, `linear_label_exists`, `linear_get_issue_blocks`, `linear_comment`, `linear_add_label`, `linear_get_issue_state`) and is a load-time dependency of `scope.sh` (the latter's guard rejects callers that forget) and `preflight.sh` (`close_issue_check_review_state` calls `linear_get_issue_state` at run time). Then source `scope.sh` to resolve the repo's `.ralph.json` (only needed if this skill later references `$RALPH_PROJECTS`; harmless if not). `branch_ancestry.sh` is sourced explicitly for `resolve_branch_for_issue`, `is_branch_fresh_vs_sha`, and `list_commits_ahead`. `close-issue/scripts/lib/preflight.sh` is sourced last for `close_issue_check_review_state` (used in Pre-flight §1). Workflow state-name values (`$CLAUDE_PLUGIN_OPTION_REVIEW_STATE`, `$CLAUDE_PLUGIN_OPTION_DONE_STATE`, `$CLAUDE_PLUGIN_OPTION_STALE_PARENT_LABEL`) are already exported by the plugin harness — no source call needed.
+Source `lib/linear.sh` first — it defines helpers used throughout Pre-flight, Step 6, and Step 7 (`linear_get_issue_blockers`, `linear_label_exists`, `linear_get_issue_blocks`, `linear_comment`, `linear_add_label`, `linear_get_issue_state`) and is a load-time dependency of `scope.sh` (the latter's guard rejects callers that forget) and `preflight.sh` (`close_issue_check_review_state` calls `linear_get_issue_state` at run time). Then source `scope.sh` to resolve the repo's `.sensible-ralph.json` (only needed if this skill later references `$SENSIBLE_RALPH_PROJECTS`; harmless if not). `branch_ancestry.sh` is sourced explicitly for `resolve_branch_for_issue`, `is_branch_fresh_vs_sha`, and `list_commits_ahead`. `close-issue/scripts/lib/preflight.sh` is sourced last for `close_issue_check_review_state` (used in Pre-flight §1). Workflow state-name values (`$CLAUDE_PLUGIN_OPTION_REVIEW_STATE`, `$CLAUDE_PLUGIN_OPTION_DONE_STATE`, `$CLAUDE_PLUGIN_OPTION_STALE_PARENT_LABEL`) are already exported by the plugin harness — no source call needed.
 
 ```bash
 PLUGIN_LIB="$CLAUDE_PLUGIN_ROOT/lib"
@@ -327,7 +327,7 @@ $ISSUE_ID closed.
 
 For a project to use `/close-issue`, it must:
 
-1. Have the `sensible-ralph` plugin enabled (which bundles ralph-start; this skill sources its libs via `$CLAUDE_PLUGIN_ROOT`).
+1. Have the `sensible-ralph` plugin enabled (which bundles sr-start; this skill sources its libs via `$CLAUDE_PLUGIN_ROOT`).
 2. Provide a skill named exactly `close-branch` at its `.claude/skills/close-branch/`. The name is part of the contract; this skill invokes `Skill(close-branch)` without a discovery step.
 3. Use ralph's worktree + Linear-lowercase-slug branch convention (sensible-ralph workflow invariants).
 4. Have `$CLAUDE_PLUGIN_OPTION_FAILED_LABEL` and `$CLAUDE_PLUGIN_OPTION_STALE_PARENT_LABEL` set up in its Linear workspace (see the sensible-ralph README Prerequisites section).
