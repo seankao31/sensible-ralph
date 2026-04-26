@@ -49,7 +49,7 @@ fi
 
 Source from the bundled ralph-start skill at `$CLAUDE_PLUGIN_ROOT/skills/ralph-start/`. This is the same source pattern `/ralph-spec` uses; `$CLAUDE_PLUGIN_ROOT` is exported by the Claude Code harness whenever the plugin is enabled.
 
-Source `lib/linear.sh` first — it defines helpers used throughout Pre-flight and Step 3.5 (`linear_get_issue_blockers`, `linear_label_exists`, `linear_get_issue_blocks`, `linear_comment`, `linear_add_label`) and is a load-time dependency of `scope.sh` (the latter's guard rejects callers that forget). Then source `scope.sh` to resolve the repo's `.ralph.json` (only needed if this skill later references `$RALPH_PROJECTS`; harmless if not). `branch_ancestry.sh` is sourced explicitly for `resolve_branch_for_issue`, `is_branch_fresh_vs_sha`, and `list_commits_ahead`. Workflow state-name values (`$CLAUDE_PLUGIN_OPTION_REVIEW_STATE`, `$CLAUDE_PLUGIN_OPTION_DONE_STATE`, `$CLAUDE_PLUGIN_OPTION_STALE_PARENT_LABEL`) are already exported by the plugin harness — no source call needed.
+Source `lib/linear.sh` first — it defines helpers used throughout Pre-flight, Step 3.5, and Step 6 (`linear_get_issue_blockers`, `linear_label_exists`, `linear_get_issue_blocks`, `linear_comment`, `linear_add_label`, `linear_get_issue_state`) and is a load-time dependency of `scope.sh` (the latter's guard rejects callers that forget) and `preflight.sh` (`close_issue_check_review_state` calls `linear_get_issue_state` at run time). Then source `scope.sh` to resolve the repo's `.ralph.json` (only needed if this skill later references `$RALPH_PROJECTS`; harmless if not). `branch_ancestry.sh` is sourced explicitly for `resolve_branch_for_issue`, `is_branch_fresh_vs_sha`, and `list_commits_ahead`. `close-issue/scripts/lib/preflight.sh` is sourced last for `close_issue_check_review_state` (used in Pre-flight §1). Workflow state-name values (`$CLAUDE_PLUGIN_OPTION_REVIEW_STATE`, `$CLAUDE_PLUGIN_OPTION_DONE_STATE`, `$CLAUDE_PLUGIN_OPTION_STALE_PARENT_LABEL`) are already exported by the plugin harness — no source call needed.
 
 ```bash
 RALPH_LIB="$CLAUDE_PLUGIN_ROOT/skills/ralph-start/scripts/lib"
@@ -57,6 +57,7 @@ source "$RALPH_LIB/defaults.sh"       # CLAUDE_PLUGIN_OPTION_* fallbacks
 source "$RALPH_LIB/linear.sh"
 source "$RALPH_LIB/scope.sh"
 source "$RALPH_LIB/branch_ancestry.sh"
+source "$CLAUDE_PLUGIN_ROOT/skills/close-issue/scripts/lib/preflight.sh"
 ```
 
 ## Resolve `FEATURE_BRANCH` and `WORKTREE_PATH`
@@ -102,7 +103,7 @@ All subsequent commands reference `$FEATURE_BRANCH`, `$ISSUE_ID`, `$WORKTREE_PAT
 ### 1. Verify the issue is in the review state
 
 ```bash
-linear issue view "$ISSUE_ID" --json 2>/dev/null | jq -r '.state.name'
+close_issue_check_review_state "$ISSUE_ID" || exit 1
 ```
 
 Expected: `$CLAUDE_PLUGIN_OPTION_REVIEW_STATE` (default: `In Review`; override via the plugin's userConfig).
@@ -362,7 +363,10 @@ fi
 Check current state, skip the write if it's already Done (harmless but avoids noise), otherwise transition:
 
 ```bash
-current_state=$(linear issue view "$ISSUE_ID" --json 2>/dev/null | jq -r '.state.name')
+current_state=$(linear_get_issue_state "$ISSUE_ID") || {
+  echo "close-issue: failed to read current state for $ISSUE_ID" >&2
+  exit 1
+}
 if [ "$current_state" != "$CLAUDE_PLUGIN_OPTION_DONE_STATE" ]; then
   linear issue update "$ISSUE_ID" --state "$CLAUDE_PLUGIN_OPTION_DONE_STATE" || {
     echo "close-issue: failed to transition $ISSUE_ID to $CLAUDE_PLUGIN_OPTION_DONE_STATE" >&2
