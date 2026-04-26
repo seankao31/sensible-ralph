@@ -104,14 +104,24 @@ as the current state, and proceeds normally per Edit 4.
 
 Behavior notes:
 
-- The transition is **best-effort**. If it fails (auth blip, the state
-  doesn't exist on this team, etc.), the skill logs to stderr and
-  continues. The design dialogue is the load-bearing part; the board
-  signal is nice-to-have.
+- The transition is **best-effort for auth/API failures**. If the
+  `linear issue update` call fails (auth blip, the state doesn't exist
+  on this team, etc.), the skill logs to stderr and continues.
+- **Rollback on scope-check abort (not auth failure).** Step 1 now
+  captures `ORIGINAL_STATE` and sets `MOVED_TO_DESIGN=1` only when
+  the transition actually succeeds. Step 10's project scope check
+  (substep 2) uses these to roll back the `In Design` transition before
+  stopping, so an out-of-scope issue is not left stranded in a
+  non-dispatchable state. The rollback is only issued when `MOVED_TO_DESIGN`
+  is set — which is not the case when the issue is already in `In Design`
+  at invocation time (re-running `/ralph-spec` to continue an open
+  dialogue is legitimate). This design comes from an adversarial codex
+  review finding on ENG-273: "restore $ORIGINAL_STATE on abort" alone
+  is unsafe for reruns; the `MOVED_TO_DESIGN` sentinel makes the
+  per-invocation semantics explicit.
 - States outside `{Todo, Backlog, Triage}` get their existing step 10
   preflight treatment with no early transition. In particular, an
-  issue already in `In Design` is left in `In Design` (re-running
-  `/ralph-spec` to continue an open dialogue is legitimate); an issue
+  issue already in `In Design` is left in `In Design`; an issue
   in `Approved` goes through the existing "warn on overwrite" flow.
 - Sourcing `defaults.sh` to make `$CLAUDE_PLUGIN_OPTION_DESIGN_STATE`
   available is already done in step 10's finalization. For step 1 we

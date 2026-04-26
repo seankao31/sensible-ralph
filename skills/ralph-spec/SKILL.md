@@ -79,19 +79,22 @@ digraph ralph_spec {
 
 **Understanding the idea:**
 
-- If `ISSUE_ID` is set, start by reading its current description — that's the user's framing before the dialogue refines it. Then, before asking any questions, source `defaults.sh` and transition the issue to `$CLAUDE_PLUGIN_OPTION_DESIGN_STATE` if it is in an idle state (`Todo`, `Backlog`, or `Triage`). This is best-effort — log and continue on failure:
+- If `ISSUE_ID` is set, start by reading its current description — that's the user's framing before the dialogue refines it. Then, before asking any questions, source `defaults.sh` and transition the issue to `$CLAUDE_PLUGIN_OPTION_DESIGN_STATE` if it is in an idle state (`Todo`, `Backlog`, or `Triage`). This is best-effort — log and continue on failure. Capture `ORIGINAL_STATE` before the transition and set `MOVED_TO_DESIGN=1` only when the transition actually succeeds; step 10's scope-check abort uses these to roll back rather than strand the issue in `In Design`:
 
   ```bash
   source "$CLAUDE_PLUGIN_ROOT/skills/ralph-start/scripts/lib/defaults.sh"
 
   if [ -n "${ISSUE_ID:-}" ]; then
     STATE=$(linear issue view "$ISSUE_ID" --json | jq -r '.state.name')
+    ORIGINAL_STATE="$STATE"
 
     case "$STATE" in
       Todo|Backlog|Triage)
-        linear issue update "$ISSUE_ID" \
-          --state "$CLAUDE_PLUGIN_OPTION_DESIGN_STATE" \
-          || echo "ralph-spec: failed to transition $ISSUE_ID to '$CLAUDE_PLUGIN_OPTION_DESIGN_STATE'; continuing with dialogue" >&2
+        if linear issue update "$ISSUE_ID" --state "$CLAUDE_PLUGIN_OPTION_DESIGN_STATE"; then
+          MOVED_TO_DESIGN=1
+        else
+          echo "ralph-spec: failed to transition $ISSUE_ID to '$CLAUDE_PLUGIN_OPTION_DESIGN_STATE'; continuing with dialogue" >&2
+        fi
         ;;
     esac
   fi
@@ -215,7 +218,7 @@ Branch on `$STATE` before running anything below. Use the state names the plugin
 Then validate `$ISSUE_PROJECT` against `$RALPH_PROJECTS`:
 
 - **In `$RALPH_PROJECTS`**: proceed.
-- **Not in `$RALPH_PROJECTS`**: stop. `/ralph-start` queries only in-scope projects to build its queue, so an Approved out-of-scope issue is *invisible* to the dispatcher — not flagged as an anomaly, just never picked up. Ask the user to either move the issue to an in-scope project first (`linear issue update "$ISSUE_ID" --project "<name>"`) or widen `.ralph.json`. Do not finalize until one of those lands.
+- **Not in `$RALPH_PROJECTS`**: stop. `/ralph-start` queries only in-scope projects to build its queue, so an Approved out-of-scope issue is *invisible* to the dispatcher — not flagged as an anomaly, just never picked up. If `$MOVED_TO_DESIGN` is set (this invocation transitioned the issue from an idle state to `In Design`), roll it back to `$ORIGINAL_STATE` first so the issue doesn't strand in a non-dispatchable state: `linear issue update "$ISSUE_ID" --state "$ORIGINAL_STATE" 2>/dev/null || true`. Then ask the user to either move the issue to an in-scope project first (`linear issue update "$ISSUE_ID" --project "<name>"`) or widen `.ralph.json`. Do not finalize until one of those lands.
 
 Only after state and project checks both pass (and the user has confirmed any warnings) may you move on to step 3.
 
