@@ -58,9 +58,18 @@ Two helpers in `skills/sr-start/scripts/lib/worktree.sh` wrap this:
   can't be silently dropped). See
   `docs/archive/decisions/ralph-v2-multi-parent-integration-abort.md`.
 
-Both helpers resolve the base ref against `refs/heads/$base` first, then
-`refs/remotes/origin/$base` — fresh clones often have review parents
+**Ref resolution for parent branches** (both helpers): each parent is
+resolved against `refs/heads/$parent` first, then
+`refs/remotes/origin/$parent` — fresh clones often have review branches
 present only via `git fetch` without local heads.
+
+**Ref resolution for the trunk**: `worktree_create_with_integration`
+passes `$SENSIBLE_RALPH_DEFAULT_BASE_BRANCH` verbatim to `git worktree add`
+with no local/remote fallback. If the trunk exists only as a remote
+tracking ref (e.g., `origin/main` without a local `main`), the command
+will fail. `worktree_create_at_base` has the fallback because its `$base`
+argument can be any ref; the integration helper's trunk is a config-driven
+constant expected to be a local branch in any ralph-hosting repo.
 
 The base itself is one of three shapes, chosen by `dag_base.sh`:
 
@@ -230,9 +239,12 @@ What each actor owns:
 | `/prepare-for-review` | no | no (reads only) | no | no | inside worktree |
 | `/close-issue` | no | no | no | yes (no `--force`, after `Done` transition) | main checkout (NOT a worktree) |
 
-The naming, base-SHA, output-log, and gitignore-entry conventions are
-single-source: every actor calls `worktree_path_for_issue` for path
-composition, reads the same `$CLAUDE_PLUGIN_OPTION_*` env vars for
-filename defaults, and the orchestrator is the only writer of state
-that downstream skills consume. Drift between actors shows up as a
-contract violation here, not as a silent inconsistency in the field.
+The naming convention is authoritative in `worktree_path_for_issue` —
+the orchestrator calls it to compute each path before creation. The
+*lookup* side differs by actor: `/close-issue` finds the already-created
+worktree via `git worktree list --porcelain` (resolves by branch ref,
+not by path composition); `/prepare-for-review` uses its existing CWD.
+Filename defaults come from the same `$CLAUDE_PLUGIN_OPTION_*` env vars
+for all actors. The orchestrator is the only writer of state that
+downstream skills consume. Drift shows up as a contract violation here,
+not as a silent inconsistency in the field.
