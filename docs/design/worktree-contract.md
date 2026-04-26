@@ -28,7 +28,7 @@ Worktree path:
   the path is composed, so `.worktrees`, `/.worktrees`, and `.worktrees/`
   all yield the same final path.
 - **`<branch>`** is Linear's auto-generated `<team-lowercase>-<id>-<slug>`
-  (e.g. `eng-296-write-docs-design-worktree-contract-md`), fetched via
+  (e.g. `eng-296-write-docsdesignworktree-contractmd`), fetched via
   `linear_get_issue_branch` (which reads `.branchName` from
   `linear issue view --json`). The orchestrator treats a literal `"null"`
   return as a missing branch name and records `setup_failed` rather than
@@ -160,10 +160,14 @@ encodes a real failure-mode constraint.
 
 ## Removal
 
-`/close-issue` is the **sole remover**. Removal is the skill's final
-step (Step 8), running **after** the Linear `Done` transition, so the
-high-value state mutations (merge, push, branch delete, Linear Done) are
-already committed if removal fails for any reason.
+`/close-issue` is the **normal remover** — it runs Step 8 after the
+Linear `Done` transition so the high-value state mutations (merge, push,
+branch delete, Linear Done) are already committed if removal fails. The
+orchestrator's `_cleanup_worktree` helper is the **setup-failure remover**:
+it rolls back worktrees this invocation created when a pre-dispatch setup
+step fails, using `--force` because `.sensible-ralph-base-sha` would
+otherwise block `git worktree remove`. These are distinct code paths
+with different preconditions; both are documented in this section.
 
 Pre-flight pre-conditions, both required:
 
