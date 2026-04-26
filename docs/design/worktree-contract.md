@@ -56,11 +56,12 @@ Two helpers in `skills/sr-start/scripts/lib/worktree.sh` wrap this:
 - **`worktree_create_at_base $path $branch $base`** — single-base case
   (default base branch, or a single in-review parent's branch).
 - **`worktree_create_with_integration $path $branch $parents...`** —
-  multi-parent integration case. Creates the worktree at
-  `$SENSIBLE_RALPH_DEFAULT_BASE_BRANCH`, then sequentially merges each
-  parent. Single-parent conflicts are left in place for the dispatched
-  agent to resolve; multi-parent conflicts abort fast (subsequent parents
-  can't be silently dropped). See
+  multi-parent integration case (always 2+ parents — `dag_base.sh`
+  emits `INTEGRATION` only when multiple blockers are In Review). Creates
+  the worktree at `$SENSIBLE_RALPH_DEFAULT_BASE_BRANCH`, then
+  sequentially merges each parent. Conflicts on any parent abort the
+  merge with `git merge --abort` — subsequent parents can't be silently
+  dropped. See
   `docs/archive/decisions/ralph-v2-multi-parent-integration-abort.md`.
 
 **Ref resolution for parent branches** (both helpers): each parent is
@@ -81,8 +82,16 @@ The base itself is one of three shapes, chosen by `dag_base.sh`:
 | Blockers state | Base passed to creation |
 |---|---|
 | No blockers, or all blockers `Done` | `$SENSIBLE_RALPH_DEFAULT_BASE_BRANCH` (default `main`) |
-| One blocker `In Review`, rest `Done` | That blocker's branch name |
+| One blocker `In Review`, rest `Done` | That blocker's branch name — worktree branches directly from the parent |
 | Multiple blockers `In Review` | `INTEGRATION <parent1> <parent2> ...` (triggers the integration helper) |
+
+**Approved-blocker chains**: the table reads blocker state at B's
+dispatch time, not queue-build time. An Approved blocker dispatched
+earlier in the same run (rule 3b of the pickup rule) will have
+transitioned to `In Review` by the time B dispatches — toposort
+guarantees parents dispatch first and each parent session runs
+`/prepare-for-review` before exiting. No separate Approved-blocker
+row is needed.
 
 **Why not `claude --worktree`.** The orchestrator does not use the
 `--worktree` flag on `claude`. That flag is a *create* path that branches
