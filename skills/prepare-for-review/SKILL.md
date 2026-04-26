@@ -18,12 +18,11 @@ Do NOT use this skill to cover up an incomplete implementation. If tests fail or
 
 ## Companion skills
 
-This skill is a workflow orchestrator — each step delegates to another skill. Steps 1-5 expect the following skills to be installed and discoverable:
+This skill is a workflow orchestrator — each step delegates to another skill. Steps 1, 2, 3, and 5 expect the following skills to be installed and discoverable:
 
 - `update-stale-docs` — generic doc-sweep skill (Step 1)
 - `capture-decisions` — records non-obvious implementation choices (Step 2)
 - `prune-completed-docs` — archives superseded planning docs (Step 3)
-- `clean-branch-history` — folds fixups into logical commits (Step 4)
 - `codex-review-gate` — cross-model code review before handoff (Step 5)
 
 If any of these is missing at invocation time, skip the step with a brief note and continue. Step 6 (Linear comment) and Step 7 (state transition) are self-contained — they invoke `linear` CLI directly and don't need any other skill.
@@ -73,9 +72,9 @@ git status --short
 The working tree must be **completely clean** (no output). Any lines in the output are stop conditions:
 
 - **`M`, `D`, `A`, `R` lines** — uncommitted changes to tracked files. Commit them first.
-- **`??` lines** — untracked files. Commit or remove them before running this skill. This includes scratch files in `docs/` or `memory/` — because Step 3.5 stages all new untracked files, any untracked files present at the start of this skill will end up in the docs commit.
+- **`??` lines** — untracked files. Commit or remove them before running this skill. This includes scratch files in `docs/` or `memory/` — because Step 4 stages all new untracked files, any untracked files present at the start of this skill will end up in the docs commit.
 
-Once the working tree is clean, any untracked files that appear during Steps 1–3 are guaranteed to have been created by the skill itself and are safe to stage in Step 3.5.
+Once the working tree is clean, any untracked files that appear during Steps 1–3 are guaranteed to have been created by the skill itself and are safe to stage in Step 4.
 
 ## Compute base SHA (do this before Step 1)
 
@@ -119,7 +118,7 @@ If the skill isn't installed, skip with a note: "update-stale-docs not installed
 
 Invoke the `capture-decisions` skill. Records any non-obvious implementation choices made during the session — the *why*, not the *what*.
 
-**Note on commits:** `capture-decisions` ends with its own `git commit`. This means this workflow may produce two separate doc commits (one from Step 2, one from Step 3.5 covering prune changes). Both will be in the `$BASE_SHA..HEAD` codex review scope — no action needed.
+**Note on commits:** `capture-decisions` ends with its own `git commit`. This means this workflow may produce two separate doc commits (one from Step 2, one from Step 4 covering prune changes). Both will be in the `$BASE_SHA..HEAD` codex review scope — no action needed.
 
 If the skill isn't installed, skip with a note.
 
@@ -129,9 +128,9 @@ Invoke the `prune-completed-docs` skill. Removes or archives now-stale planning 
 
 If the skill isn't installed, skip with a note.
 
-### Step 3.5: Commit doc/decisions changes
+### Step 4: Commit doc/decisions changes
 
-Steps 1–3 may have modified or created files. Commit them so the history cleanup in Step 4 and codex review in Step 5 see the complete branch (including docs):
+Steps 1–3 may have modified or created files. Commit them so the codex review in Step 5 sees the complete branch (including docs):
 
 ```bash
 git status --short          # confirm only expected new files from Steps 1-3
@@ -143,17 +142,9 @@ git diff --cached --quiet || git commit -m "docs: update stale docs and capture 
 
 The pre-flight required a clean working tree, so all untracked files staged here were created by the skill steps (Steps 1–3). The `--quiet` guard skips the commit if nothing changed.
 
-### Step 4: Clean branch history
-
-Invoke the `clean-branch-history` skill with `--base "$BASE_SHA"` to fold feedback-driven fixups, "try X + revert X" pairs, and review-feedback commits into clean logical units. Codex (next step) then reviews coherent history, and the commit list posted in the Linear comment (Step 6) reads clearly for the human reviewer.
-
-`clean-branch-history` uses the `--base "$BASE_SHA"` computed earlier (protecting against stacked-branch breakage), creates and verifies its own safety ref, checks tree-hash integrity, and has a single-commit early-exit — the invocation is unconditional and self-contained. On re-runs of `/prepare-for-review` (e.g., after review-feedback commits land on a branch that's still In Review), this step folds the new fixes into their corresponding commits so each handoff snapshot stays clean.
-
-If the skill isn't installed, skip with a note.
-
 ### Step 5: Codex review gate
 
-Invoke the `codex-review-gate` skill, passing `--base "$BASE_SHA"` (computed above) so the review is scoped to this branch's commits (code + docs after history cleanup).
+Invoke the `codex-review-gate` skill, passing `--base "$BASE_SHA"` (computed above) so the review is scoped to this branch's commits (code + docs).
 
 **Handle findings here, not by escalating to the user mid-flow:**
 
