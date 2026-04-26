@@ -182,9 +182,9 @@ If `ISSUE_ID` is set, fetch state, description, and project in one read, then br
 ```bash
 if [ -n "${ISSUE_ID:-}" ]; then
   VIEW=$(linear issue view "$ISSUE_ID" --json)
-  STATE=$(echo "$VIEW" | jq -r '.state.name')
-  PRIOR=$(echo "$VIEW" | jq -r '.description // empty')
-  ISSUE_PROJECT=$(echo "$VIEW" | jq -r '.project.name // empty')
+  STATE=$(printf '%s' "$VIEW" | jq -r '.state.name')
+  PRIOR=$(printf '%s' "$VIEW" | jq -r '.description // empty')
+  ISSUE_PROJECT=$(printf '%s' "$VIEW" | jq -r '.project.name // empty')
 fi
 ```
 
