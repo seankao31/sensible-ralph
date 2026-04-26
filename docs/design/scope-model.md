@@ -133,7 +133,7 @@ New: the membership check widens. An `Approved` blocker is runnable if it is in 
 - Canceled / Duplicate blocker — unchanged.
 - Deep-stuck dependency chain — unchanged.
 - Missing PRD on an Approved issue — unchanged (applies to every issue in the union).
-- **Out-of-scope blocker (new).** Distinguished from canceled/duplicate because the fix is different — operator adds the blocker's project to `.sensible-ralph.json`, or explicitly cancels / rescopes the relationship.
+- **Out-of-scope blocker (new).** Distinguished from canceled/duplicate because the fix is different — operator adds the blocker's project to `.sensible-ralph.json`, or explicitly cancels / rescopes the relationship. See [`docs/design/preflight-and-pickup.md`](preflight-and-pickup.md) for the full anomaly set and detection logic.
 
 **Toposort:** unchanged. Operates on issue IDs and `blocked-by` edges only.
 
