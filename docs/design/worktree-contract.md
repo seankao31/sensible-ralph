@@ -34,8 +34,13 @@ Worktree path:
   return as a missing branch name and records `setup_failed` rather than
   creating a branch named "null".
 
-The path is computed by `worktree_path_for_issue "$branch"` — the single
-implementation every actor calls, so the naming convention has one home.
+The path is computed by `worktree_path_for_issue "$branch"` at creation
+time. The orchestrator calls it to determine where to run `git worktree
+add`; `/close-issue` finds the already-created path via
+`git worktree list --porcelain` rather than recomputing it; and
+`/prepare-for-review` uses its existing CWD. The naming convention has
+one authoritative computation, but different actors discover the path
+differently depending on whether they're creating or consuming it.
 
 ## Creation
 
@@ -142,10 +147,12 @@ exit code through `tee`, which the orchestrator then combines with the
 post-dispatch Linear state to classify the outcome (a successful tee on
 top of a failed claude must not collapse to "success").
 
-The log is the operator entry point for debugging `failed`,
-`exit_clean_no_review`, and `setup_failed` outcomes — `/sr-status`
-points at `<worktree>/$CLAUDE_PLUGIN_OPTION_STDOUT_LOG_FILENAME` for
-post-mortem reading.
+The log is the operator entry point for debugging `failed` and
+`exit_clean_no_review` outcomes — `/sr-status` points at
+`<worktree>/$CLAUDE_PLUGIN_OPTION_STDOUT_LOG_FILENAME` for post-mortem
+reading. For `setup_failed` outcomes, the log does not exist (the
+dispatch block never ran); inspect the `failed_step` field in
+`.sensible-ralph/progress.json` and the orchestrator stderr instead.
 
 ## CWD convention
 
@@ -218,6 +225,8 @@ canonical list is copy-pasteable:
 /.worktrees/
 /.sensible-ralph-base-sha
 ralph-output.log
+/.close-branch-inputs
+/.close-branch-result
 ```
 
 | Entry | Why |
@@ -226,6 +235,8 @@ ralph-output.log
 | `/.worktrees/` | Default `worktree_base`. Linked worktrees should never appear in the parent repo's tracked tree. If `worktree_base` is overridden, the override path needs the equivalent entry. |
 | `/.sensible-ralph-base-sha` | Per-worktree contract file. Absolute-from-worktree-root, so the entry uses a leading slash to anchor it. Without this, the file would be staged into the session's first feature commit. |
 | `ralph-output.log` | Default `stdout_log_filename`. Per-worktree session log; no leading slash so it matches anywhere. If `stdout_log_filename` is overridden, the override needs its own entry. |
+| `/.close-branch-inputs` | Handoff file written by `/close-issue` before invoking `close-branch`. Written at the start of each close ritual, deleted by `close-branch` on entry. Presence between runs signals an interrupted `/close-issue`. |
+| `/.close-branch-result` | Result file written by `close-branch`, read and deleted by `/close-issue`. Same lifecycle as `/.close-branch-inputs`. |
 
 The two `userConfig`-driven names (`worktree_base`, `stdout_log_filename`)
 mean the gitignore list is technically convention-dependent, not
