@@ -10,8 +10,9 @@ PREFLIGHT_SH="$SCRIPT_DIR/preflight_scan.sh"
 # Setup: create a temp dir structure that mirrors scripts/, inject stubs
 # ---------------------------------------------------------------------------
 setup() {
-  STUB_DIR="$(mktemp -d)"
-  export STUB_DIR
+  STUB_PLUGIN_ROOT="$(mktemp -d)"
+  export STUB_PLUGIN_ROOT
+  export CLAUDE_PLUGIN_ROOT="$STUB_PLUGIN_ROOT"
 
   # Env vars the plugin harness exports from userConfig, plus RALPH_PROJECTS
   # (the per-repo scope var, from lib/scope.sh).
@@ -41,9 +42,13 @@ setup() {
   # Convention: rc 0 = exists, 1 = missing, 2 = query error.
   export STUB_DEFAULT_LABEL_EXISTS="0"
 
+  # Stub plugin root mirrors the real plugin layout: shared libs under lib/,
+  # ralph-start-only libs alongside the script under skills/ralph-start/scripts/lib/.
+  mkdir -p "$STUB_PLUGIN_ROOT/lib"
+  mkdir -p "$STUB_PLUGIN_ROOT/skills/ralph-start/scripts/lib"
+
   # Write a fake lib/linear.sh that sources its stubs from env
-  mkdir -p "$STUB_DIR/lib"
-  cat > "$STUB_DIR/lib/linear.sh" <<'LINEARSH'
+  cat > "$STUB_PLUGIN_ROOT/lib/linear.sh" <<'LINEARSH'
 # Stub lib/linear.sh for preflight_scan tests.
 # Reads STUB_APPROVED_IDS and STUB_BLOCKERS_<ISSUEID> env vars.
 
@@ -80,7 +85,7 @@ LINEARSH
   #   - STUB_DESC_RAW_<ISSUEID> (optional) literal description string, used
   #     when the test needs to supply non-ASCII content for encoding tests.
   #     Takes precedence over the char-count vars for the same issue.
-  cat > "$STUB_DIR/linear" <<'STUBLINEAR'
+  cat > "$STUB_PLUGIN_ROOT/linear" <<'STUBLINEAR'
 #!/usr/bin/env bash
 # Stub for `linear issue view <id> --json --no-comments`.
 issue_id=""
@@ -108,26 +113,28 @@ desc_x="$(head -c "$char_count" /dev/zero | tr '\0' 'x')"
 desc_ws="$(head -c "$ws_count" /dev/zero | tr '\0' ' ')"
 printf '{"description": "%s%s"}' "$desc_x" "$desc_ws"
 STUBLINEAR
-  chmod +x "$STUB_DIR/linear"
-  export PATH="$STUB_DIR:$PATH"
+  chmod +x "$STUB_PLUGIN_ROOT/linear"
+  export PATH="$STUB_PLUGIN_ROOT:$PATH"
 
-  # Copy preflight_scan.sh into STUB_DIR so $(dirname "$0")/lib/linear.sh resolves.
-  cp "$PREFLIGHT_SH" "$STUB_DIR/preflight_scan.sh"
-  cp "$SCRIPT_DIR/lib/defaults.sh" "$STUB_DIR/lib/defaults.sh"
+  # Copy preflight_scan.sh into the stub plugin's scripts dir; the script
+  # reads moved libs (defaults.sh, linear.sh) from $CLAUDE_PLUGIN_ROOT/lib
+  # and the still-resident preflight_labels.sh via $SCRIPT_DIR/lib/.
+  cp "$PREFLIGHT_SH" "$STUB_PLUGIN_ROOT/skills/ralph-start/scripts/preflight_scan.sh"
+  cp "$SCRIPT_DIR/../../../lib/defaults.sh" "$STUB_PLUGIN_ROOT/lib/defaults.sh"
   # Copy the real preflight_labels.sh — exercising the real helper against the
   # stubbed linear_label_exists above, not a hand-rolled second stub.
-  cp "$SCRIPT_DIR/lib/preflight_labels.sh" "$STUB_DIR/lib/preflight_labels.sh"
+  cp "$SCRIPT_DIR/lib/preflight_labels.sh" "$STUB_PLUGIN_ROOT/skills/ralph-start/scripts/lib/preflight_labels.sh"
 }
 
 teardown() {
-  rm -rf "$STUB_DIR"
+  rm -rf "$STUB_PLUGIN_ROOT"
 }
 
 # ---------------------------------------------------------------------------
 # Helper: run preflight_scan.sh from the temp dir
 # ---------------------------------------------------------------------------
 run_preflight() {
-  run bash "$STUB_DIR/preflight_scan.sh"
+  run bash "$STUB_PLUGIN_ROOT/skills/ralph-start/scripts/preflight_scan.sh"
 }
 
 # ---------------------------------------------------------------------------
@@ -604,7 +611,7 @@ ENG-Q"
   export STUB_DESC_CHARS=300
   export STUB_DESC_WHITESPACE_CHARS_ENG_99=10000
 
-  run timeout 15 bash "$STUB_DIR/preflight_scan.sh"
+  run timeout 15 bash "$STUB_PLUGIN_ROOT/skills/ralph-start/scripts/preflight_scan.sh"
 
   [ "$status" -eq 0 ]
   [[ "$output" == *"all clear"* ]]

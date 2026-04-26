@@ -6,10 +6,9 @@
 # This file is sourced (not executed); do NOT call `set` at the top level or
 # `exit`.
 #
-# Co-located under scripts/lib/ with the Linear helpers because close-issue
-# already sources from here. When the ralph-workflow skills consolidate into a
-# standalone plugin, these helpers relocate with the rest of the shared
-# plumbing — the current location is pragmatic, not principled.
+# Lives in the plugin's top-level lib/ alongside linear.sh, defaults.sh, and
+# scope.sh — pure-git helpers shared across multiple skills (close-issue today;
+# anything else that needs ancestry checks tomorrow).
 #
 # Functions:
 #   is_branch_fresh_vs_sha   — 0 fresh, 1 stale, 2 lookup failure

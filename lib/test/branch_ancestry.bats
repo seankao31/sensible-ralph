@@ -4,7 +4,9 @@
 # about directly. ENG-208's stale-parent check is the motivating consumer.
 
 SCRIPT_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
-BRANCH_ANCESTRY_SH="$SCRIPT_DIR/lib/branch_ancestry.sh"
+# No /lib/ prefix: SCRIPT_DIR resolves to lib/ (parent of lib/test/), and the
+# target scripts live directly there — not under lib/lib/.
+BRANCH_ANCESTRY_SH="$SCRIPT_DIR/branch_ancestry.sh"
 
 # ---------------------------------------------------------------------------
 # Setup: fresh temp repo per test with an initial commit on `main`.

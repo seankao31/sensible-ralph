@@ -49,20 +49,21 @@ run_dag_base() {
   # sources $(dirname "$0")/lib/linear.sh, we create a temp copy of
   # dag_base.sh alongside a temp lib/linear.sh stub.
 
-  local tmp_dir
-  tmp_dir="$(mktemp -d)"
-  mkdir -p "$tmp_dir/lib"
+  local stub_plugin_root
+  stub_plugin_root="$(mktemp -d)"
+  mkdir -p "$stub_plugin_root/lib"
+  mkdir -p "$stub_plugin_root/skills/ralph-start/scripts"
 
-  # Write stub lib/linear.sh — only defines the function we need
-  cat > "$tmp_dir/lib/linear.sh" <<STUB
+  # Write stub plugin-root lib/linear.sh — only defines the function we need.
+  # dag_base.sh now sources moved libs from $CLAUDE_PLUGIN_ROOT/lib.
+  cat > "$stub_plugin_root/lib/linear.sh" <<STUB
 linear_get_issue_blockers() {
   printf '%s' '$blockers_json'
 }
 STUB
 
-  # Symlink dag_base.sh into temp dir so \$(dirname "\$0")/lib/linear.sh resolves correctly
-  cp "$DAG_BASE" "$tmp_dir/dag_base.sh"
-  cp "$SCRIPT_DIR/lib/defaults.sh" "$tmp_dir/lib/defaults.sh"
+  cp "$DAG_BASE" "$stub_plugin_root/skills/ralph-start/scripts/dag_base.sh"
+  cp "$SCRIPT_DIR/../../../lib/defaults.sh" "$stub_plugin_root/lib/defaults.sh"
 
   # Set the scope-loaded marker to the current repo + .ralph.json hash so
   # dag_base.sh's auto-source gate skips loading scope.sh.
@@ -73,8 +74,9 @@ STUB
     _scope_hash="$(shasum -a 1 < "$_repo_root/.ralph.json" | awk '{print $1}')"
   fi
   RALPH_SCOPE_LOADED="$_repo_root|$_scope_hash" \
-    run bash "$tmp_dir/dag_base.sh" "$issue_id"
-  rm -rf "$tmp_dir"
+  CLAUDE_PLUGIN_ROOT="$stub_plugin_root" \
+    run bash "$stub_plugin_root/skills/ralph-start/scripts/dag_base.sh" "$issue_id"
+  rm -rf "$stub_plugin_root"
 }
 
 # ---------------------------------------------------------------------------

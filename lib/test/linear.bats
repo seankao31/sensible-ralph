@@ -3,7 +3,9 @@
 # Uses a stub linear CLI to avoid real API calls.
 
 SCRIPT_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
-LINEAR_SH="$SCRIPT_DIR/lib/linear.sh"
+# No /lib/ prefix: SCRIPT_DIR resolves to lib/ (parent of lib/test/), and the
+# target scripts live directly there — not under lib/lib/.
+LINEAR_SH="$SCRIPT_DIR/linear.sh"
 
 # ---------------------------------------------------------------------------
 # Setup: create a temp dir for the stub + args capture file, prepend to PATH

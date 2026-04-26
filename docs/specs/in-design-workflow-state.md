@@ -283,7 +283,7 @@ After the implementation lands, all of the following must hold:
 1. `jq . .claude-plugin/plugin.json` exits 0, and
    `jq -e '.userConfig.design_state.default == "In Design"' .claude-plugin/plugin.json`
    exits 0.
-2. `bash -c 'set -e; source skills/ralph-start/scripts/lib/defaults.sh; printf "%s\n" "$CLAUDE_PLUGIN_OPTION_DESIGN_STATE"'`
+2. `bash -c 'set -e; source lib/defaults.sh; printf "%s\n" "$CLAUDE_PLUGIN_OPTION_DESIGN_STATE"'`
    prints `In Design`.
 3. `grep -n "CLAUDE_PLUGIN_OPTION_DESIGN_STATE" skills/ralph-spec/SKILL.md`
    shows the variable referenced in step 1 (the start-of-session

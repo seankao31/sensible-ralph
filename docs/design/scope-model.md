@@ -169,9 +169,9 @@ Nothing else changes. The state machine, the pickup rule, the pre-flight anomaly
 
 | File | What changed |
 |---|---|
-| `skills/ralph-start/scripts/lib/scope.sh` (new) | Scope loader: parses `.ralph.json`, exports `RALPH_PROJECTS` + `RALPH_SCOPE_LOADED` |
-| `skills/ralph-start/scripts/lib/defaults.sh` (new) | Workflow defaults for `CLAUDE_PLUGIN_OPTION_*` env vars (replaces old `config.sh`/`config.json`) |
-| `skills/ralph-start/scripts/lib/linear.sh` | `linear_list_approved_issues` unions over `RALPH_PROJECTS`; `linear_list_initiative_projects` expands initiative shorthand |
+| `lib/scope.sh` (new) | Scope loader: parses `.ralph.json`, exports `RALPH_PROJECTS` + `RALPH_SCOPE_LOADED` |
+| `lib/defaults.sh` (new) | Workflow defaults for `CLAUDE_PLUGIN_OPTION_*` env vars (replaces old `config.sh`/`config.json`) |
+| `lib/linear.sh` | `linear_list_approved_issues` unions over `RALPH_PROJECTS`; `linear_list_initiative_projects` expands initiative shorthand |
 | `skills/ralph-start/scripts/preflight_scan.sh` | Updated `_chain_runnable`; out-of-scope-blocker anomaly added |
 | `skills/ralph-start/scripts/build_queue.sh` | Matches updated `_chain_runnable` semantics |
 | `skills/ralph-start/SKILL.md` | Prerequisites: `.ralph.json` replaces `project`; scope-resolution section added |

@@ -3,8 +3,10 @@
 # Sources the scope loader and verifies RALPH_PROJECTS / RALPH_SCOPE_LOADED.
 
 SCRIPT_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
-SCOPE_SH="$SCRIPT_DIR/lib/scope.sh"
-LINEAR_SH="$SCRIPT_DIR/lib/linear.sh"
+# No /lib/ prefix: SCRIPT_DIR resolves to lib/ (parent of lib/test/), and the
+# target scripts live directly there — not under lib/lib/.
+SCOPE_SH="$SCRIPT_DIR/scope.sh"
+LINEAR_SH="$SCRIPT_DIR/linear.sh"
 
 # ---------------------------------------------------------------------------
 # Setup: fake repo root with a .ralph.json. scope.sh resolves the repo root
