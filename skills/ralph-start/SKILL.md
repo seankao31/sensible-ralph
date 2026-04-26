@@ -66,7 +66,9 @@ If non-zero exit: STOP. Print the anomalies and ask the user how to proceed (fix
 ### Step 2: Build the ordered queue
 
 ```bash
-"$SKILL_DIR/scripts/build_queue.sh" > ordered_queue.txt
+ralph_root="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/.ralph"
+mkdir -p "$ralph_root"
+"$SKILL_DIR/scripts/build_queue.sh" > "$ralph_root/ordered_queue.txt"
 ```
 
 `build_queue.sh` lists pickup-ready Approved issues (state == `$CLAUDE_PLUGIN_OPTION_APPROVED_STATE`, no `$CLAUDE_PLUGIN_OPTION_FAILED_LABEL` label, every blocker in `$CLAUDE_PLUGIN_OPTION_DONE_STATE`, `$CLAUDE_PLUGIN_OPTION_REVIEW_STATE`, or `$CLAUDE_PLUGIN_OPTION_APPROVED_STATE`), then topologically sorts them via `toposort.sh` with Linear priority as the tiebreaker (priority=0 sorts last because Linear uses 0 for "no priority"). Approved blockers are accepted because the orchestrator dispatches Approved chains in topological order — the parent reaches In Review before the child runs and `dag_base.sh` picks up the parent's branch as the base. Issues with blockers in any other state (Triage, Backlog, Todo, In Progress, Canceled, Duplicate) are skipped with a warning to stderr.
@@ -90,10 +92,11 @@ Ask the user to confirm (accept / skip specific issues / abort). Do NOT proceed 
 ### Step 4: Dispatch via orchestrator
 
 ```bash
-"$SKILL_DIR/scripts/orchestrator.sh" ordered_queue.txt
+ralph_root="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/.ralph"
+"$SKILL_DIR/scripts/orchestrator.sh" "$ralph_root/ordered_queue.txt"
 ```
 
-The orchestrator processes the queue sequentially, creates worktrees, invokes `claude -p`, classifies outcomes (using Linear state transition AS WELL AS exit code — exit 0 alone does not imply success), propagates failure taint downstream, and appends per-issue records to `progress.json` at the repo root (resolved via `git --git-common-dir` so the path is stable whether `/ralph-start` is invoked from the main checkout or a linked worktree).
+The orchestrator processes the queue sequentially, creates worktrees, invokes `claude -p`, classifies outcomes (using Linear state transition AS WELL AS exit code — exit 0 alone does not imply success), propagates failure taint downstream, and appends per-issue records to `.ralph/progress.json` at the repo root (resolved via `git --git-common-dir` so the path is stable whether `/ralph-start` is invoked from the main checkout or a linked worktree).
 
 The orchestrator runs foreground — the user should expect the session to block until the queue completes or all remaining issues are tainted. Each issue's `claude -p` output is tee'd to `<worktree>/<CLAUDE_PLUGIN_OPTION_STDOUT_LOG_FILENAME>` for later inspection.
 
@@ -101,11 +104,11 @@ The orchestrator runs foreground — the user should expect the session to block
 
 After the orchestrator returns:
 
-- **`progress.json`** at the repo root lists all dispatched/skipped issues with outcomes.
+- **`.ralph/progress.json`** at the repo root lists all dispatched/skipped issues with outcomes.
 - **`in_review` issues:** `cd` into the worktree, run a `claude --resume` if the session is still available, review code per the QA plan in the Linear comment, then run your project's merge ritual from a session at the main-checkout root — not from inside the worktree.
 - **`failed` / `exit_clean_no_review` issues** (labeled `ralph-failed`, descendants tainted): `cd` into the worktree, read `<worktree>/<CLAUDE_PLUGIN_OPTION_STDOUT_LOG_FILENAME>` for the session's final output. Decide: retry (remove the `ralph-failed` label and re-queue), cancel the issue, or debug interactively.
-- **`setup_failed` issues** (labeled `ralph-failed`, descendants tainted): orchestrator couldn't set up the worktree (branch lookup failed, dag_base returned garbage, etc.). Check the `failed_step` field in `progress.json`. Worktree cleanup has already run for state this invocation created.
-- **`local_residue` issues** (Linear NOT mutated, descendants NOT tainted): the target worktree path or branch already existed at the start of dispatch — the orchestrator never touched it. Check the `residue_path` and `residue_branch` fields in `progress.json`, manually clean up the residue (commit or remove), then re-queue. Operator state (manual mkdir, prior crashed run, in-flight branch) is preserved unchanged.
+- **`setup_failed` issues** (labeled `ralph-failed`, descendants tainted): orchestrator couldn't set up the worktree (branch lookup failed, dag_base returned garbage, etc.). Check the `failed_step` field in `.ralph/progress.json`. Worktree cleanup has already run for state this invocation created.
+- **`local_residue` issues** (Linear NOT mutated, descendants NOT tainted): the target worktree path or branch already existed at the start of dispatch — the orchestrator never touched it. Check the `residue_path` and `residue_branch` fields in `.ralph/progress.json`, manually clean up the residue (commit or remove), then re-queue. Operator state (manual mkdir, prior crashed run, in-flight branch) is preserved unchanged.
 - **`unknown_post_state` issues** (Linear NOT mutated, descendants NOT tainted): claude exited 0 but the post-dispatch Linear state fetch failed transiently. Open the issue in Linear: if state is `In Review`, treat as success (no `ralph-failed` was applied); if it's still `In Progress`, treat as a soft failure and re-queue.
 
 ## Red flags / when to stop

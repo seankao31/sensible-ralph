@@ -10,7 +10,7 @@ set -euo pipefail
 # append a per-issue record to progress.json.
 #
 # Input contract: $1 is a file path containing one issue ID per line,
-# pre-sorted by toposort.sh. progress.json is written to the repo root
+# pre-sorted by toposort.sh. .ralph/progress.json is written under the repo root
 # (resolved via lib/worktree.sh::_resolve_repo_root), independent of cwd.
 #
 # Required env: CLAUDE_PLUGIN_OPTION_IN_PROGRESS_STATE,
@@ -50,6 +50,12 @@ fi
 source "$SCRIPT_DIR/lib/worktree.sh"
 
 queue_file="${1:?orchestrator.sh: queue file path required as \$1}"
+
+# Ensure the consumer-repo .ralph/ directory exists once at startup so the
+# atomic mktemp+mv pattern in _progress_append has a destination on the first
+# record, no matter which dispatch path writes first.
+repo_root="$(_resolve_repo_root)"
+mkdir -p "$repo_root/.ralph"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -97,7 +103,7 @@ _progress_append() {
   local record="$1"
   local repo_root
   repo_root="$(_resolve_repo_root)" || return 1
-  local progress_file="$repo_root/progress.json"
+  local progress_file="$repo_root/.ralph/progress.json"
   local tmp; tmp="$(mktemp "${progress_file}.XXXXXX")"
   if [[ -s "$progress_file" ]]; then
     jq --argjson rec "$record" '. + [$rec]' "$progress_file" > "$tmp"

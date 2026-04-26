@@ -90,11 +90,13 @@ you a working setup.
 - **`.gitignore` entries** for the runtime artifacts the orchestrator
   writes to your repo root and worktrees:
   ```gitignore
-  /progress.json
-  /ordered_queue.txt
+  /.ralph/
   /.worktrees/
   ralph-output.log
   ```
+  If you're upgrading from a version that wrote these artifacts at the
+  repo root, run `mkdir -p .ralph && mv progress.json ordered_queue.txt .ralph/ 2>/dev/null` once at your consumer repo's root.
+
   (The paths match the plugin defaults. If you changed the `worktree_base`
   or `stdout_log_filename` userConfig values, substitute accordingly.)
 
