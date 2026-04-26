@@ -107,18 +107,21 @@ Behavior notes:
 - The transition is **best-effort for auth/API failures**. If the
   `linear issue update` call fails (auth blip, the state doesn't exist
   on this team, etc.), the skill logs to stderr and continues.
-- **Rollback on scope-check abort (not auth failure).** Step 1 now
-  captures `ORIGINAL_STATE` and sets `MOVED_TO_DESIGN=1` only when
-  the transition actually succeeds. Step 10's project scope check
-  (substep 2) uses these to roll back the `In Design` transition before
-  stopping, so an out-of-scope issue is not left stranded in a
-  non-dispatchable state. The rollback is only issued when `MOVED_TO_DESIGN`
-  is set — which is not the case when the issue is already in `In Design`
-  at invocation time (re-running `/ralph-spec` to continue an open
-  dialogue is legitimate). This design comes from an adversarial codex
-  review finding on ENG-273: "restore $ORIGINAL_STATE on abort" alone
-  is unsafe for reruns; the `MOVED_TO_DESIGN` sentinel makes the
-  per-invocation semantics explicit.
+- **Rollback on scope-check abort (not auth failure).** If step 1
+  successfully transitions the issue to `In Design`, the skill records
+  that fact and the original state in Claude's conversation context (not
+  a shell variable — step 1 and step 10 run in separate bash invocations
+  and shell state does not persist between them). Step 10's project scope
+  check uses this noted context to roll the issue back to its original
+  state before stopping, so an out-of-scope issue is not left stranded in
+  a non-dispatchable state. The rollback only applies when the step-1
+  transition actually succeeded — if the `linear issue update` call failed
+  or the issue was already in `In Design` at invocation time (re-run case),
+  no rollback happens. This design resolves an adversarial codex review
+  finding from ENG-273: "restore ORIGINAL_STATE on abort" alone is unsafe
+  for reruns; tracking whether THIS invocation performed the transition
+  (in Claude's noted context) makes the per-invocation semantics explicit
+  without relying on shell variable persistence.
 - States outside `{Todo, Backlog, Triage}` get their existing step 10
   preflight treatment with no early transition. In particular, an
   issue already in `In Design` is left in `In Design`; an issue

@@ -79,22 +79,20 @@ digraph ralph_spec {
 
 **Understanding the idea:**
 
-- If `ISSUE_ID` is set, start by reading its current description — that's the user's framing before the dialogue refines it. Then, before asking any questions, source `defaults.sh` and transition the issue to `$CLAUDE_PLUGIN_OPTION_DESIGN_STATE` if it is in an idle state (`Todo`, `Backlog`, or `Triage`). This is best-effort — log and continue on failure. Capture `ORIGINAL_STATE` before the transition and set `MOVED_TO_DESIGN=1` only when the transition actually succeeds; step 10's scope-check abort uses these to roll back rather than strand the issue in `In Design`:
+- If `ISSUE_ID` is set, start by reading its current description — that's the user's framing before the dialogue refines it. Then, before asking any questions, source `defaults.sh` and transition the issue to `$CLAUDE_PLUGIN_OPTION_DESIGN_STATE` if it is in an idle state (`Todo`, `Backlog`, or `Triage`). This is best-effort — log and continue on failure. **Track whether this invocation performed the transition** (not as a shell variable — step 1 and step 10 run in separate bash invocations — but as a noted fact in your task tracking or conversation context): note the original state and whether the `linear issue update` call succeeded. Step 10's scope-check abort uses this context to roll back rather than strand the issue in `In Design`. For re-runs where the issue is already in `In Design`, no transition happens, so there is nothing to roll back.
 
   ```bash
   source "$CLAUDE_PLUGIN_ROOT/skills/ralph-start/scripts/lib/defaults.sh"
 
   if [ -n "${ISSUE_ID:-}" ]; then
     STATE=$(linear issue view "$ISSUE_ID" --json | jq -r '.state.name')
-    ORIGINAL_STATE="$STATE"
 
     case "$STATE" in
       Todo|Backlog|Triage)
-        if linear issue update "$ISSUE_ID" --state "$CLAUDE_PLUGIN_OPTION_DESIGN_STATE"; then
-          MOVED_TO_DESIGN=1
-        else
-          echo "ralph-spec: failed to transition $ISSUE_ID to '$CLAUDE_PLUGIN_OPTION_DESIGN_STATE'; continuing with dialogue" >&2
-        fi
+        # If update succeeds, note: "transitioned $ISSUE_ID from $STATE to In Design"
+        # If update fails, note: "transition failed, continuing"
+        linear issue update "$ISSUE_ID" --state "$CLAUDE_PLUGIN_OPTION_DESIGN_STATE" \
+          || echo "ralph-spec: failed to transition $ISSUE_ID to '$CLAUDE_PLUGIN_OPTION_DESIGN_STATE'; continuing with dialogue" >&2
         ;;
     esac
   fi
@@ -218,7 +216,7 @@ Branch on `$STATE` before running anything below. Use the state names the plugin
 Then validate `$ISSUE_PROJECT` against `$RALPH_PROJECTS`:
 
 - **In `$RALPH_PROJECTS`**: proceed.
-- **Not in `$RALPH_PROJECTS`**: stop. `/ralph-start` queries only in-scope projects to build its queue, so an Approved out-of-scope issue is *invisible* to the dispatcher — not flagged as an anomaly, just never picked up. If `$MOVED_TO_DESIGN` is set (this invocation transitioned the issue from an idle state to `In Design`), roll it back to `$ORIGINAL_STATE` first so the issue doesn't strand in a non-dispatchable state: `linear issue update "$ISSUE_ID" --state "$ORIGINAL_STATE" 2>/dev/null || true`. Then ask the user to either move the issue to an in-scope project first (`linear issue update "$ISSUE_ID" --project "<name>"`) or widen `.ralph.json`. Do not finalize until one of those lands.
+- **Not in `$RALPH_PROJECTS`**: stop. `/ralph-start` queries only in-scope projects to build its queue, so an Approved out-of-scope issue is *invisible* to the dispatcher — not flagged as an anomaly, just never picked up. If you noted in step 1 that this invocation successfully transitioned the issue to `In Design` from an idle state, roll it back to the original state first so it doesn't strand in a non-dispatchable state: `linear issue update "$ISSUE_ID" --state "<original-state>" 2>/dev/null || true` (use the original state name you noted, e.g. `Todo`). If no transition happened in step 1 (the issue was already in `In Design`, or the update call failed), skip the rollback. Then ask the user to either move the issue to an in-scope project first (`linear issue update "$ISSUE_ID" --project "<name>"`) or widen `.ralph.json`. Do not finalize until one of those lands.
 
 Only after state and project checks both pass (and the user has confirmed any warnings) may you move on to step 3.
 
