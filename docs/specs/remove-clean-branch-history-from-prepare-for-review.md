@@ -27,6 +27,12 @@ the heading and the two rationale paragraphs that follow it. Normal
 markdown spacing (one blank line between sections) between the
 preceding and following sections is preserved.
 
+Also update the Companion skills section:
+
+- Remove the `clean-branch-history — folds fixups into logical commits (Step 4)` line.
+- Change "Steps 1-5 expect the following skills to be installed and discoverable"
+  → "Steps 1, 2, 3, and 5 expect the following skills to be installed and discoverable".
+
 ### Edit 2 — promote Step 3.5 → Step 4
 
 The current "Step 3.5: Commit doc/decisions changes" step moves up to
@@ -94,23 +100,27 @@ These do not need changes and must NOT be edited:
 
 The following files/places are explicitly excluded:
 
-- `agent-config/skills/clean-branch-history/SKILL.md` — the skill
-  itself. Stays, callable manually.
-- `agent-config/superpowers-overrides/finishing-a-development-branch/SKILL.md`
+- `clean-branch-history` skill — lives in chezmoi
+  (`agent-config/skills/clean-branch-history/SKILL.md`), not this plugin
+  repo. Stays unchanged; still callable manually.
+- chezmoi `agent-config/superpowers-overrides/finishing-a-development-branch/SKILL.md`
   — the Step 1b invocation. This override is being retired in favor of
   ralph v2 (`/prepare-for-review` + `/close-feature-branch`); investing
   in it is wasted effort.
-- `agent-config/docs/specs/2026-04-22-autonomous-approval-gates-design.md`
+- chezmoi `agent-config/docs/specs/2026-04-22-autonomous-approval-gates-design.md`
   line 177 — parenthetical mention of `clean-branch-history` in a
   completed implementation plan (ENG-230). Historical record, not live
   guidance.
-- `agent-config/docs/playbooks/superpowers-patches.md` — documents the
+- chezmoi `agent-config/docs/playbooks/superpowers-patches.md` — documents the
   `finishing-a-development-branch` override, which isn't changing.
-- `agent-config/docs/decisions/2026-04-22-trunk-detection-block-duplication.md`
+- chezmoi `agent-config/docs/decisions/2026-04-22-trunk-detection-block-duplication.md`
   — decision log record.
-- `agent-config/docs/specs/2026-04-24-sensible-ralph-plugin-extraction.md`
+- chezmoi `agent-config/docs/specs/2026-04-24-sensible-ralph-plugin-extraction.md`
   — lists `clean-branch-history` among skills to extract to the plugin.
   Still correct: the skill moves to the plugin regardless of this change.
+- Other skills in this plugin (`close-issue`, `ralph-implement`, `ralph-spec`,
+  `ralph-start`) — none reference `clean-branch-history` or the step
+  numbering changed here.
 
 ## Verification
 
