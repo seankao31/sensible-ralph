@@ -12,7 +12,8 @@ When `docs/specs/ralph-scope-model-design.md` was moved to
 returned matches in four frozen spec files beyond the migration spec
 itself: `relocate-orchestrator-artifacts.md`,
 `restructure-plugin-wide-shell-helpers.md`, `rename-to-sensible-ralph.md`,
-and `ralph-loop-v2-design.md`. The ENG-278 PRD called for zero grep
+and `ralph-loop-v2-design.md`. The migration spec
+(`docs/specs/persistent-design-doc-layer.md`) called for zero grep
 results, but only counted on 0–1 substantive cross-refs.
 
 ## Decision

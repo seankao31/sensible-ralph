@@ -13,8 +13,6 @@ A single hardcoded `project` field bakes in a single-scope assumption that doesn
 2. **Concurrent sessions across repos.** Running `/ralph-start` in one repo while another session runs in a different repo should not produce collisions on `progress.json`, `ordered_queue.txt`, or worktree paths.
 3. **Auto-detect scope from cwd.** Invoking `/ralph-start` from a repo should resolve its scope from the repo itself, not from a hand-maintained global setting that drifts with "which repo am I standing in."
 
-ENG-203 attempted a narrower slice — cross-project blockers within one initiative — which this design subsumes.
-
 ## Non-goals (YAGNI)
 
 Explicit exclusions, each with rationale so future-us doesn't re-open them without reason:
@@ -126,7 +124,7 @@ Already returns all blockers regardless of project membership (via GraphQL `inve
 
 **Chain runnability (`preflight_scan.sh::_chain_runnable`, `build_queue.sh`):**
 
-Today: an `Approved` blocker is runnable only if its ID is in this run's approved set. Cross-project Approved blockers fail this check and the issue is reported stuck — the ENG-203 pain point.
+Today: an `Approved` blocker is runnable only if its ID is in this run's approved set. Cross-project Approved blockers fail this check and the issue is reported stuck.
 
 New: the membership check widens. An `Approved` blocker is runnable if it is in the approved set (which now spans `RALPH_PROJECTS`). A blocker whose project is *outside* the scope remains stuck; the error message changes from "blocker not in this project" to "blocker in project `<name>`, outside this run's scope — add to `.ralph.json` or resolve the relationship."
 
@@ -143,11 +141,11 @@ New: the membership check widens. An `Approved` blocker is runnable if it is in 
 
 ### 5. Concurrent cross-repo sessions are safe by construction
 
-ENG-205 asks whether `progress.json` should become `progress-<run_id>.json` or move to a scope-keyed state directory. Neither is necessary:
+A natural question: should `progress.json` become `progress-<run_id>.json` or move to a scope-keyed state directory to avoid cross-repo collisions? Neither is necessary:
 
 | Resource | Location | Why two-repo concurrency is safe |
 |---|---|---|
-| `progress.json` | Orchestrator cwd, anchored to repo root by `_resolve_repo_root` (ENG-202) | Two repos → two different parents → disjoint files |
+| `progress.json` | Orchestrator cwd, anchored to repo root by `_resolve_repo_root` | Two repos → two different parents → disjoint files |
 | `ordered_queue.txt` | Caller's cwd (currently not anchored via `_resolve_repo_root`; the implementation should anchor it to the repo root for consistency with `progress.json`) | Two repos → disjoint files when each session is invoked from its repo root |
 | `.worktrees/<branch>` | `<repo>/.worktrees/<branch>` via `worktree_path_for_issue` | Two repos → disjoint trees |
 | Linear state writes | Keyed by issue ID (unique workspace-wide) | No collision by construction |
