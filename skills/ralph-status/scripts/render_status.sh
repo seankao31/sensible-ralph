@@ -8,17 +8,17 @@
 
 set -euo pipefail
 
-# Source ralph-start libs from the bundled skill — same pattern close-issue
-# and ralph-spec use. CLAUDE_PLUGIN_ROOT is exported by the Claude Code
-# harness whenever the sensible-ralph plugin is enabled.
+# Source plugin-wide libs from $CLAUDE_PLUGIN_ROOT/lib/ and ralph-start's
+# worktree helper from its scripts/lib/. CLAUDE_PLUGIN_ROOT is exported by
+# the Claude Code harness whenever the sensible-ralph plugin is enabled.
 if [[ -z "${CLAUDE_PLUGIN_ROOT:-}" ]]; then
   echo "ralph-status: \$CLAUDE_PLUGIN_ROOT not set (sensible-ralph plugin not enabled?)" >&2
   exit 1
 fi
 # shellcheck source=../../ralph-start/scripts/lib/worktree.sh
 source "$CLAUDE_PLUGIN_ROOT/skills/ralph-start/scripts/lib/worktree.sh"
-# shellcheck source=../../ralph-start/scripts/lib/defaults.sh
-source "$CLAUDE_PLUGIN_ROOT/skills/ralph-start/scripts/lib/defaults.sh"
+# shellcheck source=../../../lib/defaults.sh
+source "$CLAUDE_PLUGIN_ROOT/lib/defaults.sh"
 
 # Repo root resolution must use _resolve_repo_root (not git rev-parse
 # --show-toplevel) — the latter returns the linked-worktree path when

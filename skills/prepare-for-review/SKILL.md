@@ -32,7 +32,7 @@ If any of these is missing at invocation time, skip the step with a brief note a
 Before running any state-name comparisons, source the plugin's defaults lib so `$CLAUDE_PLUGIN_OPTION_REVIEW_STATE`, `$CLAUDE_PLUGIN_OPTION_IN_PROGRESS_STATE`, etc. are populated even if the user skipped the enable-time config dialog:
 
 ```bash
-source "$CLAUDE_PLUGIN_ROOT/skills/ralph-start/scripts/lib/defaults.sh"
+source "$CLAUDE_PLUGIN_ROOT/lib/defaults.sh"
 ```
 
 ## Determine the Linear issue ID

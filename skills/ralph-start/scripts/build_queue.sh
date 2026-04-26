@@ -19,9 +19,10 @@ set -euo pipefail
 # and a warning is emitted to stderr.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
 
-# shellcheck source=lib/defaults.sh
-source "$SCRIPT_DIR/lib/defaults.sh"
+# shellcheck source=../../../lib/defaults.sh
+source "$PLUGIN_ROOT/lib/defaults.sh"
 
 # Auto-source scope unless the load marker matches THIS invocation's repo +
 # scope-file content. See orchestrator.sh for rationale.
@@ -30,13 +31,13 @@ RESOLVED_SCOPE_HASH=""
 if [[ -n "$RESOLVED_REPO_ROOT" && -f "$RESOLVED_REPO_ROOT/.ralph.json" ]]; then
   RESOLVED_SCOPE_HASH="$(shasum -a 1 < "$RESOLVED_REPO_ROOT/.ralph.json" | awk '{print $1}')"
 fi
-# shellcheck source=lib/linear.sh
-source "$SCRIPT_DIR/lib/linear.sh"
+# shellcheck source=../../../lib/linear.sh
+source "$PLUGIN_ROOT/lib/linear.sh"
 
 EXPECTED_SCOPE_LOADED="${RESOLVED_REPO_ROOT}|${RESOLVED_SCOPE_HASH}"
 if [[ "${RALPH_SCOPE_LOADED:-}" != "$EXPECTED_SCOPE_LOADED" ]]; then
-  # shellcheck source=lib/scope.sh
-  source "$SCRIPT_DIR/lib/scope.sh"
+  # shellcheck source=../../../lib/scope.sh
+  source "$PLUGIN_ROOT/lib/scope.sh"
 fi
 
 # Check whether a project name (exact match, whole line) is in RALPH_PROJECTS.

@@ -15,6 +15,11 @@ AUTONOMOUS_PREAMBLE="$SCRIPT_DIR/autonomous-preamble.md"
 setup() {
   STUB_DIR="$(cd "$(mktemp -d)" && pwd -P)"
   export STUB_DIR
+  # $STUB_DIR doubles as the stub plugin root. Moved libs (defaults.sh,
+  # linear.sh) live under $STUB_DIR/lib/; ralph-start-only worktree.sh stays
+  # under $STUB_DIR/scripts/lib/, where $SCRIPT_DIR/lib/worktree.sh resolves
+  # when orchestrator.sh runs from $STUB_DIR/scripts/.
+  export CLAUDE_PLUGIN_ROOT="$STUB_DIR"
 
   REPO_DIR="$(cd "$(mktemp -d)" && pwd -P)"
   export REPO_DIR
@@ -53,19 +58,23 @@ setup() {
   export STUB_LINEAR_CALLS_FILE="$STUB_DIR/linear_calls"
   : > "$STUB_LINEAR_CALLS_FILE"
 
-  # Stub layout: $STUB_DIR/scripts/{orchestrator.sh,dag_base.sh,lib/{linear.sh,worktree.sh}}
+  # Stub layout:
+  #   $STUB_DIR/lib/{defaults,linear}.sh               — moved plugin-wide libs
+  #   $STUB_DIR/scripts/{orchestrator,dag_base}.sh     — entry-point scripts
+  #   $STUB_DIR/scripts/lib/worktree.sh                — ralph-start-only lib
+  mkdir -p "$STUB_DIR/lib"
   mkdir -p "$STUB_DIR/scripts/lib"
   cp "$ORCH_SH" "$STUB_DIR/scripts/orchestrator.sh"
   # Real worktree.sh — we want real git worktree operations
   cp "$WORKTREE_SH" "$STUB_DIR/scripts/lib/worktree.sh"
-  # defaults.sh is sourced by orchestrator.sh at startup for CLAUDE_PLUGIN_OPTION_* fallbacks
-  cp "$SCRIPT_DIR/lib/defaults.sh" "$STUB_DIR/scripts/lib/defaults.sh"
+  # defaults.sh is sourced from $CLAUDE_PLUGIN_ROOT/lib for CLAUDE_PLUGIN_OPTION_* fallbacks
+  cp "$SCRIPT_DIR/../../../lib/defaults.sh" "$STUB_DIR/lib/defaults.sh"
   # orchestrator.sh prepends this file to the claude -p prompt
   cp "$AUTONOMOUS_PREAMBLE" "$STUB_DIR/scripts/autonomous-preamble.md"
 
   # Fake lib/linear.sh driven by env vars / fixture files.
   # Also records every call (function + args) to $STUB_LINEAR_CALLS_FILE.
-  cat > "$STUB_DIR/scripts/lib/linear.sh" <<'LINEARSH'
+  cat > "$STUB_DIR/lib/linear.sh" <<'LINEARSH'
 # Fake lib/linear.sh for orchestrator tests.
 #
 # Data sources (all optional; default to benign values):

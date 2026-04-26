@@ -82,7 +82,7 @@ digraph ralph_spec {
 - If `ISSUE_ID` is set, start by reading its current description — that's the user's framing before the dialogue refines it. Then, before asking any questions, source `defaults.sh` and transition the issue to `$CLAUDE_PLUGIN_OPTION_DESIGN_STATE` if it is in an idle state (`Todo`, `Backlog`, or `Triage`). This is best-effort — log and continue on failure. **Track whether this invocation performed the transition** (not as a shell variable — step 1 and step 10 run in separate bash invocations — but as a noted fact in your task tracking or conversation context): note the original state and whether the `linear issue update` call succeeded. Step 10's scope-check abort uses this context to roll back rather than strand the issue in `In Design`. For re-runs where the issue is already in `In Design`, no transition happens, so there is nothing to roll back.
 
   ```bash
-  source "$CLAUDE_PLUGIN_ROOT/skills/ralph-start/scripts/lib/defaults.sh"
+  source "$CLAUDE_PLUGIN_ROOT/lib/defaults.sh"
 
   if [ -n "${ISSUE_ID:-}" ]; then
     STATE=$(linear issue view "$ISSUE_ID" --json | jq -r '.state.name')
@@ -164,12 +164,12 @@ Terminal step. Run substeps in order. Steps 1-2 are mandatory preflight gates �
 
 **Shell note:** the snippets below share state across blocks (`RALPH_PROJECTS`, `STATE`, `PRIOR`, `ISSUE_ID`, `linear_get_issue_blockers`, …), so the whole finalization must run in a **single** shell session — not per-snippet `bash -c` calls, which spawn a fresh subshell each time and lose that state. Run them in one continuous session (any shell — `lib/scope.sh` is portable between bash 3.2+ and zsh).
 
-### 1. Load ralph-start's scope loader
+### 1. Load the plugin's scope loader
 
-Workflow state-name values (`CLAUDE_PLUGIN_OPTION_APPROVED_STATE` etc.) are already exported by the Claude Code plugin harness from the plugin's userConfig — no source call needed for them. What we DO need to source is ralph-start's `linear.sh` (for the `linear_get_issue_blockers` helper used in step 5) and `scope.sh` (which parses the repo's `.ralph.json` and exports `RALPH_PROJECTS`):
+Workflow state-name values (`CLAUDE_PLUGIN_OPTION_APPROVED_STATE` etc.) are already exported by the Claude Code plugin harness from the plugin's userConfig — no source call needed for them. What we DO need to source is the plugin's `linear.sh` (for the `linear_get_issue_blockers` helper used in step 5) and `scope.sh` (which parses the repo's `.ralph.json` and exports `RALPH_PROJECTS`). Both live in the plugin's top-level `lib/` directory.
 
 ```bash
-# Reuse ralph-start's own loaders so behavior doesn't drift.
+# Reuse the plugin's own loaders so behavior doesn't drift.
 # defaults.sh applies CLAUDE_PLUGIN_OPTION_* fallbacks — the plugin
 # harness may skip populating them when the user didn't walk the
 # enable-time config dialog, so the shell-side `:=` assignments keep
@@ -180,12 +180,12 @@ Workflow state-name values (`CLAUDE_PLUGIN_OPTION_APPROVED_STATE` etc.) are alre
 #   CLAUDE_PLUGIN_OPTION_* — workflow state/label/path defaults
 # And these helpers become callable:
 #   linear_get_issue_blockers — used in step 5 for blocker verification
-source "$CLAUDE_PLUGIN_ROOT/skills/ralph-start/scripts/lib/defaults.sh"
-source "$CLAUDE_PLUGIN_ROOT/skills/ralph-start/scripts/lib/linear.sh" || {
+source "$CLAUDE_PLUGIN_ROOT/lib/defaults.sh"
+source "$CLAUDE_PLUGIN_ROOT/lib/linear.sh" || {
   echo "ralph-spec: failed to source linear.sh — \$CLAUDE_PLUGIN_ROOT may be unset (sensible-ralph plugin not enabled?). Re-enable the plugin and re-run." >&2
   exit 1
 }
-source "$CLAUDE_PLUGIN_ROOT/skills/ralph-start/scripts/lib/scope.sh" || {
+source "$CLAUDE_PLUGIN_ROOT/lib/scope.sh" || {
   echo "ralph-spec: failed to load scope. Fix \$(git rev-parse --show-toplevel)/.ralph.json and re-run." >&2
   exit 1
 }

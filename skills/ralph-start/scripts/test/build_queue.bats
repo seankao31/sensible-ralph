@@ -9,8 +9,9 @@ BUILD_QUEUE_SH="$SCRIPT_DIR/build_queue.sh"
 TOPOSORT_SH="$SCRIPT_DIR/toposort.sh"
 
 setup() {
-  STUB_DIR="$(mktemp -d)"
-  export STUB_DIR
+  STUB_PLUGIN_ROOT="$(mktemp -d)"
+  export STUB_PLUGIN_ROOT
+  export CLAUDE_PLUGIN_ROOT="$STUB_PLUGIN_ROOT"
 
   export RALPH_PROJECTS="Agent Config"
   export CLAUDE_PLUGIN_OPTION_APPROVED_STATE="Approved"
@@ -21,8 +22,11 @@ setup() {
   export STUB_APPROVED_IDS=""
   export STUB_PRIORITY_DEFAULT=2
 
-  mkdir -p "$STUB_DIR/lib"
-  cat > "$STUB_DIR/lib/linear.sh" <<'LINEARSH'
+  # Stub plugin root layout: shared libs under lib/, build_queue.sh under
+  # skills/ralph-start/scripts/.
+  mkdir -p "$STUB_PLUGIN_ROOT/lib"
+  mkdir -p "$STUB_PLUGIN_ROOT/skills/ralph-start/scripts"
+  cat > "$STUB_PLUGIN_ROOT/lib/linear.sh" <<'LINEARSH'
 linear_list_approved_issues() {
   printf '%s' "$STUB_APPROVED_IDS"
 }
@@ -36,7 +40,7 @@ LINEARSH
 
   # Stub `linear` for the priority lookup (build_queue calls
   # `linear issue view <id> --json --no-comments | jq -r '.priority'`).
-  cat > "$STUB_DIR/linear" <<'STUBLINEAR'
+  cat > "$STUB_PLUGIN_ROOT/linear" <<'STUBLINEAR'
 #!/usr/bin/env bash
 issue_id=""
 for arg in "$@"; do
@@ -46,8 +50,8 @@ var_name="STUB_PRIORITY_$(printf '%s' "$issue_id" | tr '-' '_')"
 priority="${!var_name:-${STUB_PRIORITY_DEFAULT:-2}}"
 printf '{"priority": %s}' "$priority"
 STUBLINEAR
-  chmod +x "$STUB_DIR/linear"
-  export PATH="$STUB_DIR:$PATH"
+  chmod +x "$STUB_PLUGIN_ROOT/linear"
+  export PATH="$STUB_PLUGIN_ROOT:$PATH"
 
   # Marker setup — script's auto-source gate is "<repo-root>|<scope-hash>".
   local _repo_root _scope_hash
@@ -58,13 +62,13 @@ STUBLINEAR
   fi
   export RALPH_SCOPE_LOADED="$_repo_root|$_scope_hash"
 
-  cp "$BUILD_QUEUE_SH" "$STUB_DIR/build_queue.sh"
-  cp "$TOPOSORT_SH" "$STUB_DIR/toposort.sh"
-  cp "$SCRIPT_DIR/lib/defaults.sh" "$STUB_DIR/lib/defaults.sh"
+  cp "$BUILD_QUEUE_SH" "$STUB_PLUGIN_ROOT/skills/ralph-start/scripts/build_queue.sh"
+  cp "$TOPOSORT_SH" "$STUB_PLUGIN_ROOT/skills/ralph-start/scripts/toposort.sh"
+  cp "$SCRIPT_DIR/../../../lib/defaults.sh" "$STUB_PLUGIN_ROOT/lib/defaults.sh"
 }
 
 teardown() {
-  rm -rf "$STUB_DIR"
+  rm -rf "$STUB_PLUGIN_ROOT"
 }
 
 # ---------------------------------------------------------------------------
@@ -73,7 +77,7 @@ teardown() {
 @test "no approved issues outputs nothing and exits 0" {
   export STUB_APPROVED_IDS=""
 
-  run bash "$STUB_DIR/build_queue.sh"
+  run bash "$STUB_PLUGIN_ROOT/skills/ralph-start/scripts/build_queue.sh"
 
   [ "$status" -eq 0 ]
   [ -z "$output" ]
@@ -86,7 +90,7 @@ teardown() {
   export STUB_APPROVED_IDS="ENG-1"
   export STUB_BLOCKERS_ENG_1="[]"
 
-  run bash "$STUB_DIR/build_queue.sh"
+  run bash "$STUB_PLUGIN_ROOT/skills/ralph-start/scripts/build_queue.sh"
 
   [ "$status" -eq 0 ]
   [ "$output" = "ENG-1" ]
@@ -105,7 +109,7 @@ ENG-3"
   export STUB_BLOCKERS_ENG_2="[]"
   export STUB_BLOCKERS_ENG_3='[{"id":"ENG-2","state":"Approved","branch":"eng-2"}]'
 
-  run bash "$STUB_DIR/build_queue.sh"
+  run bash "$STUB_PLUGIN_ROOT/skills/ralph-start/scripts/build_queue.sh"
 
   [ "$status" -eq 0 ]
   # Both must be emitted; parent (ENG-2) before child (ENG-3)
@@ -126,7 +130,7 @@ ENG-3"
   export STUB_APPROVED_IDS="ENG-4"
   export STUB_BLOCKERS_ENG_4='[{"id":"ENG-99","state":"Todo","branch":"eng-99"}]'
 
-  run bash "$STUB_DIR/build_queue.sh"
+  run bash "$STUB_PLUGIN_ROOT/skills/ralph-start/scripts/build_queue.sh"
 
   [ "$status" -eq 0 ]
   ! [[ "$output" == *"ENG-4"* ]]
@@ -140,7 +144,7 @@ ENG-3"
   export STUB_APPROVED_IDS="ENG-5"
   export STUB_BLOCKERS_ENG_5='[{"id":"ENG-50","state":"In Review","branch":"eng-50"}]'
 
-  run bash "$STUB_DIR/build_queue.sh"
+  run bash "$STUB_PLUGIN_ROOT/skills/ralph-start/scripts/build_queue.sh"
 
   [ "$status" -eq 0 ]
   [ "$output" = "ENG-5" ]
@@ -159,7 +163,7 @@ ENG-3"
   export STUB_APPROVED_IDS="ENG-6"
   export STUB_BLOCKERS_ENG_6='[{"id":"ENG-99","state":"Approved","branch":"eng-99","project":"Agent Config"}]'
 
-  run bash "$STUB_DIR/build_queue.sh"
+  run bash "$STUB_PLUGIN_ROOT/skills/ralph-start/scripts/build_queue.sh"
 
   [ "$status" -eq 0 ]
   ! [[ "$output" == *"ENG-6"* ]]
@@ -183,7 +187,7 @@ ENG-3"
   export STUB_APPROVED_IDS="ENG-6"
   export STUB_BLOCKERS_ENG_6='[{"id":"ENG-99","state":"Approved","branch":"eng-99","project":"Machine Config"}]'
 
-  run bash "$STUB_DIR/build_queue.sh"
+  run bash "$STUB_PLUGIN_ROOT/skills/ralph-start/scripts/build_queue.sh"
 
   [ "$status" -eq 0 ]
   ! [[ "$output" == *"ENG-6"* ]]   # ENG-6 not emitted on stdout
