@@ -73,6 +73,8 @@ Rule 3 is what makes overnight execution of dependency chains possible: an Appro
 
 Implementation lives in `skills/sr-start/scripts/preflight_scan.sh` (`_chain_runnable`) and the queue-construction layer in `lib/linear.sh` (`linear_list_approved_issues`). Pre-flight catches the "stuck chain" cases before the orchestrator is invoked; the orchestrator itself does not re-evaluate pickup-readiness mid-run because toposort + the parent-runs-first invariant guarantees rule 3 holds at each child's dispatch time.
 
+For the full preflight anomaly set, pickup-filter implementation details, and the pre-existing-blocker vs. in-run-queue distinction, see [`docs/design/preflight-and-pickup.md`](preflight-and-pickup.md).
+
 ## Why Canceled blockers don't count as resolved
 
 A natural shortcut: "if the parent was canceled, the child no longer has anything to wait on, so dispatch the child." Sensible-ralph rejects this. Cancellation is a judgment call — someone decided the parent was not worth doing — and that judgment may have invalidated the child's premise too. Silently dispatching the child substitutes the orchestrator's reading of "blocker resolved" for the operator's read of "what does this dependency relationship even mean now."
