@@ -176,11 +176,15 @@ runs the following sequence.
    - If no match or near-match: proceed.
 4. For each non-skipped team, validate the **position layout**:
    - Locate `Todo` and `Approved` states. If either is missing: abort.
-   - Verify `Todo.position == 1` and `Approved.position == 1.5`
-     (the canonical layout this spec assumes). If diverged: abort.
-   - Compute `position = (Todo.position + Approved.position) / 2`
-     = `1.25`. Verify no existing state sits at `1.25`: if collision,
-     abort with a clear message.
+   - Verify `Todo.position < Approved.position` (Approved must sort
+     after Todo within the team's state list). If diverged: abort.
+   - Compute a **candidate** `position = (Todo.position + Approved.position) / 2`.
+     This is only a hint passed to Linear; the API may rebalance and
+     assign a different final value. Phase 3 verification checks the
+     resulting relative ordering, not any exact numeric value, so the
+     two teams can have very different position scales (e.g. ENG runs
+     on tight fractions, GAM on large integers) and both work without
+     normalization.
 5. **If any team's preflight fails or near-match is found, abort the
    entire run — do not mutate any team.** Report which teams passed and
    which failed and why. This ensures no partial state is created:
@@ -201,7 +205,8 @@ runs the following sequence.
    - `name`: `"In Design"` (literal, from `$CLAUDE_PLUGIN_OPTION_DESIGN_STATE`)
    - `type`: `"unstarted"`
    - `color`: cloned from this team's `Approved` state
-   - `position`: `1.25` (computed in preflight)
+   - `position`: the candidate value computed in preflight (this is
+     only a hint — see step 7 below)
    - `description`: `"Interactive design/spec session in progress (e.g. /ralph-spec)."`
 
    If creation fails mid-run (network/API error after creating on some
@@ -211,12 +216,25 @@ runs the following sequence.
    idempotency guard (exact-match case in step 3); teams that don't
    will retry.
 
+7. **Post-create position fix-up.** `workflowStateCreate` does not
+   reliably honor the `position` hint — on some teams it appends the
+   new state at the end of its `type` group regardless of the
+   requested value (observed empirically: ENG honored `1.25`, GAM
+   instead returned `4044.78` for a requested `1000`). For each
+   newly-created state, read back its position; if it does **not**
+   satisfy `Todo.position < InDesign.position < Approved.position`,
+   issue a `workflowStateUpdate` with the candidate position from
+   step 4. `workflowStateUpdate` does honor the position field
+   reliably. Re-read after update and abort if it still fails.
+
 **Phase 3 — Verify.**
 
-7. Re-query both teams and assert `In Design` is present with
-   `type: "unstarted"` and `Todo.position < 1.25 < Approved.position`.
-   If verification fails for either team, leave a Linear comment and
-   exit clean.
+8. Re-query both teams and assert `In Design` is present with
+   `type: "unstarted"` and `Todo.position < InDesign.position <
+   Approved.position`. The exact `InDesign.position` value is whatever
+   Linear assigned (post-fix-up) — only the relative ordering is
+   verified. If verification fails for either team, leave a Linear
+   comment and exit clean.
 
 **Reversibility:** if the state needs to be removed, archive via
 `workflowStateArchive(id: <state-id>)`. Not automated; documented here
@@ -332,13 +350,14 @@ None. This issue stands alone — it depends on existing ralph plumbing
 - Color and position picked at creation time can be adjusted later in
   the Linear UI without breaking anything: the autonomous session
   reads state names, not colors or positions.
-- **Operator precondition for GAM:** GAM's workflow position layout
-  was found to drift from ENG's (`Todo=0`, `Blocked=1000`,
-  `Approved=2000` instead of ENG's `1`, `1.75`, `1.5`). That drift is
-  being remediated **before** this issue dispatches via a separate
-  prompt-driven session. By the time the autonomous run begins, both
-  teams should share `Todo=1`, `Approved=1.5`, `Blocked=1.75`. The
-  position-computation guard above (fail-loud on layout divergence)
-  exists so that if the precondition isn't satisfied, the autonomous
-  session reports the mismatch instead of placing `In Design` in a
-  surprising slot.
+- **`workflowStateCreate` does not reliably honor `position`;
+  `workflowStateUpdate` does.** Empirically, `create` on ENG honored
+  the requested `1.25`, but on GAM the same shape of call appended the
+  new state at the end of the unstarted group (returned `4044.78` for
+  a requested `1000`). A follow-up `workflowStateUpdate` to `1000` was
+  honored exactly. The spec only requires the relative ordering
+  `Todo < In Design < Approved` to hold once the run finishes — step 7
+  reconciles the position via `workflowStateUpdate` if `create` placed
+  the state outside that range. This also means the two teams can
+  keep their existing position scales (ENG's tight fractions, GAM's
+  large integers) without any prior normalization.
