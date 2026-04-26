@@ -5,6 +5,7 @@
 # dispatch.
 /.ralph/
 /.worktrees/
+/.ralph-base-sha
 ralph-output.log
 /.ralph-base-sha
 
