@@ -36,9 +36,14 @@ invocation occurs and the issue lands as `skipped` directly.
 | `unknown_post_state` | `exit_code == 0` AND post-dispatch state fetch failed transiently | **no** | **no** | Open the issue in Linear. If state is `In Review`, treat as success (no `ralph-failed` was applied). If still `In Progress`, treat as a soft failure and re-queue. |
 | `skipped` | Issue's transitive ancestor failed earlier in this run; orchestrator never dispatched it | no | no (descendants were already tainted by the originating failure) | Resolve the failed ancestor first; the skipped issue becomes pickup-ready again on the next `/sr-start`. |
 
-`local_residue` and `unknown_post_state` are the only outcomes where a
-session-shaped event leaves Linear untouched. The rationale for that
-deliberate restraint is below.
+`local_residue` is the only outcome where Linear is left completely
+untouched — the orchestrator never dispatched the issue and made no
+state transitions. `unknown_post_state` is different: Linear was already
+mutated (the issue was transitioned to `In Progress` during setup, and
+the session may have advanced it to `In Review`); what `unknown_post_state`
+deliberately skips is the *additional* `ralph-failed` label write and
+descendant taint. The rationale for skipping those additional writes is
+below.
 
 ## Why exit 0 alone does not imply success
 
@@ -53,9 +58,14 @@ If the orchestrator classified by exit code alone, an autonomous-mode
 escape hatch (or any other clean refusal) would be indistinguishable from
 a real success. The post-dispatch Linear state is the second signal that
 collapses the ambiguity: `exit 0 + In Review` is the only success
-configuration. Every other `exit 0` outcome — `exit_clean_no_review` —
-gets `ralph-failed` and taints descendants, the same treatment as a hard
-exit-code failure.
+configuration. For any other `exit 0` outcome, the classification
+branches on whether the post-dispatch state fetch succeeded:
+
+- **State fetched successfully but not `In Review`** → `exit_clean_no_review`:
+  applies `ralph-failed` and taints descendants, the same treatment as a
+  hard exit-code failure.
+- **State fetch failed transiently** → `unknown_post_state`: no additional
+  label or taint — see the `unknown_post_state` rationale below.
 
 ## Why `local_residue` deliberately leaves Linear untouched
 
