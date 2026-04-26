@@ -16,7 +16,7 @@ setup() {
   STUB_DIR="$(cd "$(mktemp -d)" && pwd -P)"
   export STUB_DIR
   # $STUB_DIR doubles as the stub plugin root. Moved libs (defaults.sh,
-  # linear.sh) live under $STUB_DIR/lib/; ralph-start-only worktree.sh stays
+  # linear.sh) live under $STUB_DIR/lib/; sr-start-only worktree.sh stays
   # under $STUB_DIR/scripts/lib/, where $SCRIPT_DIR/lib/worktree.sh resolves
   # when orchestrator.sh runs from $STUB_DIR/scripts/.
   export CLAUDE_PLUGIN_ROOT="$STUB_DIR"
@@ -28,9 +28,9 @@ setup() {
   git -C "$REPO_DIR" config user.name "t"
   git -C "$REPO_DIR" commit --allow-empty -m "init" -q
 
-  # Env vars the plugin harness exports from userConfig. RALPH_PROJECTS is
+  # Env vars the plugin harness exports from userConfig. SENSIBLE_RALPH_PROJECTS is
   # the per-repo scope var (from lib/scope.sh, not userConfig).
-  export RALPH_PROJECTS="Test Project"
+  export SENSIBLE_RALPH_PROJECTS="Test Project"
   export CLAUDE_PLUGIN_OPTION_APPROVED_STATE="Approved"
   export CLAUDE_PLUGIN_OPTION_IN_PROGRESS_STATE="In Progress"
   export CLAUDE_PLUGIN_OPTION_REVIEW_STATE="In Review"
@@ -43,14 +43,14 @@ setup() {
   # loading scope.sh. The orchestrator is invoked with cwd=REPO_DIR so
   # repo-root resolves to that.
   local _scope_hash=""
-  if [[ -f "$REPO_DIR/.ralph.json" ]]; then
-    _scope_hash="$(shasum -a 1 < "$REPO_DIR/.ralph.json" | awk '{print $1}')"
+  if [[ -f "$REPO_DIR/.sensible-ralph.json" ]]; then
+    _scope_hash="$(shasum -a 1 < "$REPO_DIR/.sensible-ralph.json" | awk '{print $1}')"
   fi
-  export RALPH_SCOPE_LOADED="$REPO_DIR|$_scope_hash"
-  # ENG-214: orchestrator's INTEGRATION path reads RALPH_DEFAULT_BASE_BRANCH
+  export SENSIBLE_RALPH_SCOPE_LOADED="$REPO_DIR|$_scope_hash"
+  # ENG-214: orchestrator's INTEGRATION path reads SENSIBLE_RALPH_DEFAULT_BASE_BRANCH
   # (formerly hardcoded to "main"). With the marker bypass above, scope.sh
   # is never sourced, so tests must export the trunk explicitly.
-  export RALPH_DEFAULT_BASE_BRANCH="main"
+  export SENSIBLE_RALPH_DEFAULT_BASE_BRANCH="main"
 
   # Claude invocation capture + state-transition trace
   export STUB_CLAUDE_ARGS_FILE="$STUB_DIR/claude_args"
@@ -61,7 +61,7 @@ setup() {
   # Stub layout:
   #   $STUB_DIR/lib/{defaults,linear}.sh               — moved plugin-wide libs
   #   $STUB_DIR/scripts/{orchestrator,dag_base}.sh     — entry-point scripts
-  #   $STUB_DIR/scripts/lib/worktree.sh                — ralph-start-only lib
+  #   $STUB_DIR/scripts/lib/worktree.sh                — sr-start-only lib
   mkdir -p "$STUB_DIR/lib"
   mkdir -p "$STUB_DIR/scripts/lib"
   cp "$ORCH_SH" "$STUB_DIR/scripts/orchestrator.sh"
@@ -227,15 +227,15 @@ run_orch_from() {
   run bash -c "cd '$cwd' && '$STUB_DIR/scripts/orchestrator.sh' '$queue_file'"
 }
 
-# Read $REPO_DIR/.ralph/progress.json records (jq-friendly).
+# Read $REPO_DIR/.sensible-ralph/progress.json records (jq-friendly).
 progress_json() {
-  cat "$REPO_DIR/.ralph/progress.json"
+  cat "$REPO_DIR/.sensible-ralph/progress.json"
 }
 
 # ---------------------------------------------------------------------------
 # 1. Clean single-issue success: exit 0 + state transitions to In Review
 # ---------------------------------------------------------------------------
-@test "single issue success: outcome=in_review, .ralph-base-sha present, Linear set to In Progress" {
+@test "single issue success: outcome=in_review, .sensible-ralph-base-sha present, Linear set to In Progress" {
   export STUB_CLAUDE_EXIT=0
   export STUB_CLAUDE_TRANSITION_STATE="In Review"
   export STUB_CLAUDE_ISSUE_ID="ENG-10"
@@ -252,49 +252,49 @@ progress_json() {
   # Linear state was set to In Progress at dispatch
   grep -qF "set_state ENG-10 In Progress" "$STUB_LINEAR_CALLS_FILE"
 
-  # Worktree exists; .ralph-base-sha is present and is a 40-char hex SHA
+  # Worktree exists; .sensible-ralph-base-sha is present and is a 40-char hex SHA
   local wt_path="$REPO_DIR/.worktrees/eng-10"
   [ -d "$wt_path" ]
-  [ -f "$wt_path/.ralph-base-sha" ]
-  local sha; sha="$(cat "$wt_path/.ralph-base-sha")"
+  [ -f "$wt_path/.sensible-ralph-base-sha" ]
+  local sha; sha="$(cat "$wt_path/.sensible-ralph-base-sha")"
   [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
 
-  # claude was invoked with /ralph-implement as the dispatch prompt. The
+  # claude was invoked with /sr-implement as the dispatch prompt. The
   # orchestrator prepends the autonomous-mode preamble (which contains
   # non-ASCII bytes — em-dashes) and a blank line. printf '%q' on the
   # resulting multi-line arg wraps it in $'...' form where internal spaces
   # are NOT backslash-escaped. BSD grep in a UTF-8 locale silently refuses
   # to match when a file contains invalid UTF-8; LC_ALL=C forces byte-
   # oriented matching, and -a forces text mode.
-  LC_ALL=C grep -qaF '/ralph-implement ENG-10' "$STUB_CLAUDE_ARGS_FILE"
+  LC_ALL=C grep -qaF '/sr-implement ENG-10' "$STUB_CLAUDE_ARGS_FILE"
 
   # progress.json has exactly two records — one start, one end (in_review)
-  [ -f "$REPO_DIR/.ralph/progress.json" ]
-  local count; count="$(jq 'length' < "$REPO_DIR/.ralph/progress.json")"
+  [ -f "$REPO_DIR/.sensible-ralph/progress.json" ]
+  local count; count="$(jq 'length' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$count" -eq 2 ]
 
   # Start record (index 0): event=start, issue/branch/base/timestamp/run_id populated
-  local start_event; start_event="$(jq -r '.[0].event' < "$REPO_DIR/.ralph/progress.json")"
+  local start_event; start_event="$(jq -r '.[0].event' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$start_event" = "start" ]
-  local start_issue; start_issue="$(jq -r '.[0].issue' < "$REPO_DIR/.ralph/progress.json")"
+  local start_issue; start_issue="$(jq -r '.[0].issue' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$start_issue" = "ENG-10" ]
-  local start_branch; start_branch="$(jq -r '.[0].branch' < "$REPO_DIR/.ralph/progress.json")"
+  local start_branch; start_branch="$(jq -r '.[0].branch' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$start_branch" = "eng-10" ]
-  local start_base; start_base="$(jq -r '.[0].base' < "$REPO_DIR/.ralph/progress.json")"
+  local start_base; start_base="$(jq -r '.[0].base' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$start_base" = "main" ]
-  local start_ts; start_ts="$(jq -r '.[0].timestamp' < "$REPO_DIR/.ralph/progress.json")"
+  local start_ts; start_ts="$(jq -r '.[0].timestamp' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [[ "$start_ts" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
-  local start_run; start_run="$(jq -r '.[0].run_id' < "$REPO_DIR/.ralph/progress.json")"
+  local start_run; start_run="$(jq -r '.[0].run_id' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [[ "$start_run" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
 
   # End record (index 1): event=end, outcome=in_review, same issue/run_id
-  local end_event; end_event="$(jq -r '.[1].event' < "$REPO_DIR/.ralph/progress.json")"
+  local end_event; end_event="$(jq -r '.[1].event' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$end_event" = "end" ]
-  local outcome; outcome="$(jq -r '.[1].outcome' < "$REPO_DIR/.ralph/progress.json")"
+  local outcome; outcome="$(jq -r '.[1].outcome' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$outcome" = "in_review" ]
-  local end_issue; end_issue="$(jq -r '.[1].issue' < "$REPO_DIR/.ralph/progress.json")"
+  local end_issue; end_issue="$(jq -r '.[1].issue' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$end_issue" = "ENG-10" ]
-  local end_run; end_run="$(jq -r '.[1].run_id' < "$REPO_DIR/.ralph/progress.json")"
+  local end_run; end_run="$(jq -r '.[1].run_id' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$end_run" = "$start_run" ]
 }
 
@@ -339,11 +339,11 @@ CLAUDESH
   [ "$invocations" -eq 3 ]
 
   # 3 start + 3 end records = 6 total
-  local count; count="$(jq 'length' < "$REPO_DIR/.ralph/progress.json")"
+  local count; count="$(jq 'length' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$count" -eq 6 ]
-  local in_review_count; in_review_count="$(jq '[.[] | select(.event == "end" and .outcome == "in_review")] | length' < "$REPO_DIR/.ralph/progress.json")"
+  local in_review_count; in_review_count="$(jq '[.[] | select(.event == "end" and .outcome == "in_review")] | length' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$in_review_count" -eq 3 ]
-  local start_count; start_count="$(jq '[.[] | select(.event == "start")] | length' < "$REPO_DIR/.ralph/progress.json")"
+  local start_count; start_count="$(jq '[.[] | select(.event == "start")] | length' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$start_count" -eq 3 ]
 }
 
@@ -363,9 +363,9 @@ CLAUDESH
   grep -qF "add_label ENG-20 ralph-failed" "$STUB_LINEAR_CALLS_FILE"
 
   # progress.json end record: outcome=failed with exit_code=7
-  local outcome; outcome="$(jq -r '.[] | select(.issue == "ENG-20" and .event == "end") | .outcome' < "$REPO_DIR/.ralph/progress.json")"
+  local outcome; outcome="$(jq -r '.[] | select(.issue == "ENG-20" and .event == "end") | .outcome' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$outcome" = "failed" ]
-  local exit_code; exit_code="$(jq -r '.[] | select(.issue == "ENG-20" and .event == "end") | .exit_code' < "$REPO_DIR/.ralph/progress.json")"
+  local exit_code; exit_code="$(jq -r '.[] | select(.issue == "ENG-20" and .event == "end") | .exit_code' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$exit_code" = "7" ]
 }
 
@@ -383,7 +383,7 @@ CLAUDESH
 
   grep -qF "add_label ENG-30 ralph-failed" "$STUB_LINEAR_CALLS_FILE"
 
-  local outcome; outcome="$(jq -r '.[] | select(.issue == "ENG-30" and .event == "end") | .outcome' < "$REPO_DIR/.ralph/progress.json")"
+  local outcome; outcome="$(jq -r '.[] | select(.issue == "ENG-30" and .event == "end") | .outcome' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$outcome" = "exit_clean_no_review" ]
 }
 
@@ -410,11 +410,11 @@ CLAUDESH
   ! grep -qF "ENG-41:" "$STUB_CLAUDE_ARGS_FILE"
 
   # progress.json: ENG-40 (start + end:failed), ENG-41 (end:skipped only — never dispatched)
-  local end_records; end_records="$(jq '[.[] | select(.event == "end")] | length' < "$REPO_DIR/.ralph/progress.json")"
+  local end_records; end_records="$(jq '[.[] | select(.event == "end")] | length' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$end_records" -eq 2 ]
-  local eng40_outcome; eng40_outcome="$(jq -r '.[] | select(.issue == "ENG-40" and .event == "end") | .outcome' < "$REPO_DIR/.ralph/progress.json")"
+  local eng40_outcome; eng40_outcome="$(jq -r '.[] | select(.issue == "ENG-40" and .event == "end") | .outcome' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$eng40_outcome" = "failed" ]
-  local eng41_outcome; eng41_outcome="$(jq -r '.[] | select(.issue == "ENG-41" and .event == "end") | .outcome' < "$REPO_DIR/.ralph/progress.json")"
+  local eng41_outcome; eng41_outcome="$(jq -r '.[] | select(.issue == "ENG-41" and .event == "end") | .outcome' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$eng41_outcome" = "skipped" ]
 }
 
@@ -435,7 +435,7 @@ CLAUDESH
   local invocations; invocations="$(wc -l < "$STUB_CLAUDE_ARGS_FILE" | tr -d ' ')"
   [ "$invocations" -eq 1 ]
 
-  local eng51_outcome; eng51_outcome="$(jq -r '.[] | select(.issue == "ENG-51" and .event == "end") | .outcome' < "$REPO_DIR/.ralph/progress.json")"
+  local eng51_outcome; eng51_outcome="$(jq -r '.[] | select(.issue == "ENG-51" and .event == "end") | .outcome' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$eng51_outcome" = "skipped" ]
 }
 
@@ -477,9 +477,9 @@ CLAUDESH
   local invocations; invocations="$(wc -l < "$STUB_CLAUDE_ARGS_FILE" | tr -d ' ')"
   [ "$invocations" -eq 2 ]
 
-  local eng60_outcome; eng60_outcome="$(jq -r '.[] | select(.issue == "ENG-60" and .event == "end") | .outcome' < "$REPO_DIR/.ralph/progress.json")"
+  local eng60_outcome; eng60_outcome="$(jq -r '.[] | select(.issue == "ENG-60" and .event == "end") | .outcome' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$eng60_outcome" = "failed" ]
-  local eng61_outcome; eng61_outcome="$(jq -r '.[] | select(.issue == "ENG-61" and .event == "end") | .outcome' < "$REPO_DIR/.ralph/progress.json")"
+  local eng61_outcome; eng61_outcome="$(jq -r '.[] | select(.issue == "ENG-61" and .event == "end") | .outcome' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$eng61_outcome" = "in_review" ]
 }
 
@@ -501,9 +501,9 @@ CLAUDESH
   local invocations; invocations="$(wc -l < "$STUB_CLAUDE_ARGS_FILE" | tr -d ' ')"
   [ "$invocations" -eq 1 ]
 
-  local eng71_outcome; eng71_outcome="$(jq -r '.[] | select(.issue == "ENG-71" and .event == "end") | .outcome' < "$REPO_DIR/.ralph/progress.json")"
+  local eng71_outcome; eng71_outcome="$(jq -r '.[] | select(.issue == "ENG-71" and .event == "end") | .outcome' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$eng71_outcome" = "skipped" ]
-  local eng72_outcome; eng72_outcome="$(jq -r '.[] | select(.issue == "ENG-72" and .event == "end") | .outcome' < "$REPO_DIR/.ralph/progress.json")"
+  local eng72_outcome; eng72_outcome="$(jq -r '.[] | select(.issue == "ENG-72" and .event == "end") | .outcome' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$eng72_outcome" = "skipped" ]
 }
 
@@ -541,13 +541,13 @@ CLAUDESH
   [ -d "$wt_path" ]
   [ -f "$wt_path/a.txt" ]
   [ -f "$wt_path/b.txt" ]
-  [ -f "$wt_path/.ralph-base-sha" ]
+  [ -f "$wt_path/.sensible-ralph-base-sha" ]
 }
 
 # ---------------------------------------------------------------------------
-# 10. P1: integration base records main's SHA (NOT post-merge HEAD) in .ralph-base-sha
+# 10. P1: integration base records main's SHA (NOT post-merge HEAD) in .sensible-ralph-base-sha
 # ---------------------------------------------------------------------------
-@test "integration base records main's SHA in .ralph-base-sha, not post-merge HEAD" {
+@test "integration base records main's SHA in .sensible-ralph-base-sha, not post-merge HEAD" {
   export STUB_CLAUDE_EXIT=0
   export STUB_CLAUDE_TRANSITION_STATE="In Review"
 
@@ -559,7 +559,7 @@ CLAUDESH
   git -C "$REPO_DIR" commit -m "parent a" -q
   git -C "$REPO_DIR" checkout main -q
 
-  # Capture main's SHA now — this is what .ralph-base-sha should contain.
+  # Capture main's SHA now — this is what .sensible-ralph-base-sha should contain.
   local main_sha; main_sha="$(git -C "$REPO_DIR" rev-parse main)"
 
   export STUB_DAG_BASE_ENG_91="INTEGRATION eng-90-parent-a"
@@ -571,9 +571,9 @@ CLAUDESH
   [ "$status" -eq 0 ]
 
   local wt_path="$REPO_DIR/.worktrees/eng-91"
-  [ -f "$wt_path/.ralph-base-sha" ]
+  [ -f "$wt_path/.sensible-ralph-base-sha" ]
 
-  local recorded_sha; recorded_sha="$(cat "$wt_path/.ralph-base-sha")"
+  local recorded_sha; recorded_sha="$(cat "$wt_path/.sensible-ralph-base-sha")"
   local post_merge_sha; post_merge_sha="$(git -C "$wt_path" rev-parse HEAD)"
 
   # The recorded SHA must equal main's SHA (branch creation point)
@@ -645,16 +645,16 @@ CLAUDESH
 
   # progress.json: ENG-100 (end:local_residue), ENG-101 (start + end:in_review),
   # ENG-102 (start + end:in_review) = 3 end records, 2 start records.
-  local end_records; end_records="$(jq '[.[] | select(.event == "end")] | length' < "$REPO_DIR/.ralph/progress.json")"
+  local end_records; end_records="$(jq '[.[] | select(.event == "end")] | length' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$end_records" -eq 3 ]
 
-  local eng100_outcome; eng100_outcome="$(jq -r '.[] | select(.issue == "ENG-100" and .event == "end") | .outcome' < "$REPO_DIR/.ralph/progress.json")"
+  local eng100_outcome; eng100_outcome="$(jq -r '.[] | select(.issue == "ENG-100" and .event == "end") | .outcome' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$eng100_outcome" = "local_residue" ]
 
-  local eng101_outcome; eng101_outcome="$(jq -r '.[] | select(.issue == "ENG-101" and .event == "end") | .outcome' < "$REPO_DIR/.ralph/progress.json")"
+  local eng101_outcome; eng101_outcome="$(jq -r '.[] | select(.issue == "ENG-101" and .event == "end") | .outcome' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$eng101_outcome" = "in_review" ]
 
-  local eng102_outcome; eng102_outcome="$(jq -r '.[] | select(.issue == "ENG-102" and .event == "end") | .outcome' < "$REPO_DIR/.ralph/progress.json")"
+  local eng102_outcome; eng102_outcome="$(jq -r '.[] | select(.issue == "ENG-102" and .event == "end") | .outcome' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$eng102_outcome" = "in_review" ]
 }
 
@@ -703,10 +703,10 @@ CLAUDESH
   [ "$invocations" -eq 1 ]
   grep -qF "ENG-111" "$STUB_CLAUDE_ARGS_FILE"
 
-  local eng110_outcome; eng110_outcome="$(jq -r '.[] | select(.issue == "ENG-110" and .event == "end") | .outcome' < "$REPO_DIR/.ralph/progress.json")"
+  local eng110_outcome; eng110_outcome="$(jq -r '.[] | select(.issue == "ENG-110" and .event == "end") | .outcome' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$eng110_outcome" = "setup_failed" ]
 
-  local eng111_outcome; eng111_outcome="$(jq -r '.[] | select(.issue == "ENG-111" and .event == "end") | .outcome' < "$REPO_DIR/.ralph/progress.json")"
+  local eng111_outcome; eng111_outcome="$(jq -r '.[] | select(.issue == "ENG-111" and .event == "end") | .outcome' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$eng111_outcome" = "in_review" ]
 }
 
@@ -754,14 +754,14 @@ CLAUDESH
   local invocations; invocations="$(wc -l < "$STUB_CLAUDE_ARGS_FILE" | tr -d ' ')"
   [ "$invocations" -eq 3 ]
 
-  local end_records; end_records="$(jq '[.[] | select(.event == "end")] | length' < "$REPO_DIR/.ralph/progress.json")"
+  local end_records; end_records="$(jq '[.[] | select(.event == "end")] | length' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$end_records" -eq 3 ]
 
-  local eng120_outcome; eng120_outcome="$(jq -r '.[] | select(.issue == "ENG-120" and .event == "end") | .outcome' < "$REPO_DIR/.ralph/progress.json")"
+  local eng120_outcome; eng120_outcome="$(jq -r '.[] | select(.issue == "ENG-120" and .event == "end") | .outcome' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$eng120_outcome" = "in_review" ]
-  local eng121_outcome; eng121_outcome="$(jq -r '.[] | select(.issue == "ENG-121" and .event == "end") | .outcome' < "$REPO_DIR/.ralph/progress.json")"
+  local eng121_outcome; eng121_outcome="$(jq -r '.[] | select(.issue == "ENG-121" and .event == "end") | .outcome' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$eng121_outcome" = "in_review" ]
-  local eng122_outcome; eng122_outcome="$(jq -r '.[] | select(.issue == "ENG-122" and .event == "end") | .outcome' < "$REPO_DIR/.ralph/progress.json")"
+  local eng122_outcome; eng122_outcome="$(jq -r '.[] | select(.issue == "ENG-122" and .event == "end") | .outcome' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$eng122_outcome" = "in_review" ]
 
   # A warning was emitted to stderr for the skipped map build
@@ -793,11 +793,11 @@ CLAUDESH
   [ ! -d "$REPO_DIR/.worktrees/null" ]
 
   # progress.json records setup_failed with step=missing_branch_name
-  local event; event="$(jq -r '.[0].event' < "$REPO_DIR/.ralph/progress.json")"
+  local event; event="$(jq -r '.[0].event' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$event" = "end" ]
-  local outcome; outcome="$(jq -r '.[0].outcome' < "$REPO_DIR/.ralph/progress.json")"
+  local outcome; outcome="$(jq -r '.[0].outcome' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$outcome" = "setup_failed" ]
-  local step; step="$(jq -r '.[0].failed_step' < "$REPO_DIR/.ralph/progress.json")"
+  local step; step="$(jq -r '.[0].failed_step' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$step" = "missing_branch_name" ]
 
   # ralph-failed label was added
@@ -825,11 +825,11 @@ CLAUDESH
   [ "$invocations" -eq 0 ]
 
   # progress.json records setup_failed with step=linear_set_state
-  local event; event="$(jq -r '.[0].event' < "$REPO_DIR/.ralph/progress.json")"
+  local event; event="$(jq -r '.[0].event' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$event" = "end" ]
-  local outcome; outcome="$(jq -r '.[0].outcome' < "$REPO_DIR/.ralph/progress.json")"
+  local outcome; outcome="$(jq -r '.[0].outcome' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$outcome" = "setup_failed" ]
-  local step; step="$(jq -r '.[0].failed_step' < "$REPO_DIR/.ralph/progress.json")"
+  local step; step="$(jq -r '.[0].failed_step' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$step" = "linear_set_state" ]
 
   # The worktree directory was removed so a re-run can recreate it
@@ -890,18 +890,18 @@ CLAUDESH
   [ "$invocations" -eq 2 ]
 
   # ENG-150: state-fetch failure -> unknown_post_state, NO label, NO taint
-  local eng150_outcome; eng150_outcome="$(jq -r '.[] | select(.issue == "ENG-150" and .event == "end") | .outcome' < "$REPO_DIR/.ralph/progress.json")"
+  local eng150_outcome; eng150_outcome="$(jq -r '.[] | select(.issue == "ENG-150" and .event == "end") | .outcome' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$eng150_outcome" = "unknown_post_state" ]
   ! grep -qF "add_label ENG-150 ralph-failed" "$STUB_LINEAR_CALLS_FILE"
 
   # ENG-150 end record carries dispatch metadata (branch, base, exit_code, duration)
-  local eng150_branch; eng150_branch="$(jq -r '.[] | select(.issue == "ENG-150" and .event == "end") | .branch' < "$REPO_DIR/.ralph/progress.json")"
+  local eng150_branch; eng150_branch="$(jq -r '.[] | select(.issue == "ENG-150" and .event == "end") | .branch' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$eng150_branch" = "eng-150" ]
-  local eng150_exit; eng150_exit="$(jq -r '.[] | select(.issue == "ENG-150" and .event == "end") | .exit_code' < "$REPO_DIR/.ralph/progress.json")"
+  local eng150_exit; eng150_exit="$(jq -r '.[] | select(.issue == "ENG-150" and .event == "end") | .exit_code' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$eng150_exit" = "0" ]
 
   # ENG-151: normal in_review path still works
-  local eng151_outcome; eng151_outcome="$(jq -r '.[] | select(.issue == "ENG-151" and .event == "end") | .outcome' < "$REPO_DIR/.ralph/progress.json")"
+  local eng151_outcome; eng151_outcome="$(jq -r '.[] | select(.issue == "ENG-151" and .event == "end") | .outcome' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$eng151_outcome" = "in_review" ]
 
   # Warning was emitted for the state-fetch failure
@@ -947,11 +947,11 @@ CLAUDESH
   [ "$status" -eq 0 ]
 
   # ENG-150 -> unknown_post_state
-  local eng150_outcome; eng150_outcome="$(jq -r '.[] | select(.issue == "ENG-150" and .event == "end") | .outcome' < "$REPO_DIR/.ralph/progress.json")"
+  local eng150_outcome; eng150_outcome="$(jq -r '.[] | select(.issue == "ENG-150" and .event == "end") | .outcome' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$eng150_outcome" = "unknown_post_state" ]
 
   # ENG-152 was NOT skipped — it dispatched normally
-  local eng152_outcome; eng152_outcome="$(jq -r '.[] | select(.issue == "ENG-152" and .event == "end") | .outcome' < "$REPO_DIR/.ralph/progress.json")"
+  local eng152_outcome; eng152_outcome="$(jq -r '.[] | select(.issue == "ENG-152" and .event == "end") | .outcome' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$eng152_outcome" != "skipped" ]
   local invocations; invocations="$(wc -l < "$STUB_CLAUDE_ARGS_FILE" | tr -d ' ')"
   [ "$invocations" -eq 2 ]
@@ -999,11 +999,11 @@ CLAUDESH
   [ "$invocations" -eq 2 ]
 
   # ENG-160 still recorded as failed, even though labeling errored
-  local eng160_outcome; eng160_outcome="$(jq -r '.[] | select(.issue == "ENG-160" and .event == "end") | .outcome' < "$REPO_DIR/.ralph/progress.json")"
+  local eng160_outcome; eng160_outcome="$(jq -r '.[] | select(.issue == "ENG-160" and .event == "end") | .outcome' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$eng160_outcome" = "failed" ]
 
   # ENG-161 unaffected
-  local eng161_outcome; eng161_outcome="$(jq -r '.[] | select(.issue == "ENG-161" and .event == "end") | .outcome' < "$REPO_DIR/.ralph/progress.json")"
+  local eng161_outcome; eng161_outcome="$(jq -r '.[] | select(.issue == "ENG-161" and .event == "end") | .outcome' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$eng161_outcome" = "in_review" ]
 
   # Warning was emitted for the failed label call
@@ -1043,11 +1043,11 @@ CLAUDESH
   [ "$invocations" -eq 0 ]
 
   # progress.json records setup_failed with step=worktree_create_with_integration
-  local event; event="$(jq -r '.[0].event' < "$REPO_DIR/.ralph/progress.json")"
+  local event; event="$(jq -r '.[0].event' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$event" = "end" ]
-  local outcome; outcome="$(jq -r '.[0].outcome' < "$REPO_DIR/.ralph/progress.json")"
+  local outcome; outcome="$(jq -r '.[0].outcome' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$outcome" = "setup_failed" ]
-  local step; step="$(jq -r '.[0].failed_step' < "$REPO_DIR/.ralph/progress.json")"
+  local step; step="$(jq -r '.[0].failed_step' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$step" = "worktree_create_with_integration" ]
 
   # The partial worktree directory was cleaned up
@@ -1093,11 +1093,11 @@ CLAUDESH
   [ "$invocations" -eq 0 ]
 
   # progress.json records local_residue with the residue path and branch
-  local event; event="$(jq -r '.[0].event' < "$REPO_DIR/.ralph/progress.json")"
+  local event; event="$(jq -r '.[0].event' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$event" = "end" ]
-  local outcome; outcome="$(jq -r '.[0].outcome' < "$REPO_DIR/.ralph/progress.json")"
+  local outcome; outcome="$(jq -r '.[0].outcome' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$outcome" = "local_residue" ]
-  local residue_branch; residue_branch="$(jq -r '.[0].residue_branch' < "$REPO_DIR/.ralph/progress.json")"
+  local residue_branch; residue_branch="$(jq -r '.[0].residue_branch' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$residue_branch" = "eng-180" ]
 
   # Linear was NOT mutated — no add_label call, no set_state call
@@ -1141,11 +1141,11 @@ CLAUDESH
   [ "$invocations" -eq 0 ]
 
   # progress.json records local_residue with the residue path
-  local event; event="$(jq -r '.[0].event' < "$REPO_DIR/.ralph/progress.json")"
+  local event; event="$(jq -r '.[0].event' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$event" = "end" ]
-  local outcome; outcome="$(jq -r '.[0].outcome' < "$REPO_DIR/.ralph/progress.json")"
+  local outcome; outcome="$(jq -r '.[0].outcome' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$outcome" = "local_residue" ]
-  local residue_path; residue_path="$(jq -r '.[0].residue_path' < "$REPO_DIR/.ralph/progress.json")"
+  local residue_path; residue_path="$(jq -r '.[0].residue_path' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$residue_path" = "$REPO_DIR/.worktrees/eng-190" ]
 
   # Linear was NOT mutated — no add_label call, no set_state call
@@ -1199,11 +1199,11 @@ CLAUDESH
   [ "$status" -eq 0 ]
 
   # ENG-191 -> local_residue
-  local eng191_outcome; eng191_outcome="$(jq -r '.[] | select(.issue == "ENG-191" and .event == "end") | .outcome' < "$REPO_DIR/.ralph/progress.json")"
+  local eng191_outcome; eng191_outcome="$(jq -r '.[] | select(.issue == "ENG-191" and .event == "end") | .outcome' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$eng191_outcome" = "local_residue" ]
 
   # ENG-192 was NOT skipped — taint did not propagate
-  local eng192_outcome; eng192_outcome="$(jq -r '.[] | select(.issue == "ENG-192" and .event == "end") | .outcome' < "$REPO_DIR/.ralph/progress.json")"
+  local eng192_outcome; eng192_outcome="$(jq -r '.[] | select(.issue == "ENG-192" and .event == "end") | .outcome' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$eng192_outcome" != "skipped" ]
 }
 
@@ -1242,19 +1242,19 @@ CLAUDESH
   [ "$status" -eq 0 ]
 
   # 3 start + 3 end records = 6 total, all with the same run_id
-  local records; records="$(jq 'length' < "$REPO_DIR/.ralph/progress.json")"
+  local records; records="$(jq 'length' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$records" -eq 6 ]
 
   # Every record carries a non-empty run_id (start records included)
-  local null_run_ids; null_run_ids="$(jq '[.[] | select(.run_id == null or .run_id == "")] | length' < "$REPO_DIR/.ralph/progress.json")"
+  local null_run_ids; null_run_ids="$(jq '[.[] | select(.run_id == null or .run_id == "")] | length' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$null_run_ids" -eq 0 ]
 
   # All run_ids are identical within a single run
-  local distinct_run_ids; distinct_run_ids="$(jq '[.[].run_id] | unique | length' < "$REPO_DIR/.ralph/progress.json")"
+  local distinct_run_ids; distinct_run_ids="$(jq '[.[].run_id] | unique | length' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$distinct_run_ids" -eq 1 ]
 
   # run_id matches the ISO 8601 UTC format produced by date -u +%Y-%m-%dT%H:%M:%SZ
-  local sample; sample="$(jq -r '.[0].run_id' < "$REPO_DIR/.ralph/progress.json")"
+  local sample; sample="$(jq -r '.[0].run_id' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [[ "$sample" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
 }
 
@@ -1304,12 +1304,12 @@ CLAUDESH
   [ "$status" -eq 0 ]
 
   # Both runs' records are present: each dispatched issue contributes start+end = 4 total
-  local records; records="$(jq 'length' < "$REPO_DIR/.ralph/progress.json")"
+  local records; records="$(jq 'length' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$records" -eq 4 ]
 
   # Extract each issue's run_id from its end record (start record carries the same id)
-  local run_id_210; run_id_210="$(jq -r '.[] | select(.issue == "ENG-210" and .event == "end") | .run_id' < "$REPO_DIR/.ralph/progress.json")"
-  local run_id_211; run_id_211="$(jq -r '.[] | select(.issue == "ENG-211" and .event == "end") | .run_id' < "$REPO_DIR/.ralph/progress.json")"
+  local run_id_210; run_id_210="$(jq -r '.[] | select(.issue == "ENG-210" and .event == "end") | .run_id' < "$REPO_DIR/.sensible-ralph/progress.json")"
+  local run_id_211; run_id_211="$(jq -r '.[] | select(.issue == "ENG-211" and .event == "end") | .run_id' < "$REPO_DIR/.sensible-ralph/progress.json")"
 
   [ -n "$run_id_210" ]
   [ -n "$run_id_211" ]
@@ -1351,14 +1351,14 @@ CLAUDESH
   [ "$status" -eq 0 ]
 
   # progress.json exists; no progress.json.XXXXXX tmpfiles remain
-  [ -f "$REPO_DIR/.ralph/progress.json" ]
+  [ -f "$REPO_DIR/.sensible-ralph/progress.json" ]
   local leftover_count
-  leftover_count="$(find "$REPO_DIR/.ralph" -maxdepth 1 -name 'progress.json.*' -type f | wc -l | tr -d ' ')"
+  leftover_count="$(find "$REPO_DIR/.sensible-ralph" -maxdepth 1 -name 'progress.json.*' -type f | wc -l | tr -d ' ')"
   [ "$leftover_count" -eq 0 ]
 }
 
 # ---------------------------------------------------------------------------
-# 24. .ralph/progress.json must land under the repo root, not under $PWD.
+# 24. .sensible-ralph/progress.json must land under the repo root, not under $PWD.
 #     Invoking from a subdirectory or a linked worktree would otherwise bury
 #     the audit log in a transient location (linked worktrees are created
 #     and removed by ralph itself) and silently discard recovery state.
@@ -1376,11 +1376,11 @@ CLAUDESH
 
   [ "$status" -eq 0 ]
 
-  # .ralph/progress.json lives under the repo root, not in the invocation subdirectory
-  [ -f "$REPO_DIR/.ralph/progress.json" ]
-  [ ! -f "$subdir/.ralph/progress.json" ]
+  # .sensible-ralph/progress.json lives under the repo root, not in the invocation subdirectory
+  [ -f "$REPO_DIR/.sensible-ralph/progress.json" ]
+  [ ! -f "$subdir/.sensible-ralph/progress.json" ]
   # 1 start + 1 end record for a single dispatched issue
-  local count; count="$(jq 'length' < "$REPO_DIR/.ralph/progress.json")"
+  local count; count="$(jq 'length' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$count" -eq 2 ]
 }
 
@@ -1398,9 +1398,9 @@ CLAUDESH
 
   # Pre-populate progress.json with a valid prior-run record. The orchestrator
   # must not corrupt this when its own jq calls fail.
-  mkdir -p "$REPO_DIR/.ralph"
+  mkdir -p "$REPO_DIR/.sensible-ralph"
   local prior='[{"event":"end","issue":"ENG-PRIOR","outcome":"in_review","run_id":"2020-01-01T00:00:00Z"}]'
-  printf '%s' "$prior" > "$REPO_DIR/.ralph/progress.json"
+  printf '%s' "$prior" > "$REPO_DIR/.sensible-ralph/progress.json"
 
   # Stub jq to ALWAYS fail. The orchestrator will abort early (likely at the
   # first jq call — blocker count, record construction, etc.); the invariant
@@ -1417,12 +1417,12 @@ JQSH
   run_orch "$q" || true
 
   # progress.json content is unchanged
-  local current; current="$(cat "$REPO_DIR/.ralph/progress.json")"
+  local current; current="$(cat "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$current" = "$prior" ]
 
   # No partial tmpfiles linger
   local leftover_count
-  leftover_count="$(find "$REPO_DIR/.ralph" -maxdepth 1 -name 'progress.json.*' -type f | wc -l | tr -d ' ')"
+  leftover_count="$(find "$REPO_DIR/.sensible-ralph" -maxdepth 1 -name 'progress.json.*' -type f | wc -l | tr -d ' ')"
   [ "$leftover_count" -eq 0 ]
 
   # Restore real jq via the cleanup teardown (rm STUB_DIR removes the stub).
@@ -1431,5 +1431,5 @@ JQSH
   # reaching the real binary directly through `env -i`-style path manipulation.
   local real_jq; real_jq="$(PATH="${PATH#"$STUB_DIR":}" command -v jq)"
   [ -n "$real_jq" ]
-  "$real_jq" '.' < "$REPO_DIR/.ralph/progress.json" > /dev/null
+  "$real_jq" '.' < "$REPO_DIR/.sensible-ralph/progress.json" > /dev/null
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Workspace label existence preflight — shared between ralph-start's
+# Workspace label existence preflight — shared between sr-start's
 # preflight_scan.sh and the operator's close-issue ritual (applies
 # $CLAUDE_PLUGIN_OPTION_STALE_PARENT_LABEL to children whose parent was
 # amended after dispatch). Linear's `issue update --label` silently no-ops
@@ -99,7 +99,7 @@ preflight_labels_check() {
     for entry in "${missing[@]}"; do
       lv="${entry%%=*}"
       ln="${entry#*=}"
-      printf 'preflight: workspace label %q (configured as %s) does not exist in Linear. Create it once as a workspace-scoped label, or update plugin config to name an existing label. See skills/ralph-start/SKILL.md Prerequisites.\n' \
+      printf 'preflight: workspace label %q (configured as %s) does not exist in Linear. Create it once as a workspace-scoped label, or update plugin config to name an existing label. See skills/sr-start/SKILL.md Prerequisites.\n' \
         "$ln" "$lv" >&2
     done
     return 1

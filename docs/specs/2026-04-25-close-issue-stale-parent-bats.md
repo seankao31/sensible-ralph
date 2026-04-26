@@ -39,7 +39,7 @@ lifted to module level) that are necessary for the extraction.
 ### Files edited
 
 - `skills/close-issue/SKILL.md` — Step 3.5's inline bash block becomes a
-  single `close_issue_label_stale_children` call; the "Source ralph-start
+  single `close_issue_label_stale_children` call; the "Source sr-start
   libs" block adds one source line for the new lib. All Step 3.5 prose
   (opening "Ralph v2 dispatches multi-level DAGs…", the "Skip entirely if
   `$INTEGRATION_SHA` is empty" rationale, the "Known limitations" closing)
@@ -47,11 +47,11 @@ lifted to module level) that are necessary for the extraction.
 
 ### Not edited
 
-No edits to `skills/ralph-start/scripts/lib/*.sh`. Every helper Step 3.5
+No edits to `skills/sr-start/scripts/lib/*.sh`. Every helper Step 3.5
 calls (`linear_label_exists`, `linear_get_issue_blocks`, `linear_comment`,
 `linear_add_label`, `is_branch_fresh_vs_sha`, `list_commits_ahead`,
 `resolve_branch_for_issue`) is already defined as a sourceable function in
-ralph-start's libs. If the implementer believes a ralph-start change is
+sr-start's libs. If the implementer believes a sr-start change is
 needed, stop and surface — the design assumes none are.
 
 ## Design
@@ -81,9 +81,9 @@ New file `skills/close-issue/scripts/lib/stale_parent.sh`:
 # Sourced (not executed); do NOT call `set` or `exit` at top level.
 #
 # Dependencies (caller must source before invoking):
-#   - lib/linear.sh (ralph-start): linear_label_exists, linear_get_issue_blocks,
+#   - lib/linear.sh (sr-start): linear_label_exists, linear_get_issue_blocks,
 #     linear_comment, linear_add_label
-#   - lib/branch_ancestry.sh (ralph-start): is_branch_fresh_vs_sha,
+#   - lib/branch_ancestry.sh (sr-start): is_branch_fresh_vs_sha,
 #     list_commits_ahead, resolve_branch_for_issue
 #   - $CLAUDE_PLUGIN_OPTION_STALE_PARENT_LABEL
 #   - $CLAUDE_PLUGIN_OPTION_REVIEW_STATE
@@ -154,7 +154,7 @@ issue** — out of scope.
 
 ### SKILL.md edits
 
-**Source-block addition.** In the "Source ralph-start libs" section (the
+**Source-block addition.** In the "Source sr-start libs" section (the
 same section ENG-235's spec adds to), append:
 
 ```bash
@@ -186,9 +186,9 @@ explicitly cite both reference patterns:
 
 ```
 # Tests for skills/close-issue/scripts/lib/stale_parent.sh
-# Modeled after skills/ralph-start/scripts/test/orchestrator.bats —
+# Modeled after skills/sr-start/scripts/test/orchestrator.bats —
 # function-level stubbing via STUB_DIR mirrored layout. See linear.bats in
-# ralph-start for the alternative PATH-stub pattern (used when testing the
+# sr-start for the alternative PATH-stub pattern (used when testing the
 # helpers themselves rather than logic that consumes them).
 ```
 
@@ -242,7 +242,7 @@ explicitly cite both reference patterns:
    blocks JSON contains children in mixed states; assert only
    configured-state children get evaluated. Locks the jq filter to the env
    var (which the original ENG-236 description referred to as
-   `RALPH_REVIEW_STATE` — that name predates the `CLAUDE_PLUGIN_OPTION_*`
+   `SENSIBLE_RALPH_REVIEW_STATE` — that name predates the `CLAUDE_PLUGIN_OPTION_*`
    convention introduced in commit 258e2c2).
 8. **Simultaneous failures don't mask each other.** One stale child with
    comment-fail (rc=1), another with label-fail (rc=2), another with
@@ -310,17 +310,17 @@ acceptance criterion #1.
 ## Prerequisites
 
 - **`blocked-by` ENG-235** (Sensible Ralph project, in scope per
-  `.ralph.json`) — establishes the harness pattern and creates
+  `.sensible-ralph.json`) — establishes the harness pattern and creates
   `skills/close-issue/scripts/{lib,test}/`. Without it, this issue's added
   files have nowhere to land.
 
 ## Related (no blocking)
 
 - **ENG-208** (Agent Config) — historical motivation; the QA plan being
-  retired. Already `Done`. Out-of-scope per `.ralph.json`, but `related`
+  retired. Already `Done`. Out-of-scope per `.sensible-ralph.json`, but `related`
   doesn't trip the cross-project preflight.
 - **ENG-213** (Agent Config) — the `close-feature-branch` → `close-issue`
-  rename. Already `Done`. Out-of-scope per `.ralph.json` for the same reason
+  rename. Already `Done`. Out-of-scope per `.sensible-ralph.json` for the same reason
   as ENG-208.
 
 ## Notes for the autonomous implementer
@@ -330,10 +330,10 @@ acceptance criterion #1.
   the baseline passes locally. If it doesn't, stop and surface — the
   failure isn't yours.
 - The two patterns this spec invokes (PATH-stub and STUB_DIR mirrored
-  layout) are demonstrated in `skills/ralph-start/scripts/test/`. Read
+  layout) are demonstrated in `skills/sr-start/scripts/test/`. Read
   those files; do not invent new patterns.
-- Do not edit `skills/ralph-start/scripts/lib/*.sh`. If you believe a
-  ralph-start change is needed, stop and surface — the design assumes the
+- Do not edit `skills/sr-start/scripts/lib/*.sh`. If you believe a
+  sr-start change is needed, stop and surface — the design assumes the
   existing helpers cover everything Step 3.5 needs.
 - The "lifted verbatim" framing in Acceptance Criterion #6 is load-bearing:
   copy Step 3.5's body into the function and apply only the listed

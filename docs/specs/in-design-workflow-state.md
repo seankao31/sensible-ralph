@@ -8,8 +8,8 @@
 Add a new Linear workflow state, **"In Design"**, positioned between
 `Todo` and `Approved`. The state signals that a human has picked up an
 issue and is actively running an interactive design/spec session
-(typically `/ralph-spec`), distinct from autonomous implementation
-(`In Progress`, owned by `/ralph-start`).
+(typically `/sr-spec`), distinct from autonomous implementation
+(`In Progress`, owned by `/sr-start`).
 
 State machine after this change:
 
@@ -20,13 +20,13 @@ Todo → In Design → Approved → In Progress → In Review → Done
 ## Motivation
 
 Today an issue jumps from `Todo` directly to `Approved` when
-`/ralph-spec` finishes its dialogue. There is no board-level signal
+`/sr-spec` finishes its dialogue. There is no board-level signal
 that an interactive design session is in progress between those two
 states. Operators looking at Linear can't tell whether a `Todo` issue
 is genuinely idle or whether a human is mid-dialogue on it; running a
-second `/ralph-spec` against the same ticket is awkward to detect.
+second `/sr-spec` against the same ticket is awkward to detect.
 
-`In Progress` cannot fill this gap because `/ralph-start`'s queue
+`In Progress` cannot fill this gap because `/sr-start`'s queue
 builder treats `In Progress` as "autonomous implementation in flight";
 mixing the two semantics would break dispatch.
 
@@ -50,14 +50,14 @@ state-name entries:
 "design_state": {
   "type": "string",
   "title": "In-Design state name",
-  "description": "Linear workflow state while an interactive /ralph-spec session is open (default: In Design)",
+  "description": "Linear workflow state while an interactive /sr-spec session is open (default: In Design)",
   "default": "In Design"
 }
 ```
 
 Place it before `approved_state` to mirror the workflow order.
 
-### Edit 2 — `skills/ralph-start/scripts/lib/defaults.sh`
+### Edit 2 — `skills/sr-start/scripts/lib/defaults.sh`
 
 Add the shell-side default and export, mirroring the existing
 state-name defaults:
@@ -71,7 +71,7 @@ the export block. Update the file's comment block ("The defaults
 mirror the plugin.json userConfig defaults — update in lockstep") if
 needed; the new entry is part of that lockstep.
 
-### Edit 3 — `skills/ralph-spec/SKILL.md` step 1 (Resolve issue context)
+### Edit 3 — `skills/sr-spec/SKILL.md` step 1 (Resolve issue context)
 
 Currently step 1 reads:
 
@@ -92,7 +92,7 @@ if [ -n "${ISSUE_ID:-}" ]; then
     Todo|Backlog|Triage)
       linear issue update "$ISSUE_ID" \
         --state "$CLAUDE_PLUGIN_OPTION_DESIGN_STATE" \
-        || echo "ralph-spec: failed to transition $ISSUE_ID to '$CLAUDE_PLUGIN_OPTION_DESIGN_STATE'; continuing with dialogue" >&2
+        || echo "sr-spec: failed to transition $ISSUE_ID to '$CLAUDE_PLUGIN_OPTION_DESIGN_STATE'; continuing with dialogue" >&2
       ;;
   esac
 fi
@@ -131,7 +131,7 @@ Behavior notes:
   source it at the top of the skill's shell snippet, the same way
   step 10 does.
 
-### Edit 4 — `skills/ralph-spec/SKILL.md` step 10 substep 2 (Preflight)
+### Edit 4 — `skills/sr-spec/SKILL.md` step 10 substep 2 (Preflight)
 
 Update the preflight branching list. The current branches are:
 
@@ -220,7 +220,7 @@ runs the following sequence.
    - `color`: cloned from this team's `Approved` state
    - `position`: the candidate value computed in preflight (this is
      only a hint — see step 7 below)
-   - `description`: `"Interactive design/spec session in progress (e.g. /ralph-spec)."`
+   - `description`: `"Interactive design/spec session in progress (e.g. /sr-spec)."`
 
    If creation fails mid-run (network/API error after creating on some
    teams), leave a Linear comment on ENG-273 listing which teams
@@ -261,11 +261,11 @@ Explicitly excluded from this issue:
   Filed as a follow-up issue with `blocked-by ENG-273` so it picks up
   automatically once this lands. The chezmoi orchestrator's queue
   builder will skip the follow-up while ENG-273 is mid-flight (because
-  `Sensible Ralph` is not in chezmoi's `.ralph.json` scope) and pick it
+  `Sensible Ralph` is not in chezmoi's `.sensible-ralph.json` scope) and pick it
   up once ENG-273 reaches `In Review` or `Done` — that's the intended
   cross-project blocker behavior, not a bug.
-- `/ralph-start`, `/prepare-for-review`, `/close-issue`,
-  `/ralph-implement` skill markdown — none of them read or write the
+- `/sr-start`, `/prepare-for-review`, `/close-issue`,
+  `/sr-implement` skill markdown — none of them read or write the
   new state. `build_queue.sh` and `preflight_scan.sh` query for
   `Approved` only; `In Design` issues are deliberately not picked up
   by the orchestrator.
@@ -285,7 +285,7 @@ After the implementation lands, all of the following must hold:
    exits 0.
 2. `bash -c 'set -e; source lib/defaults.sh; printf "%s\n" "$CLAUDE_PLUGIN_OPTION_DESIGN_STATE"'`
    prints `In Design`.
-3. `grep -n "CLAUDE_PLUGIN_OPTION_DESIGN_STATE" skills/ralph-spec/SKILL.md`
+3. `grep -n "CLAUDE_PLUGIN_OPTION_DESIGN_STATE" skills/sr-spec/SKILL.md`
    shows the variable referenced in step 1 (the start-of-session
    transition) and in step 10's preflight list.
 4. For each of `ENG` and `GAM`, the GraphQL query
@@ -315,13 +315,13 @@ in the orchestrator scripts that changes here.
 ## Prerequisites
 
 None. This issue stands alone — it depends on existing ralph plumbing
-(`scope.sh`, `defaults.sh`, `/ralph-spec`) which is all in place.
+(`scope.sh`, `defaults.sh`, `/sr-spec`) which is all in place.
 
 ## Alternatives considered
 
 1. **Single autonomous PR — chosen.** One ralph session does the
    GraphQL state creation, the `plugin.json` userConfig, the
-   `defaults.sh` export, and the `/ralph-spec` skill edits. Matches the
+   `defaults.sh` export, and the `/sr-spec` skill edits. Matches the
    plugin's autonomous-overnight ethos; the GraphQL mutation is small
    and idempotent.
 
@@ -348,16 +348,16 @@ None. This issue stands alone — it depends on existing ralph plumbing
 5. **Use a different state name** ("Speccing", "In Spec", "Drafting",
    etc.). Considered during the design dialogue. "In Design" chosen
    because it's the broadest framing — it covers any interactive
-   design work, not just `/ralph-spec`, and matches product-management
+   design work, not just `/sr-spec`, and matches product-management
    vocabulary.
 
 ## Notes
 
 - The `In Design` state already implicitly falls into the "anything
-  else / proceed" branch of `/ralph-spec`'s step 10 preflight today,
+  else / proceed" branch of `/sr-spec`'s step 10 preflight today,
   before this change lands. Edit 4 names it explicitly only as
   documentation; the runtime behavior of that branch does not change.
-- `/ralph-start`'s queue builder reads `Approved` only. `In Design`
+- `/sr-start`'s queue builder reads `Approved` only. `In Design`
   issues will never be picked up by the autonomous orchestrator —
   that's the intended semantics.
 - Color and position picked at creation time can be adjusted later in

@@ -1,7 +1,7 @@
 # Autonomous mode (sensible-ralph)
 
 You are running in an autonomous `claude -p` session dispatched by
-`/ralph-start`. No human is at the keyboard. The following rules override
+`/sr-start`. No human is at the keyboard. The following rules override
 your usual CLAUDE.md behavior for the duration of this session.
 
 ## Overrides

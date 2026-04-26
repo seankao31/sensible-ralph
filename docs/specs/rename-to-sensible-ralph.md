@@ -308,7 +308,7 @@ ralph-output.log
 1. **No `ralph` plugin-identity hits remain** outside heritage carve-outs.
    This grep returns only heritage:
    ```bash
-   grep -rEn '(\.ralph\b|\.ralph[-/]|RALPH_[A-Z_]+|\bralph-(start|spec|implement|status)\b|\bralph_[a-z]|skills/ralph-)' \
+   grep -rEn '(\.ralph\b|\.ralph[-/]|\bRALPH_[A-Z_]+|\bralph-(start|spec|implement|status)\b|\bralph_[a-z]|skills/ralph-)' \
      --include='*.md' --include='*.sh' --include='*.json' --include='*.bats' \
      . 2>/dev/null \
      | grep -v 'docs/archive/\|\.git/\|\.worktrees/' \
@@ -324,10 +324,14 @@ ralph-output.log
    alternation, so heritage verb-noun forms are safe. The alternation
    is intentionally closed (rather than `\bralph-[a-z]+\b`) so heritage
    verb-noun additions stay safe; new identity-bearing commands get
-   added to this list explicitly. `\bralph_[a-z]` catches underscore-form
-   identifiers like the `ralph_spec` token in graphviz diagrams.
-   Heritage strings (`snarktank/ralph`, `vanilla ralph`, `ralph
-   technique`) don't match any alternation.
+   added to this list explicitly. `\bRALPH_[A-Z_]+` is anchored with
+   `\b` to avoid matching the renamed `SENSIBLE_RALPH_*` substring (the
+   `_` between `SENSIBLE` and `RALPH` is a word character, so the
+   boundary doesn't fire — without `\b` every successfully-renamed env
+   var would still trip the grep). `\bralph_[a-z]` catches
+   underscore-form identifiers like the `ralph_spec` token in graphviz
+   diagrams. Heritage strings (`snarktank/ralph`, `vanilla ralph`,
+   `ralph technique`) don't match any alternation.
 
    Each remaining line must be a heritage reference: vanilla ralph
    narrative, the technique citation, fork links, or a spec filename

@@ -1,4 +1,4 @@
-# Restructure plugin-wide shell helpers out of `ralph-start/scripts/`
+# Restructure plugin-wide shell helpers out of `sr-start/scripts/`
 
 **Linear:** ENG-274
 **Date:** 2026-04-25
@@ -7,19 +7,19 @@
 
 Move the four plugin-wide shell helpers — `defaults.sh`, `linear.sh`,
 `scope.sh`, `branch_ancestry.sh` — and their bats tests out of
-`skills/ralph-start/scripts/lib/` and into a top-level `lib/` directory
+`skills/sr-start/scripts/lib/` and into a top-level `lib/` directory
 at plugin root. Update every consumer to source from the new location.
-Leave the two ralph-start-specific helpers (`worktree.sh`,
+Leave the two sr-start-specific helpers (`worktree.sh`,
 `preflight_labels.sh`) where they are.
 
 ## Motivation
 
-The four shared helpers are currently sourced by `ralph-spec`,
+The four shared helpers are currently sourced by `sr-spec`,
 `prepare-for-review`, and `close-issue` via paths like
-`$CLAUDE_PLUGIN_ROOT/skills/ralph-start/scripts/lib/...`. That path
-falsely implies ralph-start ownership. The helpers are plugin-wide
+`$CLAUDE_PLUGIN_ROOT/skills/sr-start/scripts/lib/...`. That path
+falsely implies sr-start ownership. The helpers are plugin-wide
 infrastructure: pure config exports (`defaults.sh`), Linear API
-wrappers (`linear.sh`), `.ralph.json` parsing (`scope.sh`), and pure-git
+wrappers (`linear.sh`), `.sensible-ralph.json` parsing (`scope.sh`), and pure-git
 ancestry helpers (`branch_ancestry.sh`).
 
 The chezmoi → plugin extraction created the conditions to fix this.
@@ -36,7 +36,7 @@ test suite covers each moved lib in isolation.
 ## Scope
 
 Move four `.sh` files and three `.bats` files; update three SKILL.md
-files and four ralph-start internal scripts; update the stub layouts
+files and four sr-start internal scripts; update the stub layouts
 in three or four bats test files. The change is path-only — no behavior
 changes in any moved file.
 
@@ -47,7 +47,7 @@ sensible-ralph/
 ├── .claude-plugin/
 ├── docs/
 ├── lib/                           ← NEW
-│   ├── defaults.sh                ← moved from skills/ralph-start/scripts/lib/
+│   ├── defaults.sh                ← moved from skills/sr-start/scripts/lib/
 │   ├── linear.sh                  ← moved
 │   ├── scope.sh                   ← moved
 │   ├── branch_ancestry.sh         ← moved
@@ -56,17 +56,17 @@ sensible-ralph/
 │       ├── scope.bats             ← moved
 │       └── branch_ancestry.bats   ← moved
 └── skills/
-    └── ralph-start/scripts/
+    └── sr-start/scripts/
         ├── orchestrator.sh
         ├── build_queue.sh
         ├── preflight_scan.sh
         ├── dag_base.sh
         ├── toposort.sh
         ├── autonomous-preamble.md
-        ├── lib/                   ← retained for ralph-start-only helpers
+        ├── lib/                   ← retained for sr-start-only helpers
         │   ├── worktree.sh
         │   └── preflight_labels.sh
-        └── test/                  ← retained for ralph-start-only tests
+        └── test/                  ← retained for sr-start-only tests
             ├── orchestrator.bats
             ├── build_queue.bats
             ├── preflight_scan.bats
@@ -79,22 +79,22 @@ sensible-ralph/
 
 | File | Move? | Reason |
 |------|-------|--------|
-| `defaults.sh` | → `lib/` | Sourced by ralph-spec, prepare-for-review, close-issue. Pure config exports — no skill-specific logic. |
-| `linear.sh` | → `lib/` | Sourced by ralph-spec, close-issue. Linear CLI/GraphQL wrappers — domain layer, not skill-specific. |
-| `scope.sh` | → `lib/` | Sourced by ralph-spec. Reads `.ralph.json`, which is a plugin-wide concept (every consumer repo declares it). |
+| `defaults.sh` | → `lib/` | Sourced by sr-spec, prepare-for-review, close-issue. Pure config exports — no skill-specific logic. |
+| `linear.sh` | → `lib/` | Sourced by sr-spec, close-issue. Linear CLI/GraphQL wrappers — domain layer, not skill-specific. |
+| `scope.sh` | → `lib/` | Sourced by sr-spec. Reads `.sensible-ralph.json`, which is a plugin-wide concept (every consumer repo declares it). |
 | `branch_ancestry.sh` | → `lib/` | Sourced by close-issue. Pure git, no Linear or skill coupling. Header explicitly anticipates this move. |
-| `worktree.sh` | stay | Sourced only by `orchestrator.sh`. Encodes ralph-start dispatch's worktree semantics. |
-| `preflight_labels.sh` | stay | Sourced only by `preflight_scan.sh`. Tied to ralph-start's preflight ritual. |
+| `worktree.sh` | stay | Sourced only by `orchestrator.sh`. Encodes sr-start dispatch's worktree semantics. |
+| `preflight_labels.sh` | stay | Sourced only by `preflight_scan.sh`. Tied to sr-start's preflight ritual. |
 
 The partition criterion is "who sources this?" — single skill (stay)
 vs multiple skills (move). It is not "what does it do?" The two
-ralph-start-only helpers theoretically *could* be reused; lifting them
+sr-start-only helpers theoretically *could* be reused; lifting them
 now would be speculative.
 
 ## File-by-file changes
 
 The work splits into four classes of edit: move operations, consumer
-SKILL.md updates, ralph-start internal script updates, and bats test
+SKILL.md updates, sr-start internal script updates, and bats test
 updates.
 
 ### (a) Move operations
@@ -102,14 +102,14 @@ updates.
 ```bash
 mkdir -p lib/test
 
-git mv skills/ralph-start/scripts/lib/defaults.sh        lib/defaults.sh
-git mv skills/ralph-start/scripts/lib/linear.sh          lib/linear.sh
-git mv skills/ralph-start/scripts/lib/scope.sh           lib/scope.sh
-git mv skills/ralph-start/scripts/lib/branch_ancestry.sh lib/branch_ancestry.sh
+git mv skills/sr-start/scripts/lib/defaults.sh        lib/defaults.sh
+git mv skills/sr-start/scripts/lib/linear.sh          lib/linear.sh
+git mv skills/sr-start/scripts/lib/scope.sh           lib/scope.sh
+git mv skills/sr-start/scripts/lib/branch_ancestry.sh lib/branch_ancestry.sh
 
-git mv skills/ralph-start/scripts/test/linear.bats          lib/test/linear.bats
-git mv skills/ralph-start/scripts/test/scope.bats           lib/test/scope.bats
-git mv skills/ralph-start/scripts/test/branch_ancestry.bats lib/test/branch_ancestry.bats
+git mv skills/sr-start/scripts/test/linear.bats          lib/test/linear.bats
+git mv skills/sr-start/scripts/test/scope.bats           lib/test/scope.bats
+git mv skills/sr-start/scripts/test/branch_ancestry.bats lib/test/branch_ancestry.bats
 ```
 
 Each `.bats` file uses
@@ -121,7 +121,7 @@ where `scope.sh` now lives. **No edits required inside the moved bats
 files themselves.**
 
 Update the now-stale comments inside `lib/branch_ancestry.sh` (formerly
-`skills/ralph-start/scripts/lib/branch_ancestry.sh`):
+`skills/sr-start/scripts/lib/branch_ancestry.sh`):
 
 - Remove the obsolete sentence in the header comment: *"When the
   ralph-workflow skills consolidate into a standalone plugin, these
@@ -138,29 +138,29 @@ are unchanged at the function level.
 
 Three SKILL.md files reference the old paths.
 
-**`skills/ralph-spec/SKILL.md`** (currently lines 165, 166, 170 — line
+**`skills/sr-spec/SKILL.md`** (currently lines 165, 166, 170 — line
 numbers may shift; update by exact-string match):
 
 ```diff
--source "$CLAUDE_PLUGIN_ROOT/skills/ralph-start/scripts/lib/defaults.sh"
--source "$CLAUDE_PLUGIN_ROOT/skills/ralph-start/scripts/lib/linear.sh" || {
+-source "$CLAUDE_PLUGIN_ROOT/skills/sr-start/scripts/lib/defaults.sh"
+-source "$CLAUDE_PLUGIN_ROOT/skills/sr-start/scripts/lib/linear.sh" || {
 +source "$CLAUDE_PLUGIN_ROOT/lib/defaults.sh"
 +source "$CLAUDE_PLUGIN_ROOT/lib/linear.sh" || {
-   echo "ralph-spec: failed to source linear.sh — \$CLAUDE_PLUGIN_ROOT may be unset (sensible-ralph plugin not enabled?). Re-enable the plugin and re-run." >&2
+   echo "sr-spec: failed to source linear.sh — \$CLAUDE_PLUGIN_ROOT may be unset (sensible-ralph plugin not enabled?). Re-enable the plugin and re-run." >&2
    exit 1
  }
--source "$CLAUDE_PLUGIN_ROOT/skills/ralph-start/scripts/lib/scope.sh" || {
+-source "$CLAUDE_PLUGIN_ROOT/skills/sr-start/scripts/lib/scope.sh" || {
 +source "$CLAUDE_PLUGIN_ROOT/lib/scope.sh" || {
 ```
 
 **`skills/close-issue/SKILL.md`** (currently around line 55):
 
 ```diff
--RALPH_LIB="$CLAUDE_PLUGIN_ROOT/skills/ralph-start/scripts/lib"
--source "$RALPH_LIB/defaults.sh"
--source "$RALPH_LIB/linear.sh"
--source "$RALPH_LIB/scope.sh"
--source "$RALPH_LIB/branch_ancestry.sh"
+-SENSIBLE_RALPH_LIB="$CLAUDE_PLUGIN_ROOT/skills/sr-start/scripts/lib"
+-source "$SENSIBLE_RALPH_LIB/defaults.sh"
+-source "$SENSIBLE_RALPH_LIB/linear.sh"
+-source "$SENSIBLE_RALPH_LIB/scope.sh"
+-source "$SENSIBLE_RALPH_LIB/branch_ancestry.sh"
 +PLUGIN_LIB="$CLAUDE_PLUGIN_ROOT/lib"
 +source "$PLUGIN_LIB/defaults.sh"
 +source "$PLUGIN_LIB/linear.sh"
@@ -168,25 +168,25 @@ numbers may shift; update by exact-string match):
 +source "$PLUGIN_LIB/branch_ancestry.sh"
 ```
 
-The variable rename (`RALPH_LIB` → `PLUGIN_LIB`) reflects the new
+The variable rename (`SENSIBLE_RALPH_LIB` → `PLUGIN_LIB`) reflects the new
 ownership. Also update the surrounding prose paragraph that currently
-says *"Source from the bundled ralph-start skill at
-`$CLAUDE_PLUGIN_ROOT/skills/ralph-start/`"* — the libs no longer live
-under ralph-start. The replacement prose should say the libs are
+says *"Source from the bundled sr-start skill at
+`$CLAUDE_PLUGIN_ROOT/skills/sr-start/`"* — the libs no longer live
+under sr-start. The replacement prose should say the libs are
 sourced from the plugin's top-level `lib/` directory.
 
 **`skills/prepare-for-review/SKILL.md`** (currently around line 36):
 
 ```diff
--source "$CLAUDE_PLUGIN_ROOT/skills/ralph-start/scripts/lib/defaults.sh"
+-source "$CLAUDE_PLUGIN_ROOT/skills/sr-start/scripts/lib/defaults.sh"
 +source "$CLAUDE_PLUGIN_ROOT/lib/defaults.sh"
 ```
 
-### (c) ralph-start internal script updates
+### (c) sr-start internal script updates
 
-Four scripts under `skills/ralph-start/scripts/` source the moved libs
+Four scripts under `skills/sr-start/scripts/` source the moved libs
 via `$SCRIPT_DIR/lib/...`. After the move, that path resolves to
-`skills/ralph-start/scripts/lib/`, which now contains only `worktree.sh`
+`skills/sr-start/scripts/lib/`, which now contains only `worktree.sh`
 and `preflight_labels.sh` — the moved files are no longer there.
 
 The new pattern: introduce a `PLUGIN_ROOT` variable at the top of each
@@ -199,7 +199,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
 ```
 
-The `../../../` is three levels up: `scripts/` → `ralph-start/` →
+The `../../../` is three levels up: `scripts/` → `sr-start/` →
 `skills/` → plugin root.
 
 **Important:** the env-less walk-up is only valid when the script runs
@@ -221,7 +221,7 @@ Source-line changes per script:
 
 The `# shellcheck source=lib/<file>.sh` directives above each `source`
 line need their hint paths updated. For moved libs, hints become
-`# shellcheck source=../../../lib/<file>.sh`. Hints for ralph-start-only
+`# shellcheck source=../../../lib/<file>.sh`. Hints for sr-start-only
 libs (`worktree.sh`, `preflight_labels.sh`) stay
 `# shellcheck source=lib/<file>.sh`.
 
@@ -245,7 +245,7 @@ The fix is uniform across all four: create a stub plugin root with
 synthesised by the existing harness), then export
 `CLAUDE_PLUGIN_ROOT=<stub-plugin-root>`. The script's
 `${CLAUDE_PLUGIN_ROOT:-...}` picks up the env var. Because all four
-tests already export `RALPH_SCOPE_LOADED` to bypass `scope.sh`, the
+tests already export `SENSIBLE_RALPH_SCOPE_LOADED` to bypass `scope.sh`, the
 stub plugin root only needs `lib/defaults.sh` and `lib/linear.sh` —
 not `lib/scope.sh`.
 
@@ -258,7 +258,7 @@ $STUB_PLUGIN_ROOT/
 ├── lib/
 │   ├── defaults.sh         (copy from real lib/defaults.sh)
 │   └── linear.sh           (synthesised stub — as today)
-└── skills/ralph-start/scripts/
+└── skills/sr-start/scripts/
     ├── preflight_scan.sh   (copied)
     └── lib/
         └── preflight_labels.sh (copied)
@@ -282,7 +282,7 @@ binary.
 Post-migration: create a second `$stub_plugin_root` per call (via
 `mktemp -d`), put `lib/defaults.sh` (copy) and `lib/linear.sh` (stub)
 there, and pass `CLAUDE_PLUGIN_ROOT="$stub_plugin_root"` as an inline
-env override alongside the existing `RALPH_SCOPE_LOADED` assignment on
+env override alongside the existing `SENSIBLE_RALPH_SCOPE_LOADED` assignment on
 the `run bash` invocation. Clean up `$stub_plugin_root` alongside
 `$tmp_dir` in the cleanup line.
 
@@ -301,21 +301,21 @@ is still `$STUB_DIR/scripts/` when running from
 
 ### What does NOT change
 
-- `skills/ralph-start/scripts/lib/{worktree,preflight_labels}.sh` — stay
+- `skills/sr-start/scripts/lib/{worktree,preflight_labels}.sh` — stay
   put.
-- `skills/ralph-start/scripts/test/{worktree,preflight_scan,build_queue,dag_base,orchestrator,toposort}.bats`
+- `skills/sr-start/scripts/test/{worktree,preflight_scan,build_queue,dag_base,orchestrator,toposort}.bats`
   — stay put (their bats files test scripts that remain in
-  `skills/ralph-start/scripts/`).
-- `skills/ralph-start/scripts/{toposort.sh,autonomous-preamble.md}` —
+  `skills/sr-start/scripts/`).
+- `skills/sr-start/scripts/{toposort.sh,autonomous-preamble.md}` —
   toposort doesn't source any libs; the preamble is markdown.
-- `README.md` — its only `skills/ralph-start/scripts/...` reference is
+- `README.md` — its only `skills/sr-start/scripts/...` reference is
   `autonomous-preamble.md`, which doesn't move.
 - Historical specs in `docs/specs/` and `docs/archive/` — these document
   past work at the paths that existed when written. Retroactive
   path-edits would falsify the historical record.
 - `.gitignore` — runtime-artifact patterns are unaffected.
 - `.claude-plugin/plugin.json` — no userConfig or surface-area changes.
-- `.ralph.json` — no schema changes.
+- `.sensible-ralph.json` — no schema changes.
 
 ## Verification
 
@@ -334,28 +334,28 @@ After the implementation lands, all of the following must hold.
 
 2. **Files removed from old locations:**
    ```bash
-   test ! -e skills/ralph-start/scripts/lib/defaults.sh && \
-   test ! -e skills/ralph-start/scripts/lib/linear.sh && \
-   test ! -e skills/ralph-start/scripts/lib/scope.sh && \
-   test ! -e skills/ralph-start/scripts/lib/branch_ancestry.sh && \
-   test ! -e skills/ralph-start/scripts/test/linear.bats && \
-   test ! -e skills/ralph-start/scripts/test/scope.bats && \
-   test ! -e skills/ralph-start/scripts/test/branch_ancestry.bats
+   test ! -e skills/sr-start/scripts/lib/defaults.sh && \
+   test ! -e skills/sr-start/scripts/lib/linear.sh && \
+   test ! -e skills/sr-start/scripts/lib/scope.sh && \
+   test ! -e skills/sr-start/scripts/lib/branch_ancestry.sh && \
+   test ! -e skills/sr-start/scripts/test/linear.bats && \
+   test ! -e skills/sr-start/scripts/test/scope.bats && \
+   test ! -e skills/sr-start/scripts/test/branch_ancestry.bats
    ```
 
-3. **ralph-start-only helpers retained:**
+3. **sr-start-only helpers retained:**
    ```bash
-   test -f skills/ralph-start/scripts/lib/worktree.sh && \
-   test -f skills/ralph-start/scripts/lib/preflight_labels.sh
+   test -f skills/sr-start/scripts/lib/worktree.sh && \
+   test -f skills/sr-start/scripts/lib/preflight_labels.sh
    ```
 
 4. **No stale source paths in any active consumer:**
    ```bash
-   ! grep -rn "skills/ralph-start/scripts/lib/\(defaults\|linear\|scope\|branch_ancestry\)" \
+   ! grep -rn "skills/sr-start/scripts/lib/\(defaults\|linear\|scope\|branch_ancestry\)" \
      skills/ 2>/dev/null
    ```
    The grep targets `skills/` only — that's where active consumer
-   code (SKILL.md and ralph-start internal scripts) lives. Historical
+   code (SKILL.md and sr-start internal scripts) lives. Historical
    specs in `docs/specs/` and `docs/archive/` legitimately reference
    the old paths as records of past work; this spec's own diff blocks
    contain those paths too. Scoping the grep to `skills/` asserts the
@@ -365,7 +365,7 @@ After the implementation lands, all of the following must hold.
 
 5. **Each consumer skill markdown sources from the new location:**
    ```bash
-   grep -q 'CLAUDE_PLUGIN_ROOT/lib/defaults.sh' skills/ralph-spec/SKILL.md && \
+   grep -q 'CLAUDE_PLUGIN_ROOT/lib/defaults.sh' skills/sr-spec/SKILL.md && \
    grep -q 'CLAUDE_PLUGIN_ROOT/lib/defaults.sh' skills/prepare-for-review/SKILL.md && \
    grep -q 'CLAUDE_PLUGIN_ROOT/lib/defaults.sh' skills/close-issue/SKILL.md
    ```
@@ -373,7 +373,7 @@ After the implementation lands, all of the following must hold.
 6. **All bats suites pass.** Run from repo root:
    ```bash
    bats lib/test/*.bats
-   bats skills/ralph-start/scripts/test/*.bats
+   bats skills/sr-start/scripts/test/*.bats
    ```
    Both invocations exit 0. The first covers the moved libs; the
    second covers the entry-point scripts and the still-resident
@@ -383,10 +383,10 @@ After the implementation lands, all of the following must hold.
 7. **Runnable verification snippet updated.** The only runnable shell
    command in `docs/specs/` that sources a moved lib is
    `in-design-workflow-state.md:255` — a `bash -c 'source
-   skills/ralph-start/scripts/lib/defaults.sh ...'` verification step.
+   skills/sr-start/scripts/lib/defaults.sh ...'` verification step.
    Confirm it now sources `lib/defaults.sh`:
    ```bash
-   ! grep -n "source skills/ralph-start/scripts/lib/defaults.sh" \
+   ! grep -n "source skills/sr-start/scripts/lib/defaults.sh" \
      docs/specs/in-design-workflow-state.md
    ```
    (Other `docs/specs/` files contain prose references and diff blocks
@@ -438,15 +438,15 @@ Explicitly excluded from this issue:
   Cleanup is filed separately if needed.
 - **Prose narrative in historical specs** in `docs/specs/` and
   `docs/archive/decisions/` that mentions the old paths in expository
-  text (e.g., `ralph-scope-model-design.md`, `ralph-implement-skill-design.md`,
-  `ralph-spec-sources-ralph-start-libs.md`). Retroactive edits to prose
+  text (e.g., `ralph-scope-model-design.md`, `sr-implement-skill-design.md`,
+  `sr-spec-sources-sr-start-libs.md`). Retroactive edits to prose
   records falsify the historical account and are left as-is.
   *Exception: runnable verification commands are treated as active
   consumers, not prose. Any inline `bash -c '... source <old-path> ...'`
   or equivalent that a user could copy-paste and run gets updated in the
   same pass as the other consumer edits.* The concrete instance is
   `docs/specs/in-design-workflow-state.md:255` — a verification step
-  that sources `skills/ralph-start/scripts/lib/defaults.sh`. Update that
+  that sources `skills/sr-start/scripts/lib/defaults.sh`. Update that
   line to source `lib/defaults.sh` (relative to repo root) to match the
   new location.
 - **README.md and `docs/usage.md` narrative.** Neither references the
@@ -457,7 +457,7 @@ Explicitly excluded from this issue:
 - **Adding new shared helpers, or extracting duplication between
   existing libs.** Out of scope; file separately if the implementer
   notices a candidate.
-- **Changes to `userConfig`, `.ralph.json` schema, or any externally-
+- **Changes to `userConfig`, `.sensible-ralph.json` schema, or any externally-
   visible contract.** This is a pure internal restructure.
 
 ## Alternatives considered
@@ -474,7 +474,7 @@ Explicitly excluded from this issue:
    `scripts/` wrapper carries no content beyond `lib/` and `test/` —
    it doubles the noun ("scripts/library/") and adds two path
    components to every source line for no offsetting benefit. The
-   intra-skill `scripts/` exists because ralph-start has entry-point
+   intra-skill `scripts/` exists because sr-start has entry-point
    scripts (`orchestrator.sh` etc.) to host alongside its libs; the
    plugin-root migration has only libs.
 
@@ -494,7 +494,7 @@ Explicitly excluded from this issue:
 5. **Leave the libs in place; document them as plugin-wide via header
    comments.** No file moves, just clarifying prose. Rejected: the
    issue body and `branch_ancestry.sh`'s own header already document
-   the intent. The structural lie ("ralph-start owns these") is in the
+   the intent. The structural lie ("sr-start owns these") is in the
    path itself; comments cannot override it. Documentation is not a
    substitute for accurate layout.
 
@@ -511,13 +511,13 @@ Explicitly excluded from this issue:
   orchestrator scripts that changes here; the change is path-only.
 - **Codex review at `/prepare-for-review`** catches drift on the
   markdown source-pattern updates (three SKILL.md files, multiple
-  lines each) and on the four ralph-start internal scripts.
+  lines each) and on the four sr-start internal scripts.
 
 ## Notes
 
 - The libs declare their dependencies via runtime guards
   (`scope.sh`'s `_scope_load` checks for `linear_list_initiative_projects`
-  being defined; `linear.sh` references `RALPH_PROJECTS` and
+  being defined; `linear.sh` references `SENSIBLE_RALPH_PROJECTS` and
   `CLAUDE_PLUGIN_OPTION_*` at call time). These guards work the same
   regardless of file location — the move shouldn't affect source-order
   semantics. If the implementer notices a regression here, that's a
@@ -527,7 +527,7 @@ Explicitly excluded from this issue:
   `$SCRIPT_DIR` exists for the bats-test invocation context, where
   the harness is not running.
 - The autonomous implementer should run `bats` from repo root (not
-  from `skills/ralph-start/scripts/`) so both test directories are
+  from `skills/sr-start/scripts/`) so both test directories are
   discoverable. Verification step 6 explicitly invokes both.
 - All consumer files reference the libs via `$CLAUDE_PLUGIN_ROOT/lib/...`
   or `$PLUGIN_ROOT/lib/...`. There are no relative-path references

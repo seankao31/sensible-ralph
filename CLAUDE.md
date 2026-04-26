@@ -29,7 +29,7 @@ Three places live docs go:
   the system; updated whenever a change makes the doc stale. One file
   per subsystem, kebab-case topic name, no date or Linear issue header.
 - **`docs/specs/`** — per-ticket implementation specs. Written by
-  `/ralph-spec`, scoped to a single Linear issue, frozen on completion.
+  `/sr-spec`, scoped to a single Linear issue, frozen on completion.
   Mostly implementation context and detail; not a project-design
   reference.
 - **`docs/decisions/`** — captured non-obvious choices, atomic and

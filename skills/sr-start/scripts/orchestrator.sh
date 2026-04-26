@@ -10,7 +10,7 @@ set -euo pipefail
 # append a per-issue record to progress.json.
 #
 # Input contract: $1 is a file path containing one issue ID per line,
-# pre-sorted by toposort.sh. .ralph/progress.json is written under the repo root
+# pre-sorted by toposort.sh. .sensible-ralph/progress.json is written under the repo root
 # (resolved via lib/worktree.sh::_resolve_repo_root), independent of cwd.
 #
 # Required env: CLAUDE_PLUGIN_OPTION_IN_PROGRESS_STATE,
@@ -28,21 +28,21 @@ PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
 source "$PLUGIN_ROOT/lib/defaults.sh"
 
 # Auto-source scope unless the load marker matches THIS invocation's repo +
-# scope-file content. RALPH_SCOPE_LOADED is "<repo-root>|<scope-hash>"; if the
-# operator ran another repo's ralph in the same shell, or edited .ralph.json
+# scope-file content. SENSIBLE_RALPH_SCOPE_LOADED is "<repo-root>|<scope-hash>"; if the
+# operator ran another repo's ralph in the same shell, or edited .sensible-ralph.json
 # mid-session, the marker won't match and we re-source. Removes the
 # bash-shell requirement for callers (this script has a bash shebang and
 # sources scope itself, so invoke from zsh/fish/sh).
 RESOLVED_REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || RESOLVED_REPO_ROOT=""
 RESOLVED_SCOPE_HASH=""
-if [[ -n "$RESOLVED_REPO_ROOT" && -f "$RESOLVED_REPO_ROOT/.ralph.json" ]]; then
-  RESOLVED_SCOPE_HASH="$(shasum -a 1 < "$RESOLVED_REPO_ROOT/.ralph.json" | awk '{print $1}')"
+if [[ -n "$RESOLVED_REPO_ROOT" && -f "$RESOLVED_REPO_ROOT/.sensible-ralph.json" ]]; then
+  RESOLVED_SCOPE_HASH="$(shasum -a 1 < "$RESOLVED_REPO_ROOT/.sensible-ralph.json" | awk '{print $1}')"
 fi
 # shellcheck source=../../../lib/linear.sh
 source "$PLUGIN_ROOT/lib/linear.sh"
 
 EXPECTED_SCOPE_LOADED="${RESOLVED_REPO_ROOT}|${RESOLVED_SCOPE_HASH}"
-if [[ "${RALPH_SCOPE_LOADED:-}" != "$EXPECTED_SCOPE_LOADED" ]]; then
+if [[ "${SENSIBLE_RALPH_SCOPE_LOADED:-}" != "$EXPECTED_SCOPE_LOADED" ]]; then
   # shellcheck source=../../../lib/scope.sh
   source "$PLUGIN_ROOT/lib/scope.sh"
 fi
@@ -52,11 +52,11 @@ source "$SCRIPT_DIR/lib/worktree.sh"
 
 queue_file="${1:?orchestrator.sh: queue file path required as \$1}"
 
-# Ensure the consumer-repo .ralph/ directory exists once at startup so the
+# Ensure the consumer-repo .sensible-ralph/ directory exists once at startup so the
 # atomic mktemp+mv pattern in _progress_append has a destination on the first
 # record, no matter which dispatch path writes first.
 repo_root="$(_resolve_repo_root)"
-mkdir -p "$repo_root/.ralph"
+mkdir -p "$repo_root/.sensible-ralph"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -84,7 +84,7 @@ fi
 # Record schema (fields vary by event/outcome):
 #   event             "start" (dispatch about to invoke claude) | "end" (final
 #                     per-issue outcome). Discriminator added in ENG-241 so
-#                     /ralph-status can render in-flight Running rows; pre-
+#                     /sr-status can render in-flight Running rows; pre-
 #                     ENG-241 records have no event field and are filtered
 #                     out by run_id selection (latest run only).
 #   issue             Linear issue id (always present)
@@ -108,12 +108,12 @@ fi
 #
 # Known limitation: this function uses no flock. Concurrent orchestrator runs
 # against the same progress.json would race (last-writer-wins loses updates).
-# Not a supported scenario — `/ralph-start` is single-invocation by design.
+# Not a supported scenario — `/sr-start` is single-invocation by design.
 _progress_append() {
   local record="$1"
   local repo_root
   repo_root="$(_resolve_repo_root)" || return 1
-  local progress_file="$repo_root/.ralph/progress.json"
+  local progress_file="$repo_root/.sensible-ralph/progress.json"
   local tmp; tmp="$(mktemp "${progress_file}.XXXXXX")"
   if [[ -s "$progress_file" ]]; then
     jq --argjson rec "$record" '. + [$rec]' "$progress_file" > "$tmp"
@@ -289,7 +289,7 @@ _record_unknown_post_state() {
 }
 
 # Best-effort cleanup after a post-worktree-creation setup failure. Without
-# this, a failed setup step (e.g. .ralph-base-sha write or linear_set_state)
+# this, a failed setup step (e.g. .sensible-ralph-base-sha write or linear_set_state)
 # leaves both the worktree directory and the branch in place, so the next
 # orchestrator run trips over `git worktree add -b <branch>` ("branch already
 # exists") and the issue is permanently blocked until a human cleans up.
@@ -299,7 +299,7 @@ _record_unknown_post_state() {
 # If the directory doesn't exist, git didn't create a new branch, so any
 # branch of that name is pre-existing work and must NOT be deleted.
 #
-# `--force` is required because .ralph-base-sha (written pre-dispatch) is an
+# `--force` is required because .sensible-ralph-base-sha (written pre-dispatch) is an
 # untracked file that otherwise causes `git worktree remove` to refuse. The
 # `git worktree prune --expire now` call sweeps any stale metadata left behind
 # by the rm -rf fallback; without `--expire now` the default expiry window
@@ -401,7 +401,7 @@ _dispatch_issue() {
 
   # Create the worktree per base type, capturing the branch's creation point
   # (main's SHA for integration, post-create HEAD otherwise) for the
-  # .ralph-base-sha contract consumed by prepare-for-review (ENG-182).
+  # .sensible-ralph-base-sha contract consumed by prepare-for-review (ENG-182).
   #
   # Worktree creation helpers can fail AFTER `git worktree add` has already
   # succeeded (e.g. a merge error mid-integration, or a later step that
@@ -424,9 +424,9 @@ _dispatch_issue() {
     # Capture trunk SHA BEFORE any parent merges — that's the branch's true
     # creation point. Post-merge HEAD would pull parent commits into the
     # prepare-for-review diff, which must be scoped to this session's work.
-    # The trunk is configured via .ralph.json `default_base_branch` (ENG-214);
-    # lib/scope.sh exports RALPH_DEFAULT_BASE_BRANCH (defaulting to "main").
-    base_sha="$(git rev-parse "${RALPH_DEFAULT_BASE_BRANCH}")"
+    # The trunk is configured via .sensible-ralph.json `default_base_branch` (ENG-214);
+    # lib/scope.sh exports SENSIBLE_RALPH_DEFAULT_BASE_BRANCH (defaulting to "main").
+    base_sha="$(git rev-parse "${SENSIBLE_RALPH_DEFAULT_BASE_BRANCH}")"
     if [[ $? -ne 0 || -z "$base_sha" ]]; then
       set -e
       # "rev_parse_main" is intentionally stable — renaming it to "rev_parse_trunk"
@@ -453,7 +453,7 @@ _dispatch_issue() {
   fi
 
   # Record base SHA before dispatch (prepare-for-review contract, ENG-182)
-  printf '%s\n' "$base_sha" > "$path/.ralph-base-sha"
+  printf '%s\n' "$base_sha" > "$path/.sensible-ralph-base-sha"
   if [[ $? -ne 0 ]]; then
     set -e
     _cleanup_worktree "$path" "$branch"
@@ -474,16 +474,16 @@ _dispatch_issue() {
 
   # Dispatch prompt: autonomous-mode preamble (overrides usual CLAUDE.md
   # behavior — escape-hatch to "post comment + exit clean" for anything
-  # requiring human input) followed by the /ralph-implement invocation.
+  # requiring human input) followed by the /sr-implement invocation.
   #
-  # Prepending here (not in ralph-implement's SKILL.md) puts the rules in
+  # Prepending here (not in sr-implement's SKILL.md) puts the rules in
   # context from token zero, so any decision between session start and the
   # skill's load still runs under autonomous-mode rules. The blank line
   # between preamble and slash command ensures the command starts on its
   # own line for the harness's slash-command recognizer.
   local preamble
   preamble="$(cat "$SCRIPT_DIR/autonomous-preamble.md")"
-  local prompt="${preamble}"$'\n\n'"/ralph-implement $issue_id"
+  local prompt="${preamble}"$'\n\n'"/sr-implement $issue_id"
 
   # Dispatch claude from the worktree cwd, tee-ing output to the log file
   # without letting tee mask claude's exit code.
@@ -494,13 +494,13 @@ _dispatch_issue() {
   local claude_exit=0
 
   # Live-status start record. Written immediately before the claude -p subshell
-  # so /ralph-status can render an in-flight Running row. Best-effort —
+  # so /sr-status can render an in-flight Running row. Best-effort —
   # _progress_append failure does not abort dispatch (the matching end record
-  # still lands when claude exits, and /ralph-status would just be missing
+  # still lands when claude exits, and /sr-status would just be missing
   # this issue from the Running count for the gap window).
   #
   # Use a fresh timestamp here — not the `timestamp` captured at the top of
-  # _dispatch_issue — so that /ralph-status elapsed time reflects when claude
+  # _dispatch_issue — so that /sr-status elapsed time reflects when claude
   # actually started, not when setup began (which can include Integration
   # branch merges, Linear state transitions, etc.).
   # Capture both the ISO timestamp and the matching epoch so the end record's

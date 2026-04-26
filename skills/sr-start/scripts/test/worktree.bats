@@ -20,7 +20,7 @@ setup() {
   # ENG-214: worktree_create_with_integration reads the trunk from this var
   # (formerly hardcoded to "main"). In production lib/scope.sh exports it;
   # tests bypass scope-loading so they must export it themselves.
-  export RALPH_DEFAULT_BASE_BRANCH="main"
+  export SENSIBLE_RALPH_DEFAULT_BASE_BRANCH="main"
 }
 
 teardown() {
@@ -283,11 +283,11 @@ call_fn_from() {
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 # 9. ENG-214: worktree_create_with_integration branches the integration
-#    worktree from RALPH_DEFAULT_BASE_BRANCH (configurable via .ralph.json),
+#    worktree from SENSIBLE_RALPH_DEFAULT_BASE_BRANCH (configurable via .sensible-ralph.json),
 #    not the literal "main". Confirms a project whose trunk is "dev" can
 #    integrate parents on top of dev.
 # ---------------------------------------------------------------------------
-@test "worktree_create_with_integration uses RALPH_DEFAULT_BASE_BRANCH as the integration base" {
+@test "worktree_create_with_integration uses SENSIBLE_RALPH_DEFAULT_BASE_BRANCH as the integration base" {
   # Create a `dev` branch that diverges from main with a unique file.
   git -C "$REPO_DIR" checkout -b dev -q
   echo "dev-only" > "$REPO_DIR/dev_marker.txt"
@@ -306,7 +306,7 @@ call_fn_from() {
 
   local wt_path="$REPO_DIR/.worktrees/integration-on-dev"
 
-  run bash -c "cd '$REPO_DIR' && export RALPH_DEFAULT_BASE_BRANCH=dev && source '$WORKTREE_SH' && worktree_create_with_integration '$wt_path' 'integration-on-dev' 'eng-214-parent'"
+  run bash -c "cd '$REPO_DIR' && export SENSIBLE_RALPH_DEFAULT_BASE_BRANCH=dev && source '$WORKTREE_SH' && worktree_create_with_integration '$wt_path' 'integration-on-dev' 'eng-214-parent'"
 
   [ "$status" -eq 0 ]
   [ -d "$wt_path" ]

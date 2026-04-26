@@ -1,5 +1,5 @@
 ---
-name: ralph-implement
+name: sr-implement
 description: Dispatched by the ralph orchestrator to implement a single Linear issue autonomously inside a pre-created worktree. Do NOT auto-invoke.
 disable-model-invocation: true
 argument-hint: <issue-id>
@@ -11,10 +11,10 @@ allowed-tools: Skill, Bash, Read, Glob, Grep, Write, Edit
 The workflow a single `claude -p` session runs when dispatched by the ralph orchestrator. Invoked with the Linear issue ID as the sole argument:
 
 ```
-/ralph-implement ENG-NNN
+/sr-implement ENG-NNN
 ```
 
-The orchestrator has already `cd`-ed into the worktree, created the branch at the correct DAG base, written `.ralph-base-sha`, and transitioned the issue to `In Progress` before invoking. The steps below run inside that worktree.
+The orchestrator has already `cd`-ed into the worktree, created the branch at the correct DAG base, written `.sensible-ralph-base-sha`, and transitioned the issue to `In Progress` before invoking. The steps below run inside that worktree.
 
 ## Setup: Assign the issue ID
 

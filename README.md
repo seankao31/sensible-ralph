@@ -17,7 +17,7 @@ Wiggum character, who famously lacks them.
    In-Review parent concurrently. *Vanilla ralph ships straight to main.*
 
 2. **Structure** — three phases (spec → plan → impl) with three skills
-   (`/ralph-spec`, `/ralph-start`, `/ralph-implement`). A DAG scope model
+   (`/sr-spec`, `/sr-start`, `/sr-implement`). A DAG scope model
    instead of a flat checklist. Linear's workflow states are the state
    machine — not a `progress.txt` blob. *Vanilla ralph hands the loop a
    markdown file and walks away.*
@@ -78,7 +78,7 @@ you a working setup.
   linear label create --name stale-parent --color '#F2994A' \
     --description 'In-Review issue whose blocked-by parent was amended after dispatch.'
   ```
-- **Per-repo `.ralph.json`** at the repo root declaring which Linear
+- **Per-repo `.sensible-ralph.json`** at the repo root declaring which Linear
   projects this repo's sessions drain. Two shapes:
   ```jsonc
   // Explicit — one or more projects
@@ -90,12 +90,12 @@ you a working setup.
 - **`.gitignore` entries** for the runtime artifacts the orchestrator
   writes to your repo root and worktrees:
   ```gitignore
-  /.ralph/
+  /.sensible-ralph/
   /.worktrees/
   ralph-output.log
   ```
   If you're upgrading from a version that wrote these artifacts at the
-  repo root, run `mkdir -p .ralph && mv progress.json ordered_queue.txt .ralph/ 2>/dev/null` once at your consumer repo's root.
+  repo root, run `mkdir -p .sensible-ralph && mv progress.json ordered_queue.txt .sensible-ralph/ 2>/dev/null` once at your consumer repo's root.
 
   (The paths match the plugin defaults. If you changed the `worktree_base`
   or `stdout_log_filename` userConfig values, substitute accordingly.)
@@ -109,17 +109,17 @@ in [`docs/decisions/`](docs/decisions/).
 
 Brief summary:
 
-- **`/ralph-spec`** — turn an idea into an Approved Linear issue. Runs
+- **`/sr-spec`** — turn an idea into an Approved Linear issue. Runs
   a brainstorming dialogue, writes a spec to `docs/specs/<topic>.md` in
   your repo, updates the Linear issue, and transitions it to Approved.
-- **`/ralph-start`** — dispatch the queue. Collects pickup-ready Approved
+- **`/sr-start`** — dispatch the queue. Collects pickup-ready Approved
   issues, sorts them by blocked-by relations, previews the plan, and
   hands control to the orchestrator. The orchestrator creates worktrees,
   invokes `claude -p` sessions, and classifies outcomes.
-- **`/ralph-status`** — read-only mid-run status. Prints a Done / Running /
-  Queued table for the latest ralph run from `.ralph/progress.json` and
-  `.ralph/ordered_queue.txt`. Zero side effects, no network calls.
-- **`/ralph-implement`** — invoked INSIDE a dispatched session; reads the
+- **`/sr-status`** — read-only mid-run status. Prints a Done / Running /
+  Queued table for the latest ralph run from `.sensible-ralph/progress.json` and
+  `.sensible-ralph/ordered_queue.txt`. Zero side effects, no network calls.
+- **`/sr-implement`** — invoked INSIDE a dispatched session; reads the
   Linear issue as its spec and implements it end-to-end up to
   `/prepare-for-review`.
 - **`/prepare-for-review`** — handoff ritual at the end of an
@@ -132,7 +132,7 @@ Brief summary:
 ## Companion skills
 
 The plugin bundles the four skills that sit in the critical path of
-the ralph lifecycle: `ralph-start`, `ralph-spec`, `ralph-implement`,
+the ralph lifecycle: `sr-start`, `sr-spec`, `sr-implement`,
 `prepare-for-review`, and `close-issue`. A few external skills extend
 the flow:
 
@@ -151,7 +151,7 @@ the flow:
   — provides `test-driven-development`, `systematic-debugging`,
   `verification-before-completion`, `using-git-worktrees`,
   `capture-decisions`, `prune-completed-docs`, `update-stale-docs`,
-  `clean-branch-history`. Referenced by `ralph-implement` (for
+  `clean-branch-history`. Referenced by `sr-implement` (for
   implementation discipline) and by `prepare-for-review` (for its doc
   steps). If superpowers isn't installed, those steps degrade gracefully
   (skip with a note, or fall back to manual equivalents).
@@ -163,13 +163,13 @@ the flow:
 
 ## Design notes
 
-- `/ralph-start` and `/ralph-spec` are **user-triggered** entry points
+- `/sr-start` and `/sr-spec` are **user-triggered** entry points
   (`disable-model-invocation: true`). Don't auto-invoke either.
-- `/ralph-implement` runs inside an autonomous session dispatched by
-  `/ralph-start`. The orchestrator prepends a preamble to the session
+- `/sr-implement` runs inside an autonomous session dispatched by
+  `/sr-start`. The orchestrator prepends a preamble to the session
   prompt that overrides your CLAUDE.md rules requiring human input —
   those become "post a Linear comment and exit clean" instead. See
-  `skills/ralph-start/scripts/autonomous-preamble.md`.
+  `skills/sr-start/scripts/autonomous-preamble.md`.
 
 ## Version
 

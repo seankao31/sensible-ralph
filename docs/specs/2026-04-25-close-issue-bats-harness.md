@@ -11,13 +11,13 @@ step. Changes to the skill (e.g. ENG-208's Step 3.5 stale-parent labeling,
 ENG-207's blocker check) require manual QA against a real Linear workspace
 before they can ship. There's no test harness.
 
-`skills/ralph-start/scripts/lib/*.sh` already solved this problem and is
+`skills/sr-start/scripts/lib/*.sh` already solved this problem and is
 covered by ~3,300 lines of bats across nine files. The harness is proven; it
 uses two distinct stubbing patterns documented below.
 
 This issue is the proof-of-concept extraction: pick the smallest meaningful
 unit of close-issue, lift it into a sourceable function, add bats coverage
-using ralph-start's existing patterns. Subsequent extractions (Step 3.5
+using sr-start's existing patterns. Subsequent extractions (Step 3.5
 stale-parent, Step 6 transition wrapper, Step 7 codex broker reap) build on
 the harness landed here.
 
@@ -39,16 +39,16 @@ intentional fix-while-here noted in the design.
   block becomes a single `close_issue_check_review_state` call; Step 6's
   `current_state=$(linear issue view ...)` becomes
   `current_state=$(linear_get_issue_state ...)`.
-- `skills/ralph-start/scripts/lib/linear.sh` — adds
+- `skills/sr-start/scripts/lib/linear.sh` — adds
   `linear_get_issue_state`.
-- `skills/ralph-start/scripts/test/linear.bats` — adds tests for
+- `skills/sr-start/scripts/test/linear.bats` — adds tests for
   `linear_get_issue_state`.
 
 ## Design
 
-### `linear_get_issue_state` (ralph-start)
+### `linear_get_issue_state` (sr-start)
 
-Add to `skills/ralph-start/scripts/lib/linear.sh` next to
+Add to `skills/sr-start/scripts/lib/linear.sh` next to
 `linear_get_issue_branch`. Same shape as that function — fail loud with a
 named-prefix stderr diagnostic, use `--no-comments` for perf:
 
@@ -79,7 +79,7 @@ sourceable unit:
 # Sourced (not executed); do NOT call `set` or `exit` at top level.
 #
 # Dependencies (caller must have these in scope before sourcing):
-#   - linear_get_issue_state from ralph-start's lib/linear.sh
+#   - linear_get_issue_state from sr-start's lib/linear.sh
 #   - $CLAUDE_PLUGIN_OPTION_REVIEW_STATE
 #   - $CLAUDE_PLUGIN_OPTION_IN_PROGRESS_STATE
 #   - $CLAUDE_PLUGIN_OPTION_DONE_STATE
@@ -130,19 +130,19 @@ non-recognized state an error case.
 
 ### SKILL.md edits
 
-**Source block** (in the "Source ralph-start libs" section): add a
+**Source block** (in the "Source sr-start libs" section): add a
 sixth source line for the new close-issue-side preflight lib. The
 existing block already loads `defaults.sh`, `linear.sh`, `scope.sh`,
-`branch_ancestry.sh` from `$RALPH_LIB`. Append:
+`branch_ancestry.sh` from `$SENSIBLE_RALPH_LIB`. Append:
 
 ```bash
 source "$CLAUDE_PLUGIN_ROOT/skills/close-issue/scripts/lib/preflight.sh"
 ```
 
 (Define a `CLOSE_ISSUE_LIB="$CLAUDE_PLUGIN_ROOT/skills/close-issue/scripts/lib"`
-var first if you want to mirror the `RALPH_LIB` style — single source
+var first if you want to mirror the `SENSIBLE_RALPH_LIB` style — single source
 line either way, so it's an aesthetic call.) The existing
-`source "$RALPH_LIB/linear.sh"` line is what makes
+`source "$SENSIBLE_RALPH_LIB/linear.sh"` line is what makes
 `linear_get_issue_state` visible to `preflight.sh` at call time.
 
 **Pre-flight §1** (the "Verify the issue is in the review state"
@@ -180,7 +180,7 @@ SKILL.md — preserve it verbatim. Prose around the section is retained.
 
 ### Test patterns
 
-Two patterns reused from ralph-start, no invention.
+Two patterns reused from sr-start, no invention.
 
 **Pattern 1: PATH-stub the `linear` binary** (used in the existing
 `linear.bats`). Used when testing the real `lib/linear.sh` functions —
@@ -216,9 +216,9 @@ shape:
 
 ```
 # Tests for skills/close-issue/scripts/lib/preflight.sh
-# Modeled after skills/ralph-start/scripts/test/orchestrator.bats —
+# Modeled after skills/sr-start/scripts/test/orchestrator.bats —
 # function-level stubbing via STUB_DIR mirrored layout. See linear.bats
-# in ralph-start for the alternative PATH-stub pattern (used when testing
+# in sr-start for the alternative PATH-stub pattern (used when testing
 # helpers that wrap the linear CLI directly).
 ```
 
@@ -273,7 +273,7 @@ explicitly noted:
   once this harness is proven.
 - **Documenting the harness pattern in a separate playbook doc.** The
   pattern is documented near the code (header comments in the new bats
-  file + the existing ralph-start bats files). A standalone playbook for
+  file + the existing sr-start bats files). A standalone playbook for
   one pattern is heavier than warranted.
 - **CI integration / running bats automatically.** No CI exists in the
   plugin yet (`.github/` is absent). Adding it is a separate concern and
@@ -283,7 +283,7 @@ explicitly noted:
 
 1. `bats skills/close-issue/scripts/test/preflight.bats` runs green
    non-interactively (no Linear network calls).
-2. `bats skills/ralph-start/scripts/test/linear.bats` runs green — the
+2. `bats skills/sr-start/scripts/test/linear.bats` runs green — the
    ~30 existing tests still pass alongside the three new ones for
    `linear_get_issue_state`.
 3. `skills/close-issue/SKILL.md` Pre-flight §1's inline bash block is
@@ -293,7 +293,7 @@ explicitly noted:
    .state.name` is replaced by `linear_get_issue_state "$ISSUE_ID"` with
    a fail-loud rc check.
 5. `linear_get_issue_state` is defined in
-   `skills/ralph-start/scripts/lib/linear.sh` with the same shape as
+   `skills/sr-start/scripts/lib/linear.sh` with the same shape as
    `linear_get_issue_branch`, including `--no-comments`.
 6. The new `preflight.bats` header comment names both reference patterns
    (`orchestrator.bats` for function-level stubbing,
@@ -308,17 +308,17 @@ None. No `blocked-by` relations to set.
 
 ## Notes for the autonomous implementer
 
-- Run `bats skills/ralph-start/scripts/test/linear.bats` once **before**
+- Run `bats skills/sr-start/scripts/test/linear.bats` once **before**
   any edits to confirm the baseline passes locally. If it doesn't, stop
   and surface — the failure isn't yours.
 - The two patterns this spec invokes (PATH-stub and STUB_DIR mirrored
-  layout) are demonstrated in `skills/ralph-start/scripts/test/`. Read
+  layout) are demonstrated in `skills/sr-start/scripts/test/`. Read
   those files; do not invent new patterns.
 - The `--no-comments` flag on `linear issue view` is real; the linear-cli
   supports it (existing `linear_get_issue_branch` uses it). Don't omit it
   to "match" the current SKILL.md inline call — the helper's whole job is
   to be the canonical fast-path for state reads.
-- SKILL.md's "Source ralph-start libs" section already loads `linear.sh`.
+- SKILL.md's "Source sr-start libs" section already loads `linear.sh`.
   Add the new `preflight.sh` source line after `branch_ancestry.sh` to
   keep the load order: defaults → linear → scope → branch_ancestry →
   preflight. (Section names are stable; line numbers shift as you edit.)

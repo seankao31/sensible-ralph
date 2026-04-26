@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # Tests for scripts/lib/scope.sh
-# Sources the scope loader and verifies RALPH_PROJECTS / RALPH_SCOPE_LOADED.
+# Sources the scope loader and verifies SENSIBLE_RALPH_PROJECTS / SENSIBLE_RALPH_SCOPE_LOADED.
 
 SCRIPT_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
 # No /lib/ prefix: SCRIPT_DIR resolves to lib/ (parent of lib/test/), and the
@@ -9,13 +9,13 @@ SCOPE_SH="$SCRIPT_DIR/scope.sh"
 LINEAR_SH="$SCRIPT_DIR/linear.sh"
 
 # ---------------------------------------------------------------------------
-# Setup: fake repo root with a .ralph.json. scope.sh resolves the repo root
+# Setup: fake repo root with a .sensible-ralph.json. scope.sh resolves the repo root
 # from the caller's cwd, so tests must cd into this fake root before sourcing.
 # ---------------------------------------------------------------------------
 setup() {
   TEST_REPO_ROOT="$(mktemp -d)"
   git -C "$TEST_REPO_ROOT" init --quiet
-  cat > "$TEST_REPO_ROOT/.ralph.json" <<'EOF'
+  cat > "$TEST_REPO_ROOT/.sensible-ralph.json" <<'EOF'
 {
   "projects": ["Project A", "Project B"]
 }
@@ -28,8 +28,8 @@ teardown() {
 
 # ---------------------------------------------------------------------------
 # Helper: source scope.sh in a subshell from within TEST_REPO_ROOT, capture
-# all RALPH_* exports. Iterating `compgen -v RALPH_` preserves multi-line
-# values (e.g. RALPH_PROJECTS) that `env | grep "^RALPH_"` would truncate —
+# all SENSIBLE_RALPH_* exports. Iterating `compgen -v SENSIBLE_RALPH_` preserves multi-line
+# values (e.g. SENSIBLE_RALPH_PROJECTS) that `env | grep "^SENSIBLE_RALPH_"` would truncate —
 # env separates entries with \n, so a value containing \n looks like a new
 # entry that grep filters out.
 # ---------------------------------------------------------------------------
@@ -38,50 +38,50 @@ source_scope() {
     cd "$1"
     source "$2" || exit $?
     source "$3" || exit $?
-    for var in $(compgen -v RALPH_); do
+    for var in $(compgen -v SENSIBLE_RALPH_); do
       printf "%s=%s\n" "$var" "${!var}"
     done
   ' _ "$TEST_REPO_ROOT" "$LINEAR_SH" "$SCOPE_SH"
 }
 
 # ---------------------------------------------------------------------------
-# 1. .ralph.json 'projects' list → RALPH_PROJECTS is newline-joined string
+# 1. .sensible-ralph.json 'projects' list → SENSIBLE_RALPH_PROJECTS is newline-joined string
 # ---------------------------------------------------------------------------
-@test ".ralph.json projects list exports RALPH_PROJECTS newline-joined" {
+@test ".sensible-ralph.json projects list exports SENSIBLE_RALPH_PROJECTS newline-joined" {
   run source_scope
 
   [ "$status" -eq 0 ]
-  # env separates entries with newlines; a multi-line RALPH_PROJECTS value
-  # spans multiple lines in the output until the next RALPH_* name appears.
-  if [[ "$output" != *"RALPH_PROJECTS=Project A"* ]]; then
-    echo "RALPH_PROJECTS missing first project, got: $output" >&2
+  # env separates entries with newlines; a multi-line SENSIBLE_RALPH_PROJECTS value
+  # spans multiple lines in the output until the next SENSIBLE_RALPH_* name appears.
+  if [[ "$output" != *"SENSIBLE_RALPH_PROJECTS=Project A"* ]]; then
+    echo "SENSIBLE_RALPH_PROJECTS missing first project, got: $output" >&2
     return 1
   fi
   if [[ "$output" != *"Project B"* ]]; then
-    echo "RALPH_PROJECTS missing second project, got: $output" >&2
+    echo "SENSIBLE_RALPH_PROJECTS missing second project, got: $output" >&2
     return 1
   fi
 }
 
 # ---------------------------------------------------------------------------
-# 2. Missing .ralph.json → hard error
+# 2. Missing .sensible-ralph.json → hard error
 # ---------------------------------------------------------------------------
-@test "missing .ralph.json exits 1 with helpful error" {
-  rm -f "$TEST_REPO_ROOT/.ralph.json"
+@test "missing .sensible-ralph.json exits 1 with helpful error" {
+  rm -f "$TEST_REPO_ROOT/.sensible-ralph.json"
 
   run bash -c "cd '$TEST_REPO_ROOT' && source '$LINEAR_SH' && source '$SCOPE_SH'" 2>&1
   [ "$status" -eq 1 ]
-  if [[ "$output" != *".ralph.json"* ]]; then
-    echo "expected '.ralph.json' in error, got: $output" >&2
+  if [[ "$output" != *".sensible-ralph.json"* ]]; then
+    echo "expected '.sensible-ralph.json' in error, got: $output" >&2
     return 1
   fi
 }
 
 # ---------------------------------------------------------------------------
-# 3. Empty projects list in .ralph.json → hard error
+# 3. Empty projects list in .sensible-ralph.json → hard error
 # ---------------------------------------------------------------------------
 @test "empty projects list exits 1 with error" {
-  cat > "$TEST_REPO_ROOT/.ralph.json" <<'EOF'
+  cat > "$TEST_REPO_ROOT/.sensible-ralph.json" <<'EOF'
 {
   "projects": []
 }
@@ -99,7 +99,7 @@ EOF
 # 4. Both projects and initiative set → hard error
 # ---------------------------------------------------------------------------
 @test "both projects and initiative set exits 1" {
-  cat > "$TEST_REPO_ROOT/.ralph.json" <<'EOF'
+  cat > "$TEST_REPO_ROOT/.sensible-ralph.json" <<'EOF'
 {
   "projects": ["Project A"],
   "initiative": "Some Initiative"
@@ -118,7 +118,7 @@ EOF
 # 5. Neither projects nor initiative set → hard error
 # ---------------------------------------------------------------------------
 @test "neither projects nor initiative exits 1" {
-  cat > "$TEST_REPO_ROOT/.ralph.json" <<'EOF'
+  cat > "$TEST_REPO_ROOT/.sensible-ralph.json" <<'EOF'
 {}
 EOF
 
@@ -131,12 +131,12 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# 6. .ralph.json with `initiative` key → scope.sh expands via
+# 6. .sensible-ralph.json with `initiative` key → scope.sh expands via
 #    linear_list_initiative_projects (sourced from lib/linear.sh) and
-#    exports the resolved project list as RALPH_PROJECTS.
+#    exports the resolved project list as SENSIBLE_RALPH_PROJECTS.
 # ---------------------------------------------------------------------------
-@test ".ralph.json initiative expands via linear to RALPH_PROJECTS" {
-  cat > "$TEST_REPO_ROOT/.ralph.json" <<'EOF'
+@test ".sensible-ralph.json initiative expands via linear to SENSIBLE_RALPH_PROJECTS" {
+  cat > "$TEST_REPO_ROOT/.sensible-ralph.json" <<'EOF'
 {
   "initiative": "Demo Initiative"
 }
@@ -157,18 +157,18 @@ STUB
     export PATH="$2:$PATH"
     source "$3" || exit $?
     source "$4" || exit $?
-    for var in $(compgen -v RALPH_); do
+    for var in $(compgen -v SENSIBLE_RALPH_); do
       printf "%s=%s\n" "$var" "${!var}"
     done
   ' _ "$TEST_REPO_ROOT" "$stub_dir" "$LINEAR_SH" "$SCOPE_SH"
 
   [ "$status" -eq 0 ]
   if [[ "$output" != *"Alpha"* ]]; then
-    echo "RALPH_PROJECTS missing Alpha, got: $output" >&2
+    echo "SENSIBLE_RALPH_PROJECTS missing Alpha, got: $output" >&2
     return 1
   fi
   if [[ "$output" != *"Beta"* ]]; then
-    echo "RALPH_PROJECTS missing Beta, got: $output" >&2
+    echo "SENSIBLE_RALPH_PROJECTS missing Beta, got: $output" >&2
     return 1
   fi
 }
@@ -177,7 +177,7 @@ STUB
 # 7. Initiative that resolves to zero projects → hard error
 # ---------------------------------------------------------------------------
 @test "initiative resolving to zero projects exits 1" {
-  cat > "$TEST_REPO_ROOT/.ralph.json" <<'EOF'
+  cat > "$TEST_REPO_ROOT/.sensible-ralph.json" <<'EOF'
 {
   "initiative": "Empty"
 }
@@ -209,17 +209,17 @@ STUB
 }
 
 # ---------------------------------------------------------------------------
-# 8. RALPH_SCOPE_LOADED is a tuple "<repo-root-abs-path>|<scope-hash>".
+# 8. SENSIBLE_RALPH_SCOPE_LOADED is a tuple "<repo-root-abs-path>|<scope-hash>".
 #    Entry-point scripts gate auto-source on this marker so repeat invocations
 #    in the same shell don't re-source scope.sh unless either the repo root
-#    changed OR .ralph.json content changed.
+#    changed OR .sensible-ralph.json content changed.
 # ---------------------------------------------------------------------------
-@test "RALPH_SCOPE_LOADED is a tuple of repo-root and scope-hash" {
+@test "SENSIBLE_RALPH_SCOPE_LOADED is a tuple of repo-root and scope-hash" {
   run source_scope
 
   [ "$status" -eq 0 ]
-  if [[ "$output" != *"RALPH_SCOPE_LOADED="*"|"* ]]; then
-    echo "RALPH_SCOPE_LOADED should contain '|', got: $output" >&2
+  if [[ "$output" != *"SENSIBLE_RALPH_SCOPE_LOADED="*"|"* ]]; then
+    echo "SENSIBLE_RALPH_SCOPE_LOADED should contain '|', got: $output" >&2
     return 1
   fi
   if [[ "$output" != *"$TEST_REPO_ROOT"* ]]; then
@@ -233,7 +233,7 @@ STUB
 #    Claude Code's Bash tool dispatches commands through /bin/zsh -c on
 #    macOS, so skill-doc snippets that source scope.sh trip on bash-only
 #    constructs. This test reproduces the failure mode: zsh-side source
-#    must succeed and export RALPH_PROJECTS.
+#    must succeed and export SENSIBLE_RALPH_PROJECTS.
 # ---------------------------------------------------------------------------
 @test "scope.sh sources cleanly from zsh" {
   command -v zsh >/dev/null || skip "zsh not installed"
@@ -242,7 +242,7 @@ STUB
     cd '$TEST_REPO_ROOT'
     source '$LINEAR_SH' || exit 10
     source '$SCOPE_SH' || exit 11
-    printf 'PROJECTS=%s\n' \"\$RALPH_PROJECTS\"
+    printf 'PROJECTS=%s\n' \"\$SENSIBLE_RALPH_PROJECTS\"
   " 2>&1
 
   [ "$status" -eq 0 ]
@@ -255,7 +255,7 @@ STUB
 # ---------------------------------------------------------------------------
 # 10. scope.sh fails loudly if linear.sh was not pre-sourced. Guards against
 #     callers (e.g. future skill-doc snippets) that forget the order
-#     dependency — without the guard, the .ralph.json initiative path would
+#     dependency — without the guard, the .sensible-ralph.json initiative path would
 #     hit a late "command not found" on linear_list_initiative_projects,
 #     which is much harder to trace than a load-time error.
 # ---------------------------------------------------------------------------
@@ -269,15 +269,15 @@ STUB
 }
 
 # ---------------------------------------------------------------------------
-# 11. default_base_branch absent → RALPH_DEFAULT_BASE_BRANCH defaults to "main".
-#     Preserves today's behavior for every existing .ralph.json.
+# 11. default_base_branch absent → SENSIBLE_RALPH_DEFAULT_BASE_BRANCH defaults to "main".
+#     Preserves today's behavior for every existing .sensible-ralph.json.
 # ---------------------------------------------------------------------------
-@test "default_base_branch absent defaults RALPH_DEFAULT_BASE_BRANCH to main" {
+@test "default_base_branch absent defaults SENSIBLE_RALPH_DEFAULT_BASE_BRANCH to main" {
   run source_scope
 
   [ "$status" -eq 0 ]
-  if [[ "$output" != *"RALPH_DEFAULT_BASE_BRANCH=main"* ]]; then
-    echo "expected RALPH_DEFAULT_BASE_BRANCH=main, got: $output" >&2
+  if [[ "$output" != *"SENSIBLE_RALPH_DEFAULT_BASE_BRANCH=main"* ]]; then
+    echo "expected SENSIBLE_RALPH_DEFAULT_BASE_BRANCH=main, got: $output" >&2
     return 1
   fi
 }
@@ -286,7 +286,7 @@ STUB
 # 12. default_base_branch set → exports the configured value.
 # ---------------------------------------------------------------------------
 @test "default_base_branch set exports the configured value" {
-  cat > "$TEST_REPO_ROOT/.ralph.json" <<'EOF'
+  cat > "$TEST_REPO_ROOT/.sensible-ralph.json" <<'EOF'
 {
   "projects": ["Project A"],
   "default_base_branch": "dev"
@@ -296,8 +296,8 @@ EOF
   run source_scope
 
   [ "$status" -eq 0 ]
-  if [[ "$output" != *"RALPH_DEFAULT_BASE_BRANCH=dev"* ]]; then
-    echo "expected RALPH_DEFAULT_BASE_BRANCH=dev, got: $output" >&2
+  if [[ "$output" != *"SENSIBLE_RALPH_DEFAULT_BASE_BRANCH=dev"* ]]; then
+    echo "expected SENSIBLE_RALPH_DEFAULT_BASE_BRANCH=dev, got: $output" >&2
     return 1
   fi
 }
@@ -307,7 +307,7 @@ EOF
 #     the key rather than silently defaulting an empty string to a git ref.
 # ---------------------------------------------------------------------------
 @test "default_base_branch empty string exits 1 with error" {
-  cat > "$TEST_REPO_ROOT/.ralph.json" <<'EOF'
+  cat > "$TEST_REPO_ROOT/.sensible-ralph.json" <<'EOF'
 {
   "projects": ["Project A"],
   "default_base_branch": ""
@@ -327,7 +327,7 @@ EOF
 #     at load time rather than letting it leak to git-ref resolution.
 # ---------------------------------------------------------------------------
 @test "default_base_branch as number exits 1 with error" {
-  cat > "$TEST_REPO_ROOT/.ralph.json" <<'EOF'
+  cat > "$TEST_REPO_ROOT/.sensible-ralph.json" <<'EOF'
 {
   "projects": ["Project A"],
   "default_base_branch": 123
@@ -346,7 +346,7 @@ EOF
 # 15. default_base_branch as JSON boolean → hard error.
 # ---------------------------------------------------------------------------
 @test "default_base_branch as boolean exits 1 with error" {
-  cat > "$TEST_REPO_ROOT/.ralph.json" <<'EOF'
+  cat > "$TEST_REPO_ROOT/.sensible-ralph.json" <<'EOF'
 {
   "projects": ["Project A"],
   "default_base_branch": false

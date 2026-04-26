@@ -8,12 +8,12 @@ The repo's documentation has two layers today, and they conflate two
 different jobs.
 
 - `docs/specs/` holds 12 active files. Roughly half are per-ticket
-  implementation specs (`fix-ralph-spec-echo-pipe-jq.md`,
-  `2026-04-25-codex-review-gate-in-ralph-spec.md`, etc.) — written by
-  `/ralph-spec`, scoped to one Linear issue, frozen on completion.
+  implementation specs (`fix-sr-spec-echo-pipe-jq.md`,
+  `2026-04-25-codex-review-gate-in-sr-spec.md`, etc.) — written by
+  `/sr-spec`, scoped to one Linear issue, frozen on completion.
   Roughly half are subsystem design docs
   (`ralph-loop-v2-design.md`, `ralph-scope-model-design.md`,
-  `ralph-implement-skill-design.md`) — they describe how a subsystem is
+  `sr-implement-skill-design.md`) — they describe how a subsystem is
   designed, but they were each born as a per-ticket spec and still
   carry that framing (Linear issue + date headers, "Supersedes ENG-X"
   pointers, "v2" in the filename).
@@ -44,14 +44,14 @@ take any of them on; none gates this issue.
 
 - Migrating `docs/specs/ralph-loop-v2-design.md` (514 lines,
   point-in-time framing scattered through the body) to `docs/design/`.
-- Migrating `docs/specs/ralph-implement-skill-design.md` (written as a
+- Migrating `docs/specs/sr-implement-skill-design.md` (written as a
   "Superseded by ENG-206" pointer; currency check is non-trivial) to
   `docs/design/`.
 - Wiring `/prepare-for-review` or `update-stale-docs` to mechanically
   enforce the implementer-responsibility rule. The MVP relies on
   social enforcement via the CLAUDE.md rule.
-- Adding `docs/design/` context-scanning to `/ralph-spec` or
-  `/ralph-implement`. Skill discoverability comes via CLAUDE.md, which
+- Adding `docs/design/` context-scanning to `/sr-spec` or
+  `/sr-implement`. Skill discoverability comes via CLAUDE.md, which
   every session reads at start.
 - Tooling to detect when a cluster of related decisions is ripe for
   synthesis into a design doc.
@@ -92,7 +92,7 @@ Three places live docs go:
   the system; updated whenever a change makes the doc stale. One file
   per subsystem, kebab-case topic name, no date or Linear issue header.
 - **`docs/specs/`** — per-ticket implementation specs. Written by
-  `/ralph-spec`, scoped to a single Linear issue, frozen on completion.
+  `/sr-spec`, scoped to a single Linear issue, frozen on completion.
   Mostly implementation context and detail; not a project-design
   reference.
 - **`docs/decisions/`** — captured non-obvious choices, atomic and
@@ -130,8 +130,8 @@ The existing file (194 lines) is the smallest of the three
    ```markdown
    # Scope model
 
-   Per-repo scope (`<repo-root>/.ralph.json`) declares which Linear
-   projects this repo's `/ralph-start` sessions drain. The orchestrator
+   Per-repo scope (`<repo-root>/.sensible-ralph.json`) declares which Linear
+   projects this repo's `/sr-start` sessions drain. The orchestrator
    reads scope before every dispatch to bound queue construction,
    blocker resolution, and out-of-scope preflight checks.
    ```
@@ -146,7 +146,7 @@ The existing file (194 lines) is the smallest of the three
    paragraphs (the doc was originally written as a v2 design and
    carries some forward-looking-from-v1 phrasing).
 3. **Currency check.** Read the file end-to-end against current
-   `skills/ralph-start/scripts/lib/scope.sh`. If any behavior
+   `skills/sr-start/scripts/lib/scope.sh`. If any behavior
    described in the doc has drifted from the code (different env var
    name, different shape validation, different error message text),
    patch the doc inline. Do **not** modify `scope.sh`.
@@ -181,7 +181,7 @@ in [`docs/decisions/`](docs/decisions/).
 `docs/usage.md` line 3 currently reads:
 
 ```markdown
-For design details see `docs/specs/ralph-loop-v2-design.md`; for the SKILL contract see `skills/ralph-start/SKILL.md`.
+For design details see `docs/specs/ralph-loop-v2-design.md`; for the SKILL contract see `skills/sr-start/SKILL.md`.
 ```
 
 **Leave unchanged.** `ralph-loop-v2-design.md` is a non-goal of this
@@ -229,8 +229,8 @@ reading and grepping.
 
 - No edits to any file under `skills/`.
 - No edits to `docs/specs/ralph-loop-v2-design.md`.
-- No edits to `docs/specs/ralph-implement-skill-design.md`.
-- No edits to `skills/ralph-start/scripts/lib/scope.sh` (read-only
+- No edits to `docs/specs/sr-implement-skill-design.md`.
+- No edits to `skills/sr-start/scripts/lib/scope.sh` (read-only
   reference for currency-checking the migrated doc).
 
 ## Single-PR scope

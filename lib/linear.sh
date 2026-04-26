@@ -4,7 +4,7 @@
 #
 # Source order: this file FIRST, then lib/scope.sh — scope.sh's `_scope_load`
 # guards on `linear_list_initiative_projects` being defined. The functions
-# below also reference RALPH_PROJECTS (from scope.sh),
+# below also reference SENSIBLE_RALPH_PROJECTS (from scope.sh),
 # CLAUDE_PLUGIN_OPTION_APPROVED_STATE, and CLAUDE_PLUGIN_OPTION_FAILED_LABEL
 # (from the plugin harness) at call time; those must be set before invoking
 # the corresponding helpers.
@@ -21,7 +21,7 @@
 #   linear_label_exists             — test whether a label name exists in the workspace
 #   linear_comment                  — post a comment on an issue
 
-# List issue IDs across the configured projects ($RALPH_PROJECTS, newline-
+# List issue IDs across the configured projects ($SENSIBLE_RALPH_PROJECTS, newline-
 # joined) with state name matching $CLAUDE_PLUGIN_OPTION_APPROVED_STATE,
 # excluding issues labeled $CLAUDE_PLUGIN_OPTION_FAILED_LABEL. Outputs one
 # issue ID per line.
@@ -49,13 +49,13 @@ linear_list_approved_issues() {
            (.labels.nodes | map(.name) | index($failed_label)) == null
          )
        | .identifier'
-  done <<< "$RALPH_PROJECTS"
+  done <<< "$SENSIBLE_RALPH_PROJECTS"
 }
 
 # Expand an initiative name to the list of its member project names.
 # Outputs: one project name per line (newline-joined).
 #
-# Used by scope.sh when .ralph.json carries `initiative: "..."` instead of
+# Used by scope.sh when .sensible-ralph.json carries `initiative: "..."` instead of
 # an explicit `projects` list. `linear issue query --initiative` does not
 # exist (CLI v2.0.0), so the resolution path is a GraphQL lookup via
 # `linear api`.
@@ -121,7 +121,7 @@ GRAPHQL
 # server-side filter parameter.
 #
 # The project field feeds the out-of-scope-blocker anomaly path (ENG-205):
-# preflight/build_queue compare the blocker's project against RALPH_PROJECTS
+# preflight/build_queue compare the blocker's project against SENSIBLE_RALPH_PROJECTS
 # to distinguish "in-scope but not queueable" from "outside this run's scope".
 #
 # Pagination: requests first: 250 (well above realistic blocker counts) and

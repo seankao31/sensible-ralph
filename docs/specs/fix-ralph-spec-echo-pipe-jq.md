@@ -1,4 +1,4 @@
-# Fix `ralph-spec` echo-pipe-jq to use `printf` (zsh-safe)
+# Fix `sr-spec` echo-pipe-jq to use `printf` (zsh-safe)
 
 **Linear:** ENG-269
 **Date:** 2026-04-25
@@ -6,12 +6,12 @@
 ## Goal
 
 Replace `echo "$VIEW" | jq` with `printf '%s' "$VIEW" | jq` on three
-lines of `skills/ralph-spec/SKILL.md`, so the preflight block survives
+lines of `skills/sr-spec/SKILL.md`, so the preflight block survives
 zsh's backslash-expanding `echo` builtin when the Claude Code Bash tool
 dispatches commands through `/bin/zsh -c`.
 
 This restores consistency with the rest of the codebase — `printf '%s'
-| jq` is already the dominant pattern across `skills/ralph-start/`,
+| jq` is already the dominant pattern across `skills/sr-start/`,
 `skills/close-issue/SKILL.md`, and even line 320 of this same file
 (`BLOCKERS_JSON`). The three offending lines are the outlier.
 
@@ -32,16 +32,16 @@ U+001F must be escaped
 argument — only in the format string — so the JSON round-trips intact
 regardless of which shell is interpreting the command.
 
-This was first observed during a `/ralph-spec ENG-234` run on
+This was first observed during a `/sr-spec ENG-234` run on
 2026-04-24, where the preflight block crashed on a description
 containing a multi-line code fence. The fix was applied inline at the
 time; this issue codifies it in the SKILL.
 
 ## Scope
 
-Edit exactly one file: `skills/ralph-spec/SKILL.md`.
+Edit exactly one file: `skills/sr-spec/SKILL.md`.
 
-Note: ENG-269's description references `agent-config/skills/ralph-spec/
+Note: ENG-269's description references `agent-config/skills/sr-spec/
 SKILL.md`, which is the pre-extraction location. The live file in this
 repository lives under `skills/`. Edit the live path, not the historical
 one.
@@ -73,10 +73,10 @@ three lines would be inconsistent.
 
 After the edit, all of the following must pass:
 
-1. `grep -nE 'echo .*\| *jq' skills/ralph-spec/SKILL.md`
+1. `grep -nE 'echo .*\| *jq' skills/sr-spec/SKILL.md`
    → zero matches.
 
-2. `grep -cF 'printf '\''%s'\'' "$VIEW" | jq' skills/ralph-spec/SKILL.md`
+2. `grep -cF 'printf '\''%s'\'' "$VIEW" | jq' skills/sr-spec/SKILL.md`
    → exactly `3` (fixed-string count; no regex escaping pitfalls).
 
 3. Repo-wide audit stays clean:
@@ -85,7 +85,7 @@ After the edit, all of the following must pass:
 
 No automated test suite covers this file; verification is the three
 greps above. The fix can additionally be exercised end-to-end by
-running `/ralph-spec` against any Linear issue with a multi-line
+running `/sr-spec` against any Linear issue with a multi-line
 description and confirming the preflight block does not error — but
 this is optional, not gating.
 

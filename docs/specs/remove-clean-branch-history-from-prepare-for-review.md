@@ -118,8 +118,8 @@ The following files/places are explicitly excluded:
 - chezmoi `agent-config/docs/specs/2026-04-24-sensible-ralph-plugin-extraction.md`
   — lists `clean-branch-history` among skills to extract to the plugin.
   Still correct: the skill moves to the plugin regardless of this change.
-- Other skills in this plugin (`close-issue`, `ralph-implement`, `ralph-spec`,
-  `ralph-start`) — none reference `clean-branch-history` or the step
+- Other skills in this plugin (`close-issue`, `sr-implement`, `sr-spec`,
+  `sr-start`) — none reference `clean-branch-history` or the step
   numbering changed here.
 
 ## Verification

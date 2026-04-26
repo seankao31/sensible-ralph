@@ -1,13 +1,13 @@
 #!/usr/bin/env bats
-# Tests for skills/ralph-status/scripts/render_status.sh — the read-only
-# /ralph-status renderer. Uses a real throwaway git repo and writes synthetic
+# Tests for skills/sr-status/scripts/render_status.sh — the read-only
+# /sr-status renderer. Uses a real throwaway git repo and writes synthetic
 # progress.json + ordered_queue.txt fixtures.
 
-# Project root containing skills/ralph-start and skills/ralph-status.
-# The renderer sources $CLAUDE_PLUGIN_ROOT/skills/ralph-start/scripts/lib/...,
+# Project root containing skills/sr-start and skills/sr-status.
+# The renderer sources $CLAUDE_PLUGIN_ROOT/skills/sr-start/scripts/lib/...,
 # so we point CLAUDE_PLUGIN_ROOT at the project root.
 PLUGIN_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../../../.." && pwd)"
-RENDER_SH="$PLUGIN_ROOT/skills/ralph-status/scripts/render_status.sh"
+RENDER_SH="$PLUGIN_ROOT/skills/sr-status/scripts/render_status.sh"
 
 setup() {
   REPO_DIR="$(cd "$(mktemp -d)" && pwd -P)"
@@ -17,7 +17,7 @@ setup() {
   git -C "$REPO_DIR" config user.name "t"
   git -C "$REPO_DIR" commit --allow-empty -m "init" -q
 
-  mkdir -p "$REPO_DIR/.ralph"
+  mkdir -p "$REPO_DIR/.sensible-ralph"
 
   export CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT"
   # Defaults — the renderer also sources defaults.sh, but exporting here
@@ -38,13 +38,13 @@ run_render() {
 
 # Helper: write a progress.json fixture from a JSON literal.
 write_progress() {
-  printf '%s' "$1" > "$REPO_DIR/.ralph/progress.json"
+  printf '%s' "$1" > "$REPO_DIR/.sensible-ralph/progress.json"
 }
 
 write_queue() {
-  : > "$REPO_DIR/.ralph/ordered_queue.txt"
+  : > "$REPO_DIR/.sensible-ralph/ordered_queue.txt"
   for id in "$@"; do
-    printf '%s\n' "$id" >> "$REPO_DIR/.ralph/ordered_queue.txt"
+    printf '%s\n' "$id" >> "$REPO_DIR/.sensible-ralph/ordered_queue.txt"
   done
 }
 
@@ -55,7 +55,7 @@ write_queue() {
   run_render
   [ "$status" -eq 0 ]
   [[ "$output" == *"No ralph runs recorded"* ]]
-  [[ "$output" == *"/ralph-start"* ]]
+  [[ "$output" == *"/sr-start"* ]]
 }
 
 # ---------------------------------------------------------------------------
@@ -226,7 +226,7 @@ write_queue() {
     {"event":"start","issue":"ENG-400","branch":"eng-400","base":"main","timestamp":"2026-04-22T18:30:00Z","run_id":"'"$run_id"'"},
     {"event":"end","issue":"ENG-400","outcome":"in_review","branch":"eng-400","base":"main","exit_code":0,"duration_seconds":300,"timestamp":"2026-04-22T18:30:00Z","run_id":"'"$run_id"'"}
   ]'
-  : > "$REPO_DIR/.ralph/ordered_queue.txt"
+  : > "$REPO_DIR/.sensible-ralph/ordered_queue.txt"
 
   run_render
   [ "$status" -eq 0 ]
