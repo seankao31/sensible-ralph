@@ -103,8 +103,9 @@ you a working setup.
 ## Usage
 
 End-to-end operator flow is in [`docs/usage.md`](docs/usage.md).
-Architectural designs live in [`docs/specs/`](docs/specs/); decisions
-that outlived the designs live in [`docs/decisions/`](docs/decisions/).
+Subsystem design docs live in [`docs/design/`](docs/design/); per-ticket
+implementation specs in [`docs/specs/`](docs/specs/); captured decisions
+in [`docs/decisions/`](docs/decisions/).
 
 Brief summary:
 

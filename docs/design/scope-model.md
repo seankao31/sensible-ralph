@@ -1,19 +1,17 @@
-# Ralph Scope Model: Multi-Project Dispatch with Per-Repo Scope Config
+# Scope model
 
-**Linear issue:** ENG-205
-**Date:** 2026-04-21
-**Extends:** `ralph-loop-v2-design.md` (ENG-176)
-**Subsumes:** ENG-203 (cross-project blockers within an initiative)
+Per-repo scope (`<repo-root>/.ralph.json`) declares which Linear
+projects this repo's `/ralph-start` sessions drain. The orchestrator
+reads scope before every dispatch to bound queue construction,
+blocker resolution, and out-of-scope preflight checks.
 
 ## Problem
 
-`skills/ralph-start/config.json` hardcodes a single `project` field. This bakes in a single-scope assumption that doesn't match real workflows:
+A single hardcoded `project` field bakes in a single-scope assumption that doesn't match real workflows:
 
-1. **One repo, multiple projects.** A consumer repo may host more than one Linear project — say `Project A` and `Project B`. Today ralph can only drain one of them per run; operators must hand-edit the scope config and re-run to cover the other.
+1. **One repo, multiple projects.** A consumer repo may host more than one Linear project — say `Project A` and `Project B`. Single-project scope can only drain one of them per run; operators would have to hand-edit config and re-run to cover the other.
 2. **Concurrent sessions across repos.** Running `/ralph-start` in one repo while another session runs in a different repo should not produce collisions on `progress.json`, `ordered_queue.txt`, or worktree paths.
 3. **Auto-detect scope from cwd.** Invoking `/ralph-start` from a repo should resolve its scope from the repo itself, not from a hand-maintained global setting that drifts with "which repo am I standing in."
-
-The v2 spec (Contract Summary, Decision 7) already flagged single-project scope as a v2 constraint. ENG-203 attempted a narrower slice — cross-project blockers within one initiative — which this design subsumes.
 
 ## Non-goals (YAGNI)
 
@@ -54,7 +52,7 @@ For the case where an initiative's project membership genuinely matches a single
 **Resolution rules:**
 
 - `projects` present → used directly.
-- `initiative` present → expanded via `linear api` GraphQL (the CLI's `linear issue query` has no `--initiative` filter) to the list of member projects. Expansion runs each time `config.sh` is sourced — see Decision 3 for the caching semantics, and Open Questions for the known staleness window.
+- `initiative` present → expanded via `linear api` GraphQL (the CLI's `linear issue query` has no `--initiative` filter) to the list of member projects. Expansion runs each time `scope.sh` is sourced — see Decision 3 for the caching semantics, and Open Questions for the known staleness window.
 - Both fields present → hard error. The author must pick one expression.
 - Neither field present, or resolution yields an empty project list → hard error.
 
@@ -63,7 +61,7 @@ For the case where an initiative's project membership genuinely matches a single
 Two files:
 
 - **Per-repo: `<repo-root>/.ralph.json`** (committed to each target repo). Contains *only* scope — a `projects` list or an `initiative` name.
-- **Global: `skills/ralph-start/config.json`** (current location, unchanged). Keeps all workspace-wide workflow fields: state names, labels, `worktree_base`, `model`, `stdout_log_filename`, `prompt_template`. The `project` key is removed.
+- **Global: plugin `userConfig`** (declared in `.claude-plugin/plugin.json`, exported by the Claude Code harness as `CLAUDE_PLUGIN_OPTION_*` env vars; shell-side defaults in `lib/defaults.sh`). Keeps all workspace-wide workflow fields: state names, labels, `worktree_base`, `model`, `stdout_log_filename`. There is no `RALPH_PROJECT` env var; project scope is the per-repo concern.
 
 **Rationale:**
 
@@ -74,26 +72,36 @@ Two files:
 
 **File-name rationale:** `.ralph.json` matches the `.eslintrc.json` / `.prettierrc.json` dotfile-config convention; the file is set-once-per-repo so discoverability matters less than unobtrusiveness. Namespace collision with other `ralph`-named tools (Geoffrey Huntley's loop pattern has the same name but no on-disk artifacts) is a known minor risk; renaming can happen later if it bites.
 
-### 3. Config loading extends the existing anti-bleed-through guard
+### 3. Scope loading exports a content-hashed bleed-through guard
 
-Today, `lib/config.sh` exports `RALPH_CONFIG_LOADED=<global-config-path>` to let entry-point scripts detect a stale prior-shell invocation and re-source. With scope now living in the repo, the guard extends to a triple:
+`lib/scope.sh` parses `<repo>/.ralph.json`, validates it, and exports two
+things:
 
 ```
-RALPH_CONFIG_LOADED = "<global-config-abs-path>|<repo-root-abs-path>|<sha1-of-ralph.json>"
+RALPH_PROJECTS      = newline-joined list of in-scope project names
+RALPH_SCOPE_LOADED  = "<repo-root-abs-path>|<sha1-of-ralph.json>"
 ```
 
-The content hash catches in-place edits (and branch switches in the same worktree that change scope) — without it, the gate would match path-wise and skip re-loading across a scope change, leaving stale `RALPH_PROJECTS` in the shell.
+Entry-point scripts compute their own expected `RALPH_SCOPE_LOADED` and
+re-source `scope.sh` when the marker differs. The content hash catches
+in-place edits (and branch switches in the same worktree that change
+scope) — without it, the gate would match path-wise and skip re-loading
+across a scope change, leaving stale `RALPH_PROJECTS` in the shell.
+
+Workflow config (state names, labels, `worktree_base`, etc.) is exported
+separately by the plugin harness as `CLAUDE_PLUGIN_OPTION_*` env vars
+and is unaffected by scope reloading.
 
 Loading order:
 
 1. Resolve working-tree root via `git rev-parse --show-toplevel` (see Decision 2 rationale for the `--show-toplevel` vs `--git-common-dir` distinction).
-2. Load global `config.json` → exports workflow-level `RALPH_*` minus `RALPH_PROJECT`.
-3. Load `<repo>/.ralph.json` → resolves scope (expanding `initiative` via Linear if present) → exports `RALPH_PROJECTS` as a newline-joined string. The newline-joined pattern matches existing bash 3.2 conventions in the scripts; a real array isn't portable across `source` boundaries on macOS's default bash.
-4. Update `RALPH_CONFIG_LOADED` with the triple `"<global>|<repo-root>|<sha1-of-ralph.json>"`.
+2. Source `lib/linear.sh` first (it defines `linear_list_initiative_projects`, which the `.ralph.json` `initiative` shape calls). `lib/scope.sh` asserts that function is defined at load time and fails loudly otherwise — without the guard, the initiative path would emit a late "command not found" that's harder to trace.
+3. Source `lib/scope.sh` → resolves scope (expanding `initiative` via Linear if present) → exports `RALPH_PROJECTS` as a newline-joined string. The newline-joined pattern matches existing bash 3.2 conventions in the scripts; a real array isn't portable across `source` boundaries on macOS's default bash.
+4. Set `RALPH_SCOPE_LOADED` to the tuple `"<repo-root>|<sha1-of-ralph.json>"`.
 
-Entry-point scripts re-source when any component of the triple differs from their target. The sha1 component catches in-place scope edits (e.g., branch switches in the same worktree). This is the only mechanical change to the existing anti-bleed-through logic.
+The sha1 component catches in-place scope edits (e.g., branch switches in the same worktree).
 
-**Caching profile for initiative scope:** each entry-point subprocess started from the user's shell sources `config.sh` fresh (the user's shell does not propagate `RALPH_CONFIG_LOADED` back from children), so `preflight_scan.sh`, `build_queue.sh`, every preview-phase `dag_base.sh`, and `orchestrator.sh` each trigger one `linear_list_initiative_projects` call. Within a single subprocess chain — `orchestrator.sh` and the `dag_base.sh` subprocesses it spawns per issue — `RALPH_CONFIG_LOADED` is inherited and the gate skips re-source, so the orchestrator's in-flight run uses the project list captured at its startup. The staleness implication: if Linear initiative membership changes mid-orchestration, the running orchestrator does not pick it up until the next `/ralph-start`. Accepted as a known limitation — see Open Questions.
+**Caching profile for initiative scope:** each entry-point subprocess started from the user's shell sources `scope.sh` fresh (the user's shell does not propagate `RALPH_SCOPE_LOADED` back from children), so `preflight_scan.sh`, `build_queue.sh`, every preview-phase `dag_base.sh`, and `orchestrator.sh` each trigger one `linear_list_initiative_projects` call. Within a single subprocess chain — `orchestrator.sh` and the `dag_base.sh` subprocesses it spawns per issue — `RALPH_SCOPE_LOADED` is inherited and the gate skips re-source, so the orchestrator's in-flight run uses the project list captured at its startup. The staleness implication: if Linear initiative membership changes mid-orchestration, the running orchestrator does not pick it up until the next `/ralph-start`. Accepted as a known limitation — see Open Questions.
 
 **Validation at load (all hard errors — no silent fallbacks):**
 
@@ -116,7 +124,7 @@ Already returns all blockers regardless of project membership (via GraphQL `inve
 
 **Chain runnability (`preflight_scan.sh::_chain_runnable`, `build_queue.sh`):**
 
-Today: an `Approved` blocker is runnable only if its ID is in this run's approved set. Cross-project Approved blockers fail this check and the issue is reported stuck — the ENG-203 pain point.
+Today: an `Approved` blocker is runnable only if its ID is in this run's approved set. Cross-project Approved blockers fail this check and the issue is reported stuck.
 
 New: the membership check widens. An `Approved` blocker is runnable if it is in the approved set (which now spans `RALPH_PROJECTS`). A blocker whose project is *outside* the scope remains stuck; the error message changes from "blocker not in this project" to "blocker in project `<name>`, outside this run's scope — add to `.ralph.json` or resolve the relationship."
 
@@ -133,11 +141,11 @@ New: the membership check widens. An `Approved` blocker is runnable if it is in 
 
 ### 5. Concurrent cross-repo sessions are safe by construction
 
-ENG-205 asks whether `progress.json` should become `progress-<run_id>.json` or move to a scope-keyed state directory. Neither is necessary:
+A natural question: should `progress.json` become `progress-<run_id>.json` or move to a scope-keyed state directory to avoid cross-repo collisions? Neither is necessary:
 
 | Resource | Location | Why two-repo concurrency is safe |
 |---|---|---|
-| `progress.json` | Orchestrator cwd, anchored to repo root by `_resolve_repo_root` (ENG-202) | Two repos → two different parents → disjoint files |
+| `progress.json` | Orchestrator cwd, anchored to repo root by `_resolve_repo_root` | Two repos → two different parents → disjoint files |
 | `ordered_queue.txt` | Caller's cwd (currently not anchored via `_resolve_repo_root`; the implementation should anchor it to the repo root for consistency with `progress.json`) | Two repos → disjoint files when each session is invoked from its repo root |
 | `.worktrees/<branch>` | `<repo>/.worktrees/<branch>` via `worktree_path_for_issue` | Two repos → disjoint trees |
 | Linear state writes | Keyed by issue ID (unique workspace-wide) | No collision by construction |
@@ -149,46 +157,33 @@ The design's concurrency guarantee stops at the cross-repo boundary. Same-repo c
 
 What changes for callers and operators:
 
-- **Global `config.json`** no longer contains a `project` key. The required-keys list in SKILL.md's Prerequisites section updates accordingly.
+- **Workflow config** comes from the plugin's `userConfig` exported as `CLAUDE_PLUGIN_OPTION_*` env vars. There is no global `config.json` and no `RALPH_PROJECT` env var. The required-keys list in SKILL.md's Prerequisites section follows that shape.
 - **Each ralph-hosting repo** has a committed `<repo-root>/.ralph.json` with either `projects: [...]` or `initiative: "..."`.
 - **`linear_list_approved_issues`, `preflight_scan.sh`, `build_queue.sh`** exported surface is unchanged — callers still consume an issue-ID list. Internal query shape changes.
-- **`RALPH_PROJECTS`** replaces `RALPH_PROJECT` in the exported env-var set.
-- **`RALPH_CONFIG_LOADED`** becomes the triple `"<global>|<repo-root>|<sha1-of-ralph.json>"`.
+- **`RALPH_PROJECTS`** is the exported scope env var (newline-joined project names). There is no `RALPH_PROJECT`.
+- **`RALPH_SCOPE_LOADED`** is the tuple `"<repo-root>|<sha1-of-ralph.json>"` — the per-repo bleed-through guard. (No `RALPH_CONFIG_LOADED`; workflow config comes from the plugin harness, not a sourced shell file.)
 
-Nothing else in the v2 contract changes. The state machine, the pickup rule, the pre-flight anomaly policy, the outcome model, the orchestrator's DAG handling, `/prepare-for-review`, and `/close-feature-branch` are all untouched.
+Nothing else changes. The state machine, the pickup rule, the pre-flight anomaly policy, the outcome model, the orchestrator's DAG handling, `/prepare-for-review`, and `/close-feature-branch` are all untouched.
 
-## Code-change surface (roadmap, not implementation plan)
+## Code-change surface
 
-| File | Change |
+| File | What changed |
 |---|---|
-| `skills/ralph-start/config.json` | Remove `project` field |
-| `skills/ralph-start/config.example.json` | Same |
-| `skills/ralph-start/scripts/lib/config.sh` | Drop `RALPH_PROJECT`; add `.ralph.json` loader with scope resolution; export `RALPH_PROJECTS`; extend `RALPH_CONFIG_LOADED` tuple |
-| `skills/ralph-start/scripts/lib/linear.sh` | `linear_list_approved_issues` unions over `RALPH_PROJECTS`; new helper `linear_list_initiative_projects` (GraphQL via `linear api`) for `initiative` expansion |
-| `skills/ralph-start/scripts/preflight_scan.sh` | Update `_chain_runnable`; add out-of-scope-blocker anomaly |
-| `skills/ralph-start/scripts/build_queue.sh` | Match new `_chain_runnable` semantics |
-| `skills/ralph-start/SKILL.md` | Prerequisites: drop `project`, add `.ralph.json`; new section on scope resolution |
-| `docs/playbooks/ralph-v2-usage.md` | Revise "When to run" and the single-project scope language |
-| `docs/specs/ralph-loop-v2-design.md` | Contract-summary note about v2 single-project limit updated to reference this design |
-| `.ralph.json` at chezmoi repo root (new) | `{ "projects": ["Project A", "Project B"] }` |
-| `.chezmoiignore` (chezmoi source repo only) | Add `.ralph.json` so chezmoi does not apply it as a user dotfile — this file is repo-scope config, not a `$HOME` dotfile |
-| `skills/ralph-start/test/…` | Existing tests updated; new tests for scope resolution and multi-project queue building |
+| `skills/ralph-start/scripts/lib/scope.sh` (new) | Scope loader: parses `.ralph.json`, exports `RALPH_PROJECTS` + `RALPH_SCOPE_LOADED` |
+| `skills/ralph-start/scripts/lib/defaults.sh` (new) | Workflow defaults for `CLAUDE_PLUGIN_OPTION_*` env vars (replaces old `config.sh`/`config.json`) |
+| `skills/ralph-start/scripts/lib/linear.sh` | `linear_list_approved_issues` unions over `RALPH_PROJECTS`; `linear_list_initiative_projects` expands initiative shorthand |
+| `skills/ralph-start/scripts/preflight_scan.sh` | Updated `_chain_runnable`; out-of-scope-blocker anomaly added |
+| `skills/ralph-start/scripts/build_queue.sh` | Matches updated `_chain_runnable` semantics |
+| `skills/ralph-start/SKILL.md` | Prerequisites: `.ralph.json` replaces `project`; scope-resolution section added |
+| `docs/usage.md` | Operator flow updated for scope model |
+| `docs/design/scope-model.md` (this file, moved from `docs/specs/`) | Migrated from frozen spec to living design doc |
+| `<consumer-repo>/.ralph.json` (new per repo) | `{ "projects": [...] }` or `{ "initiative": "..." }` |
+| `skills/ralph-start/test/…` | Tests for scope resolution and multi-project queue building |
 
-## Coexistence with in-flight work
-
-**ENG-206 (In Progress)** — replaces `prompt_template` in `config.json` with a dedicated prompt file or dispatched skill. Orthogonal to this design (does not touch `project`), but both rewrite `config.json` / `lib/config.sh`. Sequence via explicit `blocked-by: ENG-206` on ENG-205 so the DAG order is visible to ralph itself.
-
-**ENG-203 (Triage)** — cross-project blockers within one initiative. Fully subsumed by Decision 4 under the project-list scope. Cancel with a comment pointing at this design + the implementation ticket.
-
-## Post-approval actions
-
-1. **Implementation proceeds under ENG-205** — design and implementation share this ticket; implementation work picks up on a new branch once ENG-206 lands. ENG-205 is `blocked-by: ENG-206`.
-2. **Close ENG-203 as subsumed** — comment linking to this design.
-
-## Open questions (deferred to implementation)
+## Open questions
 
 1. **Pre-validation of `projects` against Linear at load time.** Would catch unknown project names earlier but adds a round-trip to every invocation. Current plan: skip; the existing "query fails cleanly on unknown project" path is sufficient. Revisit if the early failure proves too cryptic in practice.
 
-2. **Initiative expansion freshness inside an orchestrator run.** As described in Decision 3, the reload gate lets `orchestrator.sh` and its per-issue `dag_base.sh` subprocesses share the initiative expansion captured at orchestrator startup — a Linear membership change during the run is invisible until the next `/ralph-start`. Accepted for now: mid-orchestration membership changes are rare; forcing re-expansion on every inherited subprocess would roughly double the initiative API traffic (from `N+3` calls per session to `2N+3`) for a scenario nobody has observed. If this staleness ever bites, the cheap fix is to unset `RALPH_CONFIG_LOADED` in `config.sh` on the initiative path so every subprocess re-expands.
+2. **Initiative expansion freshness inside an orchestrator run.** As described in Decision 3, the reload gate lets `orchestrator.sh` and its per-issue `dag_base.sh` subprocesses share the initiative expansion captured at orchestrator startup — a Linear membership change during the run is invisible until the next `/ralph-start`. Accepted for now: mid-orchestration membership changes are rare; forcing re-expansion on every inherited subprocess would roughly double the initiative API traffic (from `N+3` calls per session to `2N+3`) for a scenario nobody has observed. If this staleness ever bites, the cheap fix is to unset `RALPH_SCOPE_LOADED` in `scope.sh` on the initiative path so every subprocess re-expands.
 
 3. **Alternate file format (TOML / YAML) for `.ralph.json`.** JSON matches the existing `config.json` and `jq` tooling, and scope is a tiny data shape. If the file grows hard-to-edit fields later, reconsider.
