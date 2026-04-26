@@ -16,7 +16,7 @@ In dispatch order, with a one-line definition of what each state means for ralph
 - **Done** — the operator merged via `/close-issue` and the project-local `close-branch` skill.
 - **Canceled / Duplicate** — terminal exits outside the success path. `Canceled` is a judgment call to drop work; `Duplicate` folds the issue into another. Neither counts as a resolved blocker (see [Why Canceled blockers don't count as resolved](#why-canceled-blockers-dont-count-as-resolved)).
 
-State names except `Canceled` and `Duplicate` are configurable via plugin userConfig (`design_state`, `approved_state`, `in_progress_state`, `review_state`, `done_state`); the names above are the defaults declared in `lib/defaults.sh`. The orchestrator and skills compare against the configured values, never the literal strings, so a workspace that renames "In Progress" to "Doing" still works as long as the userConfig matches.
+State names except `Canceled` and `Duplicate` are configurable via plugin userConfig (`design_state`, `approved_state`, `in_progress_state`, `review_state`, `done_state`); the names above are the defaults declared in `lib/defaults.sh`. The orchestrator and skills compare against the configured values for the **pipeline states** (`In Design` through `Done`). One exception: `/sr-spec` hardcodes the idle-state match for its start-of-dialogue transition — it checks `Todo`, `Backlog`, and `Triage` by name. A workspace that has renamed those idle states must account for this gap.
 
 ## Transitions
 
@@ -54,8 +54,10 @@ Two workspace-scoped labels are part of the lifecycle. Both label names are user
 
 To re-queue an issue that hit `ralph-failed`:
 
-1. Inspect the worktree (`<worktree>/<stdout_log_filename>`) and `.sensible-ralph/progress.json` to understand why it failed.
-2. Either fix and remove the label via the Linear UI so the next `/sr-start` picks it up again, or cancel the issue if the work is no longer wanted. The `linear` CLI exposes no per-issue label-removal command; do not run `linear label delete`, which deletes the label workspace-wide.
+1. Read `.sensible-ralph/progress.json` and find the `"end"` record for the issue. The `outcome` field tells you which failure path triggered the label:
+   - `failed` / `exit_clean_no_review`: a `claude -p` session ran. Inspect `<worktree>/<stdout_log_filename>` for the session's final output.
+   - `setup_failed`: the orchestrator never created the worktree (or failed partway through setup before `claude -p` launched). There may be no worktree log — use the `failed_step` field in the progress record to identify which setup step broke.
+2. Fix the underlying issue, then remove the `ralph-failed` label via the Linear UI so the next `/sr-start` picks it up again, or cancel the issue if the work is no longer wanted. The `linear` CLI exposes no per-issue label-removal command; do not run `linear label delete`, which deletes the label workspace-wide.
 
 ## Pickup rule
 
@@ -65,9 +67,9 @@ An Approved issue is **strictly pickup-ready** for autonomous dispatch when ALL 
 2. **No `ralph-failed` label** (matched against `$CLAUDE_PLUGIN_OPTION_FAILED_LABEL`).
 3. **Every `blocked-by` parent** is either:
    - already in `Done` or `In Review`, OR
-   - in `Approved` AND a member of this run's queue.
+   - in `Approved` AND a member of this run's queue, AND its own blockers satisfy this rule recursively.
 
-Rule 3 is what makes overnight execution of dependency chains possible: an Approved parent that is queued ahead of its child reaches `In Review` (via the parent's own `/prepare-for-review`) before the child's dispatch begins, and `dag_base.sh` then picks up the parent's branch as the child's base. An Approved blocker that is **not** in this run's queue (`ralph-failed`-labeled, in another project, or otherwise filtered out) cannot clear during the run and surfaces as a preflight anomaly.
+Rule 3 is what makes overnight execution of dependency chains possible: an Approved parent that is queued ahead of its child reaches `In Review` (via the parent's own `/prepare-for-review`) before the child's dispatch begins, and `dag_base.sh` then picks up the parent's branch as the child's base. The recursion matters: if a parent is Approved and queued but one of *its* blockers is `Canceled`, the chain is stuck and the child is not pickup-ready — preflight aborts before dispatch. An Approved blocker that is **not** in this run's queue (`ralph-failed`-labeled, in another project, or otherwise filtered out) cannot clear during the run and surfaces as a preflight anomaly.
 
 Implementation lives in `skills/sr-start/scripts/preflight_scan.sh` (`_chain_runnable`) and the queue-construction layer in `lib/linear.sh` (`linear_list_approved_issues`). Pre-flight catches the "stuck chain" cases before the orchestrator is invoked; the orchestrator itself does not re-evaluate pickup-readiness mid-run because toposort + the parent-runs-first invariant guarantees rule 3 holds at each child's dispatch time.
 
