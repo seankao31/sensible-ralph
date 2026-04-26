@@ -95,10 +95,9 @@ operator inspect Linear directly.
 
 ## See also
 
-- `docs/design/linear-lifecycle.md` (forthcoming, ENG-291) — Linear
-  state machine the orchestrator drives (Approved → In Progress → In
-  Review → Done) and the labels (`ralph-failed`, `stale-parent`) it
-  applies.
-- `docs/design/orchestrator.md` (forthcoming, ENG-291) — the dispatch
-  loop itself: queue construction, DAG base selection, per-issue setup,
-  `claude -p` invocation, and `progress.json` record schema.
+- `docs/design/linear-lifecycle.md` — Linear state machine the
+  orchestrator drives (Approved → In Progress → In Review → Done) and
+  the labels (`ralph-failed`, `stale-parent`) it applies.
+- `docs/design/orchestrator.md` — the dispatch loop itself: queue
+  construction, DAG base selection, per-issue setup, `claude -p`
+  invocation, and `progress.json` record schema.
