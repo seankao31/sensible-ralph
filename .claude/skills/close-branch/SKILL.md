@@ -110,10 +110,24 @@ Once clean, capture a safety ref before the merge so Step 3 can restore main if 
 git checkout main
 git pull --ff-only origin main
 PRE_MERGE_SHA=$(git rev-parse main)
-git merge --no-ff "$FEATURE_BRANCH" -m "Merge branch '$FEATURE_BRANCH' ($ISSUE_ID)"
 ```
 
-`--no-ff` always succeeds when the feature branch is a descendant of `main`, which Step 1's rebase guarantees. The merge commit's message names the issue so `git log --first-parent` reads as a list of closed issues — the project relies on this for changelog generation and retrospective review.
+Now compose the merge commit message. Follow the project's commit-message convention (top-level `CLAUDE.md` "Commit messages"); two things matter more for the merge commit than for individual commits:
+
+- Because `--no-ff` lands exactly one merge commit per closed issue, `git log --first-parent main` is the project's de facto changelog. The subject describes user-facing behavior — what shipped — not files or mechanics. "update SKILL.md", "refactor helper", "add tests" are fine on the feature commits underneath; the merge subject is the release-log line. Inspect what shipped with `git log --oneline main.."$FEATURE_BRANCH"`.
+- `Ref: $ISSUE_ID` always applies here (close-branch is per-Linear-issue). Retrospective lookup is `git log --first-parent main --grep='Ref: <id>'`.
+
+Merge with multiple `-m` flags — each becomes a paragraph separated by a blank line:
+
+```bash
+git merge --no-ff "$FEATURE_BRANCH" \
+  -m "<composed subject>" \
+  -m "Ref: $ISSUE_ID"
+```
+
+Add an additional `-m "<body>"` between the subject and the `Ref:` trailer when context is worth recording (non-obvious tradeoff, follow-up needed, surprising scope). Skip the body when the subject is self-explanatory.
+
+`--no-ff` always succeeds when the feature branch is a descendant of `main`, which Step 1's rebase guarantees.
 
 If `git pull --ff-only origin main` fails (origin/main advanced *and* local main has commits not on origin), that's a divergent local main — outside this skill's scope. Exit non-zero and tell the operator to reconcile their local main first.
 

@@ -44,3 +44,24 @@ a design doc, update the design doc in the same commit/PR. Same rule
 as code + comments + READMEs (see `~/.claude/CLAUDE.md` "Unit of Work").
 Skill-level enforcement of this rule is a deferred follow-up — for
 now it's social.
+
+## Commit messages
+
+[Conventional Commits](https://www.conventionalcommits.org/):
+`<type>(<scope>): <subject>` — or `<type>: <subject>` for changes
+that span multiple areas or don't fit a scope. Scopes are
+architectural areas (`close-branch`, `prepare-for-review`,
+`gitignore`), not tickets.
+
+Linear ticket references go in a `Ref:` git trailer in the body,
+not in the scope or subject:
+
+```
+fix(close-branch): gate remote delete on ls-remote
+
+<body explaining the change>
+
+Ref: ENG-238
+```
+
+Commits without a Linear ticket omit the `Ref:` trailer.
