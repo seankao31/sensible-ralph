@@ -153,9 +153,8 @@ the flow:
   `capture-decisions`, `prune-completed-docs`, `update-stale-docs`,
   `clean-branch-history`. Referenced by `ralph-implement` (for
   implementation discipline) and by `prepare-for-review` (for its doc
-  and history cleanup steps). If superpowers isn't installed, those
-  steps degrade gracefully (skip with a note, or fall back to manual
-  equivalents).
+  steps). If superpowers isn't installed, those steps degrade gracefully
+  (skip with a note, or fall back to manual equivalents).
 - **Codex plugin** ([openai/codex-plugin-cc](https://github.com/openai/codex-plugin-cc))
   — provides `codex-rescue` and `codex-review-gate`. `codex-review-gate`
   is the review gate that `prepare-for-review` runs before handoff; it's
