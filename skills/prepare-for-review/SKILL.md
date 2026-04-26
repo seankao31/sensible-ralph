@@ -177,7 +177,7 @@ ALREADY_POSTED=$(linear api 'query($issueId: String!, $marker: String!) { issue(
   | jq '((.data.issue.comments.nodes) // []) | length > 0')
 ```
 
-The `` revision `<SHA>` `` marker (the literal word `revision`, a space, and the backtick-wrapped 40-char SHA) is unique per HEAD, so the server-side `body.contains` filter returns at most one match regardless of how many comments the issue has. `linear issue comment list` isn't suitable here — it returns only the first ~50 comments with no cursor flag exposed, so a prior handoff comment on a long-running issue could sit on a later page and go undetected.
+The `` revision `<SHA>` `` marker (the literal word `revision`, a space, and the backtick-wrapped revision hash) is unique per HEAD, so the server-side `body.contains` filter returns at most one match regardless of how many comments the issue has. `linear issue comment list` isn't suitable here — it returns only the first ~50 comments with no cursor flag exposed, so a prior handoff comment on a long-running issue could sit on a later page and go undetected.
 
 If `ALREADY_POSTED` is `true`, skip to Step 7.
 
