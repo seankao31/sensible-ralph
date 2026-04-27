@@ -8,15 +8,15 @@
 
 set -euo pipefail
 
-# Source plugin-wide libs from $CLAUDE_PLUGIN_ROOT/lib/ and sr-start's
-# worktree helper from its scripts/lib/. CLAUDE_PLUGIN_ROOT is exported by
-# the Claude Code harness whenever the sensible-ralph plugin is enabled.
+# Source plugin-wide libs from $CLAUDE_PLUGIN_ROOT/lib/. CLAUDE_PLUGIN_ROOT
+# is exported by the Claude Code harness whenever the sensible-ralph plugin
+# is enabled.
 if [[ -z "${CLAUDE_PLUGIN_ROOT:-}" ]]; then
   echo "sr-status: \$CLAUDE_PLUGIN_ROOT not set (sensible-ralph plugin not enabled?)" >&2
   exit 1
 fi
-# shellcheck source=../../sr-start/scripts/lib/worktree.sh
-source "$CLAUDE_PLUGIN_ROOT/skills/sr-start/scripts/lib/worktree.sh"
+# shellcheck source=../../../lib/worktree.sh
+source "$CLAUDE_PLUGIN_ROOT/lib/worktree.sh"
 # shellcheck source=../../../lib/defaults.sh
 source "$CLAUDE_PLUGIN_ROOT/lib/defaults.sh"
 

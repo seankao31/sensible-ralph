@@ -1,11 +1,14 @@
 # Worktree contract
 
 The cross-skill contract for how sensible-ralph creates, owns, hands off,
-and tears down the linked git worktree backing each dispatched Linear
-issue. Every dispatched issue runs in its own worktree; the orchestrator,
-`/sr-implement`, `/prepare-for-review`, and `/close-issue` each touch the
-worktree at different points and must agree on naming, CWD, the base-SHA
-file, the output log, and removal preconditions.
+and tears down the linked git worktree backing each Linear issue. Each
+issue gets exactly one branch+worktree, created lazily at `/sr-spec` step
+7 and torn down at `/close-issue` after merge. `/sr-spec` runs the codex
+spec gate and writes the spec on that branch; the orchestrator dispatches
+into the same worktree; `/sr-implement` and `/prepare-for-review` run
+inside it; `/close-issue` is the sole remover. All five actors must agree
+on naming, CWD, the base-SHA file, the output log, and removal
+preconditions.
 
 ## Naming
 
@@ -16,7 +19,7 @@ Worktree path:
 ```
 
 - **`<repo-root>`** is resolved via `_resolve_repo_root` (in
-  `skills/sr-start/scripts/lib/worktree.sh`), which calls
+  `lib/worktree.sh`), which calls
   `git rev-parse --path-format=absolute --git-common-dir` and returns the
   parent of the shared `.git`. The path is absolute and stable regardless
   of the caller's CWD (main checkout, linked worktree, subdirectory of
@@ -44,14 +47,26 @@ differently depending on whether they're creating or consuming it.
 
 ## Creation
 
-`orchestrator.sh` is the **sole creator**. It runs from the repo root
-(see CWD convention below) and dispatches via `git worktree add`:
+`/sr-spec` step 7 is the **primary creator**: lazily, after the operator
+approves the design, it calls `worktree_create_at_base` off the default
+base branch and `cd`s in. The spec doc is committed on the branch — not
+on main — and persists through the rest of the lifecycle.
+
+`orchestrator.sh` is the **fallback creator**: when `/sr-start`
+encounters an Approved issue whose branch+worktree don't already exist
+(manual issues filed without `/sr-spec`, or legacy pre-ENG-279 state),
+it creates them at the DAG-chosen base. The reuse path — branch+worktree
+already exist, `/sr-spec` made them — is the common path under ENG-279;
+the create path is the fallback. See "Orchestrator reuse path" in
+`docs/design/orchestrator.md` for the dispatch-time branching.
+
+Both creators dispatch via `git worktree add`:
 
 ```bash
 git worktree add "$path" -b "$branch" "$resolved_base"
 ```
 
-Two helpers in `skills/sr-start/scripts/lib/worktree.sh` wrap this:
+Two helpers in `lib/worktree.sh` wrap this:
 
 - **`worktree_create_at_base $path $branch $base`** — single-base case
   (default base branch, or a single in-review parent's branch).
@@ -63,6 +78,16 @@ Two helpers in `skills/sr-start/scripts/lib/worktree.sh` wrap this:
   merge with `git merge --abort` — subsequent parents can't be silently
   dropped. See
   `docs/archive/decisions/ralph-v2-multi-parent-integration-abort.md`.
+
+A third helper in `lib/worktree.sh` is used by the orchestrator's reuse
+path:
+
+- **`worktree_merge_parents $path $parents...`** — merges a parent list
+  into an *already-existing* worktree, in order. Mirrors
+  `worktree_create_with_integration`'s conflict semantics: single-parent
+  leaves conflicts in place for the agent (returns 0); multi-parent
+  aborts on conflict (returns non-zero). Skips parents that are already
+  ancestors of HEAD (no-op merge).
 
 **Ref resolution for parent branches** (both helpers): each parent is
 resolved against `refs/heads/$parent` first, then
@@ -104,17 +129,27 @@ with the worktree as its CWD via subshell `cd`.
 ## `.sensible-ralph-base-sha`
 
 A single-line file at `<worktree>/.sensible-ralph-base-sha` containing
-the SHA from which this branch was created. The file is the cross-skill
-contract that lets `/prepare-for-review` scope its work to *this
-session's* commits — not parent-branch commits absorbed via integration
-merges, and not the main checkout's HEAD.
+the SHA the implementation diff is scoped against. The file is the
+cross-skill contract that lets `/prepare-for-review` see *this session's
+implementation commits* — not the spec commits that landed at `/sr-spec`
+step 7, not parent-branch commits absorbed via integration merges, and
+not the main checkout's HEAD.
 
 | Actor | Role |
 |---|---|
-| `orchestrator.sh` | **Writes** the file before dispatch, after worktree creation succeeds. For `main` and parent-branch bases, the SHA is the post-create `HEAD`. For integration bases, the SHA is `git rev-parse $SENSIBLE_RALPH_DEFAULT_BASE_BRANCH` captured **before** any parent merges run — post-merge HEAD would pull parent commits into the prepare-for-review diff. |
+| `/sr-spec` step 7 | **Does not write the file.** Captures `SPEC_BASE_SHA` in shell only, used by step 10's codex gate (`--base "$SPEC_BASE_SHA"`) to scope adversarial review to this session's spec commits. |
+| `orchestrator.sh` (reuse path) | **Writes** the file post-merge: `.sensible-ralph-base-sha = $(git -C "$path" rev-parse HEAD)` AFTER merging in-review parents. In a clean merge HEAD is the merge commit; spec commits + parent commits are now ancestors of base-sha and excluded from the impl diff. In a single-parent conflict (leave-for-agent) HEAD has not advanced — base-sha = spec HEAD, and the agent's resolution commit is intentionally in scope for review. |
+| `orchestrator.sh` (create path) | **Writes** the file post-create: HEAD of the just-created worktree (post-merge in INTEGRATION mode). |
 | `/sr-implement` | **Does not read.** The file is opaque to the implementer — implementation work needs only the worktree CWD and the PRD. |
 | `/prepare-for-review` | **Reads** the file to compute `BASE_SHA`, used to scope (a) `update-stale-docs` (`--base $BASE_SHA`), (b) `codex-review-gate` (`--base $BASE_SHA`), and (c) the `git log --oneline $BASE_SHA..HEAD` block in the Linear handoff comment. |
 | `/close-issue` | Does not read directly. The base-SHA's role ends after `/prepare-for-review` completes. |
+
+The post-merge timing is uniform across reuse and create paths and across
+single/parent/INTEGRATION shapes — every path writes
+`git rev-parse HEAD` after worktree creation/merge completes. This fixes
+a latent INTEGRATION-mode bug (pre-ENG-279) where the file pointed at
+trunk pre-merge, leaking parent commits into the prepare-for-review
+diff.
 
 **Fallback.** When `/prepare-for-review` runs interactively (no
 orchestrator dispatch, no `.sensible-ralph-base-sha`), it computes
@@ -165,12 +200,14 @@ dispatch block never ran); inspect the `failed_step` field in
 
 ## CWD convention
 
-Three actors, three rules. The differences are not stylistic — each
+Four actors, four rules. The differences are not stylistic — each
 encodes a real failure-mode constraint.
 
 | Actor | CWD | Why |
 |---|---|---|
-| `orchestrator.sh` | Repo root (or any path that resolves to it via `_resolve_repo_root`) | Dispatches each `claude -p` via `(cd "$path" && claude -p ...)` in a subshell, so the orchestrator's own CWD is never disturbed. Worktree-side ops use the captured `$path`. |
+| `/sr-spec` (steps 1-6) | Operator's existing CWD (no branch yet) | The dialogue runs before lazy step-7 creation. Operator may be anywhere inside the repo. |
+| `/sr-spec` (steps 7-11) | Inside the worktree (CWD = `$WORKTREE_PATH`) | Step 7 `cd`s in after creating (or detecting) the branch+worktree. The spec commit, codex gate (`--base "$SPEC_BASE_SHA"`), and finalize all run with the worktree as CWD so git operations are scoped to the issue's branch. |
+| `orchestrator.sh` | Repo root (or any path that resolves to it via `_resolve_repo_root`) | Dispatches each `claude -p` via `(cd "$path" && claude -p ...)` in a subshell, so the orchestrator's own CWD is never disturbed. Worktree-side ops use the captured `$path` (e.g. `git -C "$path" merge ...` for the reuse path's parent merges). |
 | `/sr-implement`, `/prepare-for-review` | Inside the worktree (CWD = `$path`) | The orchestrator enters via subshell `cd` before invoking `claude -p`. All implementation and prepare-for-review git operations are scoped to the worktree's branch by being there. |
 | `/close-issue` | Main checkout (NOT a linked worktree); `.git` must be a directory, not a file | Worktree-side operations use `git -C "$WORKTREE_PATH" ...`. Running close-issue from inside the worktree being closed used to be the norm, but it pinned the Bash tool's session CWD to a directory that the skill's final step removes — any external cause (another process, stray `rm`, hook) that removed the directory mid-ritual killed the session instantly. The main-checkout CWD removes that failure class entirely; the skill enforces it via `[ -f "$MAIN_REPO/.git" ] && exit 1`. |
 
@@ -180,10 +217,18 @@ encodes a real failure-mode constraint.
 Linear `Done` transition so the high-value state mutations (merge, push,
 branch delete, Linear Done) are already committed if removal fails. The
 orchestrator's `_cleanup_worktree` helper is the **setup-failure remover**:
-it rolls back worktrees this invocation created when a pre-dispatch setup
-step fails, using `--force` because `.sensible-ralph-base-sha` would
-otherwise block `git worktree remove`. These are distinct code paths
-with different preconditions; both are documented in this section.
+it rolls back worktrees this invocation *created* when a pre-dispatch
+setup step fails, using `--force` because `.sensible-ralph-base-sha`
+would otherwise block `git worktree remove`. These are distinct code
+paths with different preconditions; both are documented in this section.
+
+Crucially, the orchestrator's setup-failure cleanup runs **only on the
+create path** — never on the reuse path. A reused branch+worktree predate
+the orchestrator's invocation (created at `/sr-spec` step 7); tearing
+them down on a transient setup failure would destroy the operator's
+spec commit. The reuse path's setup-failure outcome is `setup_failed` on
+the issue with no worktree teardown; the operator inspects, fixes, and
+re-dispatches.
 
 Pre-flight pre-conditions, both required:
 
@@ -218,10 +263,28 @@ changes that slipped past pre-flight, an editor holding files open,
 a shell `cd`'d into the worktree), not an obstacle to blast through.
 
 The orchestrator's internal `_cleanup_worktree` helper *does* use
-`--force` — but only as a setup-failure rollback, gated on the worktree
-having been created by the same invocation that's now cleaning it up.
-That is a different code path; close-issue's removal of a *human-
-reviewed* worktree never uses force.
+`--force` — but only as a setup-failure rollback on the create path,
+gated on the worktree having been created by the same invocation
+that's now cleaning it up. That is a different code path; close-issue's
+removal of a *human-reviewed* worktree never uses force.
+
+### Cancellation cleanup
+
+Under ENG-279's lazy step-7 creation, residue only exists if the
+operator advances `/sr-spec` past step 7 (commits a spec doc to the
+branch) and then abandons or cancels the issue. There is no automated
+cleanup for this case — `/sr-cleanup` is a deferred follow-up. Manual
+recipe (after the operator cancels the issue in Linear):
+
+```bash
+git worktree remove --force "<repo>/.worktrees/<branch>" 2>/dev/null
+git branch -D "<branch>" 2>/dev/null
+```
+
+`/sr-spec`'s preflight (step 1) refuses to start a fresh dialogue on a
+`Todo`/`Backlog`/`Triage` issue when residue is present, surfacing the
+same recipe in its error message. The orchestrator's `local_residue`
+outcome is the dispatch-time analogue.
 
 ## Required `.gitignore` entries
 
@@ -258,17 +321,20 @@ What each actor owns:
 
 | Actor | Creates path | Writes `.sensible-ralph-base-sha` | Writes log | Removes path | Required CWD |
 |---|---|---|---|---|---|
-| `orchestrator.sh` | yes | yes (pre-dispatch) | yes (via tee) | only on setup-failure rollback (`--force`, gated on same-invocation creation) | repo root |
+| `/sr-spec` | yes (lazy at step 7) | no (only captures shell `SPEC_BASE_SHA`) | no | no | inside worktree (after step 7) |
+| `orchestrator.sh` | yes (fallback create path only) | yes (post-merge HEAD) | yes (via tee) | only on create-path setup-failure rollback (`--force`, gated on same-invocation creation) | repo root |
 | `/sr-implement` | no | no (does not read) | no (writes to it indirectly via `claude -p`) | no | inside worktree |
 | `/prepare-for-review` | no | no (reads only) | no | no | inside worktree |
 | `/close-issue` | no | no | no | yes (no `--force`, after `Done` transition) | main checkout (NOT a worktree) |
 
 The naming convention is authoritative in `worktree_path_for_issue` —
-the orchestrator calls it to compute each path before creation. The
-*lookup* side differs by actor: `/close-issue` finds the already-created
-worktree via `git worktree list --porcelain` (resolves by branch ref,
-not by path composition); `/prepare-for-review` uses its existing CWD.
-Filename defaults come from the same `$CLAUDE_PLUGIN_OPTION_*` env vars
-for all actors. The orchestrator is the only writer of state that
-downstream skills consume. Drift shows up as a contract violation here,
-not as a silent inconsistency in the field.
+both `/sr-spec` and the orchestrator call it to compute each path. The
+*lookup* side differs by actor: the orchestrator's reuse path also calls
+`worktree_branch_state_for_issue` to distinguish reuse / create / partial
+residue. `/close-issue` finds the already-created worktree via
+`git worktree list --porcelain` (resolves by branch ref, not by path
+composition); `/prepare-for-review` uses its existing CWD. Filename
+defaults come from the same `$CLAUDE_PLUGIN_OPTION_*` env vars for all
+actors. The orchestrator is the only writer of `.sensible-ralph-base-sha`
+state that downstream skills consume. Drift shows up as a contract
+violation here, not as a silent inconsistency in the field.

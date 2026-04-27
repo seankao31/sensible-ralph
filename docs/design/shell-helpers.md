@@ -6,13 +6,14 @@ underpin the orchestrator, preflight, queue builder, `sr-spec`,
 
 ## Where the helpers live
 
-After ENG-274 the helpers split across two directories. The
-partition criterion is **who sources this?** — single skill stays
-local; multiple skills lift to plugin-wide `lib/`. It is *not* "what
-does it do?": purpose-based grouping (`config/`, `linear/`, `scope/`,
-`git/`) was rejected as over-engineered for a small file count, and
-function-style proximity ("close-issue specific") was rejected as a
-structural lie when nothing prevents a second consumer from appearing.
+After ENG-274 (and ENG-279, which lifted `worktree.sh`) the helpers
+split across two directories. The partition criterion is **who sources
+this?** — single skill stays local; multiple skills lift to plugin-wide
+`lib/`. It is *not* "what does it do?": purpose-based grouping
+(`config/`, `linear/`, `scope/`, `git/`) was rejected as over-engineered
+for a small file count, and function-style proximity ("close-issue
+specific") was rejected as a structural lie when nothing prevents a
+second consumer from appearing.
 
 ```
 sensible-ralph/
@@ -20,27 +21,27 @@ sensible-ralph/
 │   ├── defaults.sh
 │   ├── linear.sh
 │   ├── scope.sh
-│   └── branch_ancestry.sh
+│   ├── branch_ancestry.sh
+│   └── worktree.sh
 └── skills/
     └── sr-start/scripts/lib/           ← sr-start-only
-        ├── preflight_labels.sh
-        └── worktree.sh
+        └── preflight_labels.sh
 ```
 
 `close-issue` keeps its own `scripts/lib/preflight.sh` and
 `scripts/lib/stale_parent.sh` for the same reason sr-start keeps
-`worktree.sh` and `preflight_labels.sh`: single-skill consumers,
-single-skill location. Pre-ENG-274, `close-issue` reached into
-`skills/sr-start/scripts/lib/` for shared helpers; that path was a
-transitional ownership leak the restructure resolved. `close-issue`
-no longer sources from `skills/sr-start/scripts/lib/` at all.
+`preflight_labels.sh`: single-skill consumers, single-skill location.
+Pre-ENG-274, `close-issue` reached into `skills/sr-start/scripts/lib/`
+for shared helpers; that path was a transitional ownership leak the
+restructure resolved. `close-issue` no longer sources from
+`skills/sr-start/scripts/lib/` at all.
 
 ## Module map
 
 ### Plugin-wide (`lib/`)
 
 Sourced by orchestrator, preflight_scan, build_queue, dag_base,
-sr-spec, prepare-for-review, and close-issue.
+sr-spec, sr-status, prepare-for-review, and close-issue.
 
 | File | Purpose | Public surface |
 |---|---|---|
@@ -48,6 +49,7 @@ sr-spec, prepare-for-review, and close-issue.
 | `linear.sh` | Linear CLI / GraphQL wrappers. Domain layer above `linear` and `linear api`. | `linear_list_approved_issues`, `linear_list_initiative_projects`, `linear_get_issue_blockers`, `linear_get_issue_blocks`, `linear_get_issue_branch`, `linear_get_issue_state`, `linear_set_state`, `linear_add_label`, `linear_label_exists`, `linear_comment`. |
 | `scope.sh` | Reads `<repo-root>/.sensible-ralph.json`, resolves `projects` directly or expands `initiative` via Linear. Auto-runs `_scope_load` on source. | Exports `SENSIBLE_RALPH_PROJECTS` (newline-joined project names), `SENSIBLE_RALPH_DEFAULT_BASE_BRANCH`, and the bleed-through guard `SENSIBLE_RALPH_SCOPE_LOADED`. |
 | `branch_ancestry.sh` | Pure-git helpers — no Linear dependency. Currently consumed by `close-issue` only; lives in plugin-wide `lib/` because the helpers are framework-shaped (anything else needing ancestry checks should reuse them) and the file's own header anticipates this. | `is_branch_fresh_vs_sha` (0/1/2 outcome triple), `list_commits_ahead`, `resolve_branch_for_issue`. |
+| `worktree.sh` | Worktree creation, state classification, and path-resolution helpers. Encodes sr-start dispatch's worktree semantics: single-parent leaves merge conflicts in place for the agent; multi-parent fails fast so subsequent parents aren't silently dropped. Lifted from sr-start scripts/lib in ENG-279 — `/sr-spec` step 7 became the second consumer. | `worktree_create_at_base`, `worktree_create_with_integration`, `worktree_merge_parents`, `worktree_path_for_issue`, `worktree_branch_state_for_issue`, `_resolve_repo_root`. |
 
 ### sr-start-only (`skills/sr-start/scripts/lib/`)
 
@@ -56,12 +58,12 @@ Sourced only by orchestrator and preflight_scan.
 | File | Purpose | Public surface |
 |---|---|---|
 | `preflight_labels.sh` | Workspace-label existence preflight. Hardcoded list of required `CLAUDE_PLUGIN_OPTION_*_LABEL` env vars; rejects misconfiguration where the env var is empty as well as the case where Linear lacks the label. | `preflight_labels_check`. |
-| `worktree.sh` | Worktree creation and path-resolution helpers. Encodes sr-start dispatch's worktree semantics: single-parent leaves merge conflicts in place for the agent; multi-parent fails fast so subsequent parents aren't silently dropped. | `worktree_create_at_base`, `worktree_create_with_integration`, `worktree_path_for_issue`, `_resolve_repo_root`. |
 
-`worktree.sh` and `preflight_labels.sh` could theoretically move to
-plugin-wide `lib/`, but each has exactly one consumer today; lifting
-them now would be speculative. The criterion is *move when sharing
-exists, not when sharing might hypothetically exist*.
+`preflight_labels.sh` could theoretically move to plugin-wide `lib/`,
+but it has exactly one consumer today; lifting it now would be
+speculative. The criterion is *move when sharing exists, not when
+sharing might hypothetically exist* — exactly why ENG-279 lifted
+`worktree.sh` once `/sr-spec` became its second consumer.
 
 ## Load order
 
@@ -86,8 +88,7 @@ any point in the sequence.
 ### Canonical sequence (orchestrator)
 
 `skills/sr-start/scripts/orchestrator.sh` sources via
-`$PLUGIN_ROOT/lib/...` for plugin-wide helpers and `$SCRIPT_DIR/lib/...`
-for sr-start-only helpers, in this order:
+`$PLUGIN_ROOT/lib/...` for plugin-wide helpers, in this order:
 
 ```bash
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -97,7 +98,7 @@ source "$PLUGIN_ROOT/lib/defaults.sh"
 source "$PLUGIN_ROOT/lib/linear.sh"
 # scope.sh re-source is gated by SENSIBLE_RALPH_SCOPE_LOADED — see below.
 source "$PLUGIN_ROOT/lib/scope.sh"
-source "$SCRIPT_DIR/lib/worktree.sh"
+source "$PLUGIN_ROOT/lib/worktree.sh"
 ```
 
 `PLUGIN_ROOT` prefers the harness-exported `$CLAUDE_PLUGIN_ROOT` and

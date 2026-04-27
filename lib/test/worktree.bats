@@ -1,9 +1,9 @@
 #!/usr/bin/env bats
-# Tests for scripts/lib/worktree.sh
+# Tests for lib/worktree.sh
 # Uses a real throwaway git repo — no mocked git commands.
 
-SCRIPT_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
-WORKTREE_SH="$SCRIPT_DIR/lib/worktree.sh"
+LIB_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
+WORKTREE_SH="$LIB_DIR/worktree.sh"
 
 setup() {
   REPO_DIR="$(cd "$(mktemp -d)" && pwd -P)"
@@ -347,4 +347,258 @@ call_fn_from() {
   [ "$status" -ne 0 ]
   [[ "$output" =~ "merge conflict" ]] || [[ "$output" =~ "eng-30-conflict-a" ]]
   # Worktree dir was created by `git worktree add` — orchestrator's _cleanup_worktree handles teardown
+}
+
+# ---------------------------------------------------------------------------
+# 10. worktree_branch_state_for_issue — detects per-issue (branch, path) state
+#     for the lazy-create / reuse path used by /sr-spec step 7 and the
+#     orchestrator's reuse path. ENG-279.
+# ---------------------------------------------------------------------------
+@test "worktree_branch_state_for_issue: neither branch nor path exists" {
+  run call_fn worktree_branch_state_for_issue "eng-279-fresh" "$REPO_DIR/.worktrees/eng-279-fresh"
+
+  [ "$status" -eq 0 ]
+  [ "$output" = "neither" ]
+}
+
+@test "worktree_branch_state_for_issue: both_exist when branch+worktree match" {
+  local wt_path="$REPO_DIR/.worktrees/eng-279-both"
+  git -C "$REPO_DIR" worktree add "$wt_path" -b "eng-279-both" -q
+
+  run call_fn worktree_branch_state_for_issue "eng-279-both" "$wt_path"
+
+  [ "$status" -eq 0 ]
+  [ "$output" = "both_exist" ]
+}
+
+@test "worktree_branch_state_for_issue: partial branch-only when branch exists but path absent" {
+  git -C "$REPO_DIR" branch "eng-279-branch-only"
+
+  run call_fn worktree_branch_state_for_issue "eng-279-branch-only" "$REPO_DIR/.worktrees/eng-279-branch-only"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == "partial"$'\t'"branch-only" ]]
+}
+
+@test "worktree_branch_state_for_issue: partial path-only when path is a stray dir, branch absent" {
+  mkdir -p "$REPO_DIR/.worktrees/eng-279-path-only"
+  echo "stray" > "$REPO_DIR/.worktrees/eng-279-path-only/marker.txt"
+
+  run call_fn worktree_branch_state_for_issue "eng-279-path-only" "$REPO_DIR/.worktrees/eng-279-path-only"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == "partial"$'\t'"path-only" ]]
+}
+
+@test "worktree_branch_state_for_issue: partial path-only when path is a registered worktree but branch absent" {
+  # A registered worktree on some other branch (so the target branch name
+  # really is absent) — the helper must still report path-only.
+  local wt_path="$REPO_DIR/.worktrees/eng-279-path-only-reg"
+  git -C "$REPO_DIR" worktree add "$wt_path" -b "unrelated-branch" -q
+
+  run call_fn worktree_branch_state_for_issue "eng-279-path-only-reg-target" "$wt_path"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == "partial"$'\t'"path-only" ]]
+}
+
+@test "worktree_branch_state_for_issue: partial wrong-branch when path is a worktree on a different branch but target branch also exists" {
+  # Path is a registered worktree on branch X; target branch Y exists but is
+  # checked out somewhere else (or unchecked-out). Reports wrong-branch.
+  local wt_path="$REPO_DIR/.worktrees/eng-279-wrong"
+  git -C "$REPO_DIR" worktree add "$wt_path" -b "eng-279-wrong-other" -q
+  git -C "$REPO_DIR" branch "eng-279-wrong"
+
+  run call_fn worktree_branch_state_for_issue "eng-279-wrong" "$wt_path"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == "partial"$'\t'"wrong-branch" ]]
+}
+
+@test "worktree_branch_state_for_issue: partial path-not-worktree when path is a stray dir but branch also exists" {
+  # Path exists as a non-registered directory; target branch also exists.
+  # Reports path-not-worktree (distinct from wrong-branch — registration matters).
+  mkdir -p "$REPO_DIR/.worktrees/eng-279-stray"
+  git -C "$REPO_DIR" branch "eng-279-stray"
+
+  run call_fn worktree_branch_state_for_issue "eng-279-stray" "$REPO_DIR/.worktrees/eng-279-stray"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == "partial"$'\t'"path-not-worktree" ]]
+}
+
+@test "worktree_branch_state_for_issue: detached-HEAD worktree at path with target branch present is wrong-branch" {
+  # A detached-HEAD worktree at $path has no `branch` line in porcelain
+  # output. Combined with target branch existing elsewhere, the helper
+  # falls through to wrong-branch (the path is a registered worktree but
+  # is not checked out to the target branch).
+  local wt_path="$REPO_DIR/.worktrees/eng-279-detached"
+  local sha; sha="$(git -C "$REPO_DIR" rev-parse HEAD)"
+  git -C "$REPO_DIR" worktree add --detach "$wt_path" "$sha" -q
+  git -C "$REPO_DIR" branch "eng-279-detached"
+
+  run call_fn worktree_branch_state_for_issue "eng-279-detached" "$wt_path"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == "partial"$'\t'"wrong-branch" ]]
+}
+
+# ---------------------------------------------------------------------------
+# 11. worktree_merge_parents — sequential parent merges into an existing
+#     worktree. ENG-279 reuse path: an issue's branch+worktree already
+#     exist (created at /sr-spec step 7); the orchestrator merges any
+#     in-review parents in before dispatch.
+# ---------------------------------------------------------------------------
+@test "worktree_merge_parents: zero parents is a no-op success" {
+  local wt_path="$REPO_DIR/.worktrees/eng-279-mp-zero"
+  git -C "$REPO_DIR" worktree add "$wt_path" -b "eng-279-mp-zero" -q
+  local before; before="$(git -C "$wt_path" rev-parse HEAD)"
+
+  run call_fn worktree_merge_parents "$wt_path"
+
+  [ "$status" -eq 0 ]
+  local after; after="$(git -C "$wt_path" rev-parse HEAD)"
+  [ "$before" = "$after" ]
+}
+
+@test "worktree_merge_parents: single clean parent merges in" {
+  git -C "$REPO_DIR" checkout -b "eng-279-mp-parent" -q
+  echo "parent" > "$REPO_DIR/parent.txt"
+  git -C "$REPO_DIR" add parent.txt
+  git -C "$REPO_DIR" commit -m "parent" -q
+  git -C "$REPO_DIR" checkout main -q
+
+  local wt_path="$REPO_DIR/.worktrees/eng-279-mp-single"
+  git -C "$REPO_DIR" worktree add "$wt_path" -b "eng-279-mp-single" -q
+
+  run call_fn worktree_merge_parents "$wt_path" "eng-279-mp-parent"
+
+  [ "$status" -eq 0 ]
+  [ -f "$wt_path/parent.txt" ]
+}
+
+@test "worktree_merge_parents: single-parent conflict left in-place, returns 0" {
+  # Set up a conflict between the worktree's branch and the parent.
+  git -C "$REPO_DIR" checkout -b "eng-279-mp-conflict-parent" -q
+  echo "parent version" > "$REPO_DIR/conflict.txt"
+  git -C "$REPO_DIR" add conflict.txt
+  git -C "$REPO_DIR" commit -m "parent conflict" -q
+  git -C "$REPO_DIR" checkout main -q
+
+  local wt_path="$REPO_DIR/.worktrees/eng-279-mp-conflict-wt"
+  git -C "$REPO_DIR" worktree add "$wt_path" -b "eng-279-mp-conflict-wt" -q
+  echo "wt version" > "$wt_path/conflict.txt"
+  git -C "$wt_path" add conflict.txt
+  git -C "$wt_path" commit -m "wt conflict" -q
+
+  run call_fn worktree_merge_parents "$wt_path" "eng-279-mp-conflict-parent"
+
+  [ "$status" -eq 0 ]
+  run git -C "$wt_path" status --porcelain
+  [[ "$output" =~ ^(UU|AA) ]]
+}
+
+@test "worktree_merge_parents: multi-parent clean merge brings both parents in" {
+  git -C "$REPO_DIR" checkout -b "eng-279-mp-a" -q
+  echo "A" > "$REPO_DIR/a.txt"
+  git -C "$REPO_DIR" add a.txt
+  git -C "$REPO_DIR" commit -m "A" -q
+  git -C "$REPO_DIR" checkout main -q
+
+  git -C "$REPO_DIR" checkout -b "eng-279-mp-b" -q
+  echo "B" > "$REPO_DIR/b.txt"
+  git -C "$REPO_DIR" add b.txt
+  git -C "$REPO_DIR" commit -m "B" -q
+  git -C "$REPO_DIR" checkout main -q
+
+  local wt_path="$REPO_DIR/.worktrees/eng-279-mp-multi"
+  git -C "$REPO_DIR" worktree add "$wt_path" -b "eng-279-mp-multi" -q
+
+  run call_fn worktree_merge_parents "$wt_path" "eng-279-mp-a" "eng-279-mp-b"
+
+  [ "$status" -eq 0 ]
+  [ -f "$wt_path/a.txt" ]
+  [ -f "$wt_path/b.txt" ]
+}
+
+@test "worktree_merge_parents: multi-parent conflict aborts, returns non-zero, second parent NOT merged" {
+  # Parent A conflicts with the worktree.
+  git -C "$REPO_DIR" checkout -b "eng-279-mp-cflict-a" -q
+  echo "parent A" > "$REPO_DIR/conflict.txt"
+  git -C "$REPO_DIR" add conflict.txt
+  git -C "$REPO_DIR" commit -m "A" -q
+  git -C "$REPO_DIR" checkout main -q
+
+  # Parent B has unique content the merge must NOT silently drop.
+  git -C "$REPO_DIR" checkout -b "eng-279-mp-cflict-b" -q
+  echo "B-only" > "$REPO_DIR/b-only.txt"
+  git -C "$REPO_DIR" add b-only.txt
+  git -C "$REPO_DIR" commit -m "B" -q
+  git -C "$REPO_DIR" checkout main -q
+
+  local wt_path="$REPO_DIR/.worktrees/eng-279-mp-cflict-wt"
+  git -C "$REPO_DIR" worktree add "$wt_path" -b "eng-279-mp-cflict-wt" -q
+  echo "wt version" > "$wt_path/conflict.txt"
+  git -C "$wt_path" add conflict.txt
+  git -C "$wt_path" commit -m "wt conflict" -q
+
+  run call_fn worktree_merge_parents "$wt_path" "eng-279-mp-cflict-a" "eng-279-mp-cflict-b"
+
+  [ "$status" -ne 0 ]
+  [[ "$output" =~ "merge conflict" ]] || [[ "$output" =~ "eng-279-mp-cflict-a" ]]
+  # Merge was aborted — no MERGING state lingering, no b-only.txt
+  [ ! -f "$wt_path/b-only.txt" ]
+  run git -C "$wt_path" status --porcelain
+  ! [[ "$output" =~ ^(UU|AA) ]]
+}
+
+@test "worktree_merge_parents: parent already an ancestor is a no-op" {
+  # Parent merged earlier — re-running with the same parent must be a no-op
+  # (no merge commit, exit 0).
+  git -C "$REPO_DIR" checkout -b "eng-279-mp-anc-parent" -q
+  echo "anc" > "$REPO_DIR/anc.txt"
+  git -C "$REPO_DIR" add anc.txt
+  git -C "$REPO_DIR" commit -m "anc" -q
+  git -C "$REPO_DIR" checkout main -q
+
+  local wt_path="$REPO_DIR/.worktrees/eng-279-mp-anc-wt"
+  git -C "$REPO_DIR" worktree add "$wt_path" -b "eng-279-mp-anc-wt" -q
+  call_fn worktree_merge_parents "$wt_path" "eng-279-mp-anc-parent"
+  local after_first; after_first="$(git -C "$wt_path" rev-parse HEAD)"
+
+  run call_fn worktree_merge_parents "$wt_path" "eng-279-mp-anc-parent"
+
+  [ "$status" -eq 0 ]
+  local after_second; after_second="$(git -C "$wt_path" rev-parse HEAD)"
+  [ "$after_first" = "$after_second" ]
+}
+
+@test "worktree_merge_parents: parent ref not found returns non-zero" {
+  local wt_path="$REPO_DIR/.worktrees/eng-279-mp-bad"
+  git -C "$REPO_DIR" worktree add "$wt_path" -b "eng-279-mp-bad" -q
+
+  run call_fn worktree_merge_parents "$wt_path" "nonexistent-branch"
+
+  [ "$status" -ne 0 ]
+  [[ "$output" =~ "parent ref not found" ]]
+}
+
+@test "worktree_merge_parents: parent present only as remote tracking ref is accepted" {
+  # Synthesize origin/<parent> without a local head.
+  git -C "$REPO_DIR" checkout -b "eng-279-mp-remote-parent" -q
+  echo "remote" > "$REPO_DIR/remote.txt"
+  git -C "$REPO_DIR" add remote.txt
+  git -C "$REPO_DIR" commit -m "remote" -q
+  local sha; sha="$(git -C "$REPO_DIR" rev-parse HEAD)"
+  git -C "$REPO_DIR" checkout main -q
+  git -C "$REPO_DIR" branch -D "eng-279-mp-remote-parent" -q
+  git -C "$REPO_DIR" update-ref "refs/remotes/origin/eng-279-mp-remote-parent" "$sha"
+
+  local wt_path="$REPO_DIR/.worktrees/eng-279-mp-remote-wt"
+  git -C "$REPO_DIR" worktree add "$wt_path" -b "eng-279-mp-remote-wt" -q
+
+  run call_fn worktree_merge_parents "$wt_path" "eng-279-mp-remote-parent"
+
+  [ "$status" -eq 0 ]
+  [ -f "$wt_path/remote.txt" ]
 }

@@ -26,11 +26,14 @@ The orchestrator never invents work. Its inputs are a fixed ordered queue of iss
 │      ├─ linear_get_issue_title    │ setup steps;                │
 │      ├─ dag_base.sh               │ failure → setup_failed,     │
 │      ├─ worktree_path_for_issue   │ taint, continue with next   │
-│      ├─ pre-existence check       │ issue                       │
-│      │     ├─ path / branch exists → local_residue              │
+│      ├─ worktree_branch_state_for_issue ─┐  (ENG-279)           │
+│      │     ├─ partial → local_residue    │                      │
 │      │     │   (no Linear mutation, no taint)                   │
-│      ├─ git worktree add (at base or INTEGRATION)               │
-│      ├─ write .sensible-ralph-base-sha                          │
+│      │     ├─ both_exist → reuse path:                          │
+│      │     │   worktree_merge_parents into existing branch      │
+│      │     └─ neither → create path:                            │
+│      │         worktree_create_at_base / _with_integration      │
+│      ├─ write .sensible-ralph-base-sha (post-merge HEAD)        │
 │      ├─ linear_set_state IN_PROGRESS  ────┘                     │
 │      │                                                          │
 │      ├─ append progress.json {event:"start"}                    │
@@ -78,14 +81,14 @@ A blocker that is `In Review` but has no `branchName` causes `dag_base.sh` to ex
 
 ### Multi-parent integration
 
-For an `INTEGRATION ...` base, `lib/worktree.sh::worktree_create_with_integration` creates the worktree at the trunk SHA and merges parents sequentially. Conflict handling diverges by parent count:
+For an `INTEGRATION ...` base, `lib/worktree.sh::worktree_create_with_integration` (create path) or `worktree_merge_parents` (reuse path) creates/operates on the worktree and merges parents sequentially. Conflict handling diverges by parent count and is identical across both helpers:
 
 - **Single parent with conflict:** the worktree is left with unresolved markers; the function returns 0. The dispatched agent resolves during its session — the `/sr-implement` skill instructs it to check `git status` first.
-- **Multi-parent with any conflict:** `git merge --abort`, clean up, return non-zero. The orchestrator records `setup_failed` with `failed_step = worktree_create_with_integration`, applies `ralph-failed`, and taints descendants.
+- **Multi-parent with any conflict:** `git merge --abort`, clean up, return non-zero. The orchestrator records `setup_failed` with `failed_step = worktree_create_with_integration` (create path) or `worktree_merge_parents` (reuse path), applies `ralph-failed`, and taints descendants.
 
 The asymmetry exists because Git's MERGING state forbids continuing through the parent list after the first conflict. See `docs/archive/decisions/ralph-v2-multi-parent-integration-abort.md` for the full reasoning. Operator resolution: merge one parent into trunk to promote it to Done, re-sequence the dependency graph, or merge a parent manually before re-running.
 
-The trunk SHA captured for `.sensible-ralph-base-sha` in the integration path is read **before** any parent merges, so the `prepare-for-review` codex review and handoff diff stay scoped to this session's work — not parent commits already reviewed elsewhere.
+`.sensible-ralph-base-sha` is captured **post-merge** in all paths and shapes — it's `git rev-parse HEAD` of the worktree after worktree creation/merge completes. Spec commits and merged parent commits are ancestors of base-sha and are correctly excluded from `/prepare-for-review`'s impl diff. In the single-parent leave-for-agent case the worktree is mid-MERGING, HEAD has not advanced, base-sha = pre-merge spec HEAD — the agent's resolution commit lands in scope for review, which is intentional.
 
 ## Per-issue setup
 
@@ -95,10 +98,12 @@ Inside `_dispatch_issue`, every step before `claude -p` is wrapped in `set +e` w
 2. `linear_get_issue_title` — used for the `claude -p --name` session name.
 3. `dag_base.sh` — base selection (above). Empty or whitespace-malformed output is rejected.
 4. `worktree_path_for_issue` — resolves `$REPO_ROOT/$CLAUDE_PLUGIN_OPTION_WORKTREE_BASE/<branch>`.
-5. **Pre-existence check.** If the target path exists *or* the branch already exists locally, the issue lands as `local_residue` — Linear is **not** mutated, descendants are **not** tainted. The pre-existing state is operator state (manual mkdir, prior crashed run, in-flight branch) that this invocation did not create. See `docs/design/outcome-model.md` for why.
-6. `git worktree add` — through `worktree_create_at_base` (single base) or `worktree_create_with_integration` (multi-parent). Both helpers accept either a local head or a remote-tracking ref under `origin/` so a fresh clone with fetched-but-not-checked-out parents still works. On post-`add` failure (e.g. integration merge error), `_cleanup_worktree` removes the partial worktree and branch so the next run has a clean slate.
-7. **Write `.sensible-ralph-base-sha`** to the worktree root. This is the cross-skill contract with `/prepare-for-review`, which uses it to scope codex review and the handoff diff to this session's commits.
-8. **Linear: Approved → In Progress** via `linear_set_state`. After this point any failure path also triggers `_cleanup_worktree`.
+5. **State check via `worktree_branch_state_for_issue`** (ENG-279). Returns `both_exist` (reuse path — the common case under per-issue branch lifecycle), `neither` (fallback create path for manual issues / legacy state), or `partial` (one of branch/path exists in isolation — operator state we cannot interpret, lands as `local_residue`). Linear is **not** mutated and descendants are **not** tainted on the partial branch. See `docs/design/outcome-model.md` for the rationale.
+6. **Worktree setup**, branching on the state from step 5:
+   - **`both_exist` (reuse path):** `worktree_merge_parents "$path" "${parents[@]}"` merges any in-review parents into the existing branch. Single-parent conflict leaves the worktree in MERGING state and returns 0 (the dispatched agent resolves on entry). Multi-parent conflict aborts and returns non-zero (subsequent parents would otherwise be silently dropped). No worktree teardown on the reuse path — the existing branch+worktree predate this invocation.
+   - **`neither` (create path):** `worktree_create_at_base` (single base) or `worktree_create_with_integration` (multi-parent). Both helpers accept either a local head or a remote-tracking ref under `origin/` so a fresh clone with fetched-but-not-checked-out parents still works. On post-`add` failure (e.g. integration merge error), `_cleanup_worktree` removes the partial worktree and branch so the next run has a clean slate.
+7. **Write `.sensible-ralph-base-sha`** to the worktree root, capturing `git rev-parse HEAD` of the (possibly merged) worktree. Post-merge timing in all paths (reuse + create, all base shapes) — this is the cross-skill contract with `/prepare-for-review`, which uses it to scope codex review and the handoff diff to this session's commits.
+8. **Linear: Approved → In Progress** via `linear_set_state`. After this point any failure path triggers `_cleanup_worktree` only on the create path; the reuse path leaves the branch+worktree intact for operator inspection.
 
 ## Dispatch
 

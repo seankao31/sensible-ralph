@@ -1,6 +1,6 @@
 ---
 name: sr-spec
-description: Use when turning an idea into an Approved Linear issue that the ralph autonomous pipeline can pick up. Runs the brainstorming dialogue, writes the spec to docs/specs/<topic>.md, overwrites the Linear issue description with the approved spec, sets blocked-by relations, and transitions the issue to the configured approved state. Accepts an optional issue-id argument.
+description: Use when turning an idea into an Approved Linear issue that the ralph autonomous pipeline can pick up. Runs the brainstorming dialogue, creates a per-issue branch+worktree (lazily, after design approval), writes the spec to docs/specs/<topic>.md on that branch, runs an adversarial codex review of the spec, overwrites the Linear issue description with the approved spec, sets blocked-by relations, and transitions the issue to the configured approved state. Accepts an optional issue-id argument.
 effort: max
 argument-hint: "[issue-id]"
 ---
@@ -9,15 +9,17 @@ argument-hint: "[issue-id]"
 
 Turn an idea into an Approved Linear issue that `/sr-start` can dispatch. Same collaborative dialogue as `superpowers:brainstorming`, but the terminal state is a Linear issue in the ralph pipeline's `approved_state` — not a handoff to `writing-plans`.
 
+Under ENG-279's per-issue branch lifecycle, `/sr-spec` is the **primary creator** of an issue's branch and worktree. They are created once (lazily, at step 7 after design approval) and persist through `/sr-implement`, `/prepare-for-review`, and `/close-issue`'s merge ritual.
+
 Invocation:
 
 ```
-/sr-spec           # no existing ticket yet; create at the end
+/sr-spec           # no existing ticket yet; create at step 6.5
 /sr-spec ENG-220   # populate an existing ticket
 ```
 
 <HARD-GATE>
-The terminal state of this skill is the Approved Linear issue. Do NOT invoke any implementation skill, write any code, scaffold any project, or call `writing-plans`. Implementation happens later, in a different session, when `/sr-start` dispatches the issue.
+The terminal state of this skill is the Approved Linear issue with its branch+worktree on disk and the spec committed on that branch. Do NOT invoke any implementation skill, write any code, scaffold any project, or call `writing-plans`. Implementation happens later, in a different session, when `/sr-start` dispatches the issue.
 </HARD-GATE>
 
 ## Anti-Pattern: "This Is Too Simple To Need A Design"
@@ -28,22 +30,24 @@ Every ralph task goes through this process. A one-function utility, a config twe
 
 You MUST create a task for each of these items and complete them in order:
 
-1. **Resolve issue context** — if called with an issue-id argument, set `ISSUE_ID=<arg>` and fetch its current description as starting context; if the issue is in `Todo`, `Backlog`, or `Triage`, immediately transition it to `$CLAUDE_PLUGIN_OPTION_DESIGN_STATE` before the dialogue begins. Otherwise leave `ISSUE_ID` unset; it will be created in step 10.
+1. **Re-entrancy preflight** — if called with an issue-id argument, set `ISSUE_ID=<arg>` and run the state-and-residue matrix below to decide whether to refuse, transition, or resume. Otherwise leave `ISSUE_ID` unset; it will be created in step 6.5.
 2. **Explore project context** — check files, docs, recent commits. If `ISSUE_ID` is set, the existing description is part of this context.
 3. **Offer visual companion** (if topic will involve visual questions) — its own message, no clarifying question alongside. See the Visual Companion section.
 4. **Ask clarifying questions** — one at a time, understand purpose/constraints/success criteria.
 5. **Propose 2-3 approaches** — with trade-offs and your recommendation.
-6. **Present design** — in sections scaled to their complexity. Get user approval after each section. Explicitly surface any **prerequisite Linear issues** that must land before this one (for `blocked-by` relations in step 10).
-7. **Write design doc** — save to `docs/specs/<topic>.md` and commit. If the file already exists, stop and ask the user before overwriting.
-8. **Spec self-review** — quick inline check for placeholders, contradictions, ambiguity, scope (see below).
-9. **User reviews written spec** — ask the user to review the spec file before Linear finalization.
-10. **Finalize the Linear issue** — see "Finalizing the Linear Issue" below. Terminal state: issue description matches the approved spec, state is `approved_state`, blocked-by relations set.
+6. **Present design** — in sections scaled to their complexity. Get user approval after each section. Explicitly surface any **prerequisite Linear issues** that must land before this one (for `blocked-by` relations in step 11).
+7. **Resolve or create the Linear issue** (step 6.5) — if `ISSUE_ID` is unset, create the ticket now in a `$SENSIBLE_RALPH_PROJECTS` project; transition to `In Design`.
+8. **Create branch+worktree, capture `SPEC_BASE_SHA`, write spec, commit** (step 7) — lazily create the per-issue branch+worktree (or `cd` into the existing pair on a re-spec), write `docs/specs/<topic>.md` on the branch, commit.
+9. **Spec self-review** — quick inline check for placeholders, contradictions, ambiguity, scope (see below).
+10. **User reviews written spec** — ask the user to review the spec file before the codex gate.
+11. **Codex review gate** — adversarial probing of the spec on the issue's own branch (`--base "$SPEC_BASE_SHA"`). Three finding buckets; loop back as needed.
+12. **Finalize the Linear issue** — see "Finalizing the Linear Issue" below. Terminal state: issue description matches the approved spec, state is `approved_state`, blocked-by relations set. The branch+worktree persist; `/sr-start` finds them at next dispatch.
 
 ## Process Flow
 
 ```dot
 digraph sr_spec {
-    "Resolve issue context\n(arg → fetch existing)" [shape=box];
+    "Re-entrancy preflight\n(state matrix → resume/refuse/transition)" [shape=box];
     "Explore project context" [shape=box];
     "Visual questions ahead?" [shape=diamond];
     "Offer Visual Companion\n(own message, no other content)" [shape=box];
@@ -51,12 +55,15 @@ digraph sr_spec {
     "Propose 2-3 approaches" [shape=box];
     "Present design sections\n(incl. prerequisite issues)" [shape=box];
     "User approves design?" [shape=diamond];
-    "Write design doc\ndocs/specs/<topic>.md" [shape=box];
+    "Resolve or create issue (6.5)" [shape=box];
+    "Create branch+worktree;\nwrite spec; commit (7)" [shape=box];
     "Spec self-review\n(fix inline)" [shape=box];
     "User reviews spec?" [shape=diamond];
+    "Codex review gate (10)" [shape=box];
+    "Findings to address?" [shape=diamond];
     "Finalize Linear issue\n(description + state + blockers)" [shape=doublecircle];
 
-    "Resolve issue context\n(arg → fetch existing)" -> "Explore project context";
+    "Re-entrancy preflight\n(state matrix → resume/refuse/transition)" -> "Explore project context";
     "Explore project context" -> "Visual questions ahead?";
     "Visual questions ahead?" -> "Offer Visual Companion\n(own message, no other content)" [label="yes"];
     "Visual questions ahead?" -> "Ask clarifying questions" [label="no"];
@@ -65,42 +72,104 @@ digraph sr_spec {
     "Propose 2-3 approaches" -> "Present design sections\n(incl. prerequisite issues)";
     "Present design sections\n(incl. prerequisite issues)" -> "User approves design?";
     "User approves design?" -> "Present design sections\n(incl. prerequisite issues)" [label="no, revise"];
-    "User approves design?" -> "Write design doc\ndocs/specs/<topic>.md" [label="yes"];
-    "Write design doc\ndocs/specs/<topic>.md" -> "Spec self-review\n(fix inline)";
+    "User approves design?" -> "Resolve or create issue (6.5)" [label="yes"];
+    "Resolve or create issue (6.5)" -> "Create branch+worktree;\nwrite spec; commit (7)";
+    "Create branch+worktree;\nwrite spec; commit (7)" -> "Spec self-review\n(fix inline)";
     "Spec self-review\n(fix inline)" -> "User reviews spec?";
-    "User reviews spec?" -> "Write design doc\ndocs/specs/<topic>.md" [label="changes requested"];
-    "User reviews spec?" -> "Finalize Linear issue\n(description + state + blockers)" [label="approved"];
+    "User reviews spec?" -> "Create branch+worktree;\nwrite spec; commit (7)" [label="changes requested"];
+    "User reviews spec?" -> "Codex review gate (10)" [label="approved"];
+    "Codex review gate (10)" -> "Findings to address?";
+    "Findings to address?" -> "Create branch+worktree;\nwrite spec; commit (7)" [label="substantial — loop back"];
+    "Findings to address?" -> "Codex review gate (10)" [label="trivial — fix inline, re-run"];
+    "Findings to address?" -> "Finalize Linear issue\n(description + state + blockers)" [label="none"];
 }
 ```
 
 **The terminal state is the Approved Linear issue.** Do NOT invoke `writing-plans`, `subagent-driven-development`, or any other implementation skill. Implementation begins in a separate session via `/sr-start`.
 
+## Step 1 — Re-entrancy preflight
+
+State decision table (note `STATE` is the issue's pre-`/sr-spec` state):
+
+| `STATE` | Branch+worktree existence | Action |
+|---|---|---|
+| `Todo` / `Backlog` / `Triage` | Should be neither | Transition → `In Design`. If branch and/or worktree exist anyway, refuse with the manual cleanup recipe (see "Cancellation cleanup" below). Track the original state for rollback at finalize sub-step 2. |
+| `In Design` | May or may not exist (depends on whether prior session reached step 7) | Resume. No transition (already in target state). Step 7 detects existing state and `cd`s in. |
+| `$CLAUDE_PLUGIN_OPTION_APPROVED_STATE` | Should exist | Warn user: "this is a re-spec; the prior approved spec on the branch will be appended to and the Linear description will be overwritten." Confirm before proceeding. Transition `Approved → In Design` (track for rollback). Step 7 detects existing branch+worktree and `cd`s in. |
+| `$CLAUDE_PLUGIN_OPTION_IN_PROGRESS_STATE` / `$CLAUDE_PLUGIN_OPTION_REVIEW_STATE` | Branch likely has impl commits | Refuse: "Issue is in `<state>`; re-speccing on top of implementation commits is a manual unwind. Either revert implementation work first, or cancel this issue and file a new one." |
+| `$CLAUDE_PLUGIN_OPTION_DONE_STATE` | Branch likely already merged | Refuse: "Issue is Done. Open a new issue for follow-up work." |
+| `Canceled` | Branch may exist locally | Refuse: "Issue is Canceled. Either reopen via Linear UI before re-running, or file a new issue." |
+
+Implementation:
+
+```bash
+source "$CLAUDE_PLUGIN_ROOT/lib/defaults.sh"
+source "$CLAUDE_PLUGIN_ROOT/lib/linear.sh"
+source "$CLAUDE_PLUGIN_ROOT/lib/scope.sh"
+source "$CLAUDE_PLUGIN_ROOT/lib/worktree.sh"
+
+if [ -n "${ISSUE_ID:-}" ]; then
+  STATE=$(linear issue view "$ISSUE_ID" --json | jq -r '.state.name')
+  branch=$(linear_get_issue_branch "$ISSUE_ID")
+  path=$(worktree_path_for_issue "$branch")
+  brwt=$(worktree_branch_state_for_issue "$branch" "$path")
+  brwt_state="${brwt%%$'\t'*}"   # both_exist | neither | partial
+  brwt_cause="${brwt#*$'\t'}"    # empty unless partial
+
+  case "$STATE" in
+    Todo|Backlog|Triage)
+      if [ "$brwt_state" != "neither" ]; then
+        echo "sr-spec: $ISSUE_ID residue check — branch '$branch' or worktree '$path' exists, but issue is in '$STATE' (expected fresh)." >&2
+        echo "  This is stale state from a cancelled/interrupted prior session." >&2
+        echo "  Manual cleanup:" >&2
+        echo "    git worktree remove --force \"$path\" 2>/dev/null" >&2
+        echo "    git branch -D \"$branch\" 2>/dev/null" >&2
+        exit 1
+      fi
+      linear issue update "$ISSUE_ID" --state "$CLAUDE_PLUGIN_OPTION_DESIGN_STATE" \
+        || echo "sr-spec: failed to transition $ISSUE_ID to '$CLAUDE_PLUGIN_OPTION_DESIGN_STATE'; continuing with dialogue" >&2
+      # Track in conversation context: original state was $STATE; this invocation transitioned to In Design.
+      ;;
+    "$CLAUDE_PLUGIN_OPTION_DESIGN_STATE")
+      # Resume. No transition. Step 7 will check $brwt_state and cd in if both_exist.
+      ;;
+    "$CLAUDE_PLUGIN_OPTION_APPROVED_STATE")
+      echo "sr-spec: $ISSUE_ID is Approved. Re-spec will append to the existing branch and overwrite the Linear description on finalize." >&2
+      echo "  Continue? (yes/no)" >&2
+      # Wait for explicit user confirmation before proceeding.
+      # On confirmation, transition Approved → In Design (track for rollback in finalize sub-step 2).
+      ;;
+    "$CLAUDE_PLUGIN_OPTION_IN_PROGRESS_STATE"|"$CLAUDE_PLUGIN_OPTION_REVIEW_STATE")
+      echo "sr-spec: $ISSUE_ID is in '$STATE'; re-speccing on top of implementation work is out of scope." >&2
+      echo "  Either revert implementation work first, or cancel this issue and file a new one." >&2
+      exit 1
+      ;;
+    "$CLAUDE_PLUGIN_OPTION_DONE_STATE")
+      echo "sr-spec: $ISSUE_ID is Done. Open a new issue for follow-up work." >&2
+      exit 1
+      ;;
+    Canceled)
+      echo "sr-spec: $ISSUE_ID is Canceled. Reopen via Linear UI before re-running, or file a new issue." >&2
+      exit 1
+      ;;
+    *)
+      echo "sr-spec: $ISSUE_ID has unexpected state '$STATE'." >&2
+      exit 1
+      ;;
+  esac
+fi
+```
+
+`Todo|Backlog|Triage` is hardcoded by name — those names are not configurable plugin options. A workspace that has renamed those idle states must account for this gap.
+
 ## The Process
 
 **Understanding the idea:**
 
-- If `ISSUE_ID` is set, start by reading its current description — that's the user's framing before the dialogue refines it. Then, before asking any questions, source `defaults.sh` and transition the issue to `$CLAUDE_PLUGIN_OPTION_DESIGN_STATE` if it is in an idle state (`Todo`, `Backlog`, or `Triage`). This is best-effort — log and continue on failure. **Track whether this invocation performed the transition** (not as a shell variable — step 1 and step 10 run in separate bash invocations — but as a noted fact in your task tracking or conversation context): note the original state and whether the `linear issue update` call succeeded. Step 10's scope-check abort uses this context to roll back rather than strand the issue in `In Design`. For re-runs where the issue is already in `In Design`, no transition happens, so there is nothing to roll back.
-
-  ```bash
-  source "$CLAUDE_PLUGIN_ROOT/lib/defaults.sh"
-
-  if [ -n "${ISSUE_ID:-}" ]; then
-    STATE=$(linear issue view "$ISSUE_ID" --json | jq -r '.state.name')
-
-    case "$STATE" in
-      Todo|Backlog|Triage)
-        # If update succeeds, note: "transitioned $ISSUE_ID from $STATE to In Design"
-        # If update fails, note: "transition failed, continuing"
-        linear issue update "$ISSUE_ID" --state "$CLAUDE_PLUGIN_OPTION_DESIGN_STATE" \
-          || echo "sr-spec: failed to transition $ISSUE_ID to '$CLAUDE_PLUGIN_OPTION_DESIGN_STATE'; continuing with dialogue" >&2
-        ;;
-    esac
-  fi
-  ```
-
+- If `ISSUE_ID` is set, start by reading its current description — that's the user's framing before the dialogue refines it. The transition (if any) was performed by the preflight in step 1.
 - Check out the current project state (files, docs, recent commits).
 - Before asking detailed questions, assess scope: if the request describes multiple independent subsystems (e.g., "build a platform with chat, file storage, billing, and analytics"), flag this immediately. Don't spend questions refining details of a project that needs to be decomposed first.
-- If the project is too large for a single spec, help the user decompose into sub-projects: what are the independent pieces, how do they relate, what order should they be built? Each sub-project gets its own spec → its own sr-spec invocation. Prerequisite relationships become `blocked-by` edges in step 10.
+- If the project is too large for a single spec, help the user decompose into sub-projects: what are the independent pieces, how do they relate, what order should they be built? Each sub-project gets its own spec → its own sr-spec invocation. Prerequisite relationships become `blocked-by` edges in step 11.
 - For appropriately-scoped projects, ask questions one at a time. Prefer multiple choice; open-ended is fine too. One question per message.
 - Focus on understanding: purpose, constraints, success criteria.
 
@@ -130,17 +199,94 @@ digraph sr_spec {
 - Where existing code has problems that affect the work (a file that's grown too large, unclear boundaries, tangled responsibilities), include targeted improvements as part of the design — the way a good developer improves code they're working in.
 - Don't propose unrelated refactoring. Stay focused on what serves the current goal.
 
-## After the Design
+## Step 6.5 — Resolve or create the Linear issue
 
-**Documentation:**
+Insert between step 6 (design approval) and step 7 (branch+worktree). Two cases:
 
-- Write the validated design (spec) to `docs/specs/<topic>.md`.
-  - Pick `<topic>` as a short kebab-case summary of what's being built.
-  - If the file already exists, stop and ask before overwriting — it may belong to a related but distinct scope.
-- Use `elements-of-style:writing-clearly-and-concisely` if available.
-- Commit the design document to git.
+- **`ISSUE_ID` already set** (operator passed an arg): no-op. Issue already verified by the preflight in step 1.
+- **`ISSUE_ID` unset**: run the issue-creation logic now. Specifically:
+  1. Resolve `$TARGET_PROJECT` from `$SENSIBLE_RALPH_PROJECTS` — one-project case: use directly; multi-project case: ask the user to pick. Reject any answer not in `$SENSIBLE_RALPH_PROJECTS` and re-ask.
+  2. Run the duplicate-prevention scan (`linear issue query --project "$TARGET_PROJECT" --search "<keyword>"`). Look for same feature described differently, issues that would be superseded, partially overlapping issues, or already-done work. Apply the rules in "Duplicate prevention" below.
+  3. Create the Linear issue (`linear issue create --project "$TARGET_PROJECT" --title "<title>" --state "Todo"`).
+  4. Capture `ISSUE_ID` and immediately transition to `$CLAUDE_PLUGIN_OPTION_DESIGN_STATE` (matches step 1's transition for the with-arg case).
+  5. Track in conversation context: this invocation created the issue and transitioned it. Set `PRIOR=""` — a freshly-created issue has no prior content to preserve.
 
-**Spec self-review:**
+### Duplicate prevention
+
+```bash
+linear issue query --project "$TARGET_PROJECT" --search "<keyword or title phrase>" --json \
+  | jq -r '.nodes[] | "\(.identifier)\t\(.state.name)\t\(.title)"'
+```
+
+- **Exact duplicate** — don't create. Surface to the user ("This appears to already be filed as `$EXISTING_ID`; want to populate that issue instead?"). If they confirm, capture `ISSUE_ID=$EXISTING_ID` and loop back to step 1's preflight so the state/project checks apply.
+- **Superseded by this design** — surface to the user and propose canceling the old issue with a comment linking to the new one once created. Don't cancel without confirmation.
+- **Partially overlapping** — surface to the user and let them decide whether to merge, split, or file alongside.
+- **Already done but not marked Done** — surface to the user and propose closing it.
+
+Issue-creation conventions:
+
+- **Title**: verb-first imperative, scannable at a glance. No prefixes like `[FE]` or `Done when …`.
+- **Project**: `$TARGET_PROJECT` (the validated in-scope project).
+- **State**: `Todo` (sub-step 4 transitions to `$CLAUDE_PLUGIN_OPTION_DESIGN_STATE`).
+- **No description**: step 11's finalization overwrites it with the approved spec.
+- **No assignee, no priority flag, no labels** at creation. The user adjusts these post-finalize.
+
+## Step 7 — Create branch+worktree, capture `SPEC_BASE_SHA`, write spec, commit
+
+Resolve the branch and worktree paths, then either reuse (Approved re-spec or interrupted In Design with a prior step-7 commit) or create. `worktree_branch_state_for_issue` distinguishes the cases.
+
+```bash
+ISSUE_BRANCH=$(linear_get_issue_branch "$ISSUE_ID")
+WORKTREE_PATH=$(worktree_path_for_issue "$ISSUE_BRANCH")
+
+state=$(worktree_branch_state_for_issue "$ISSUE_BRANCH" "$WORKTREE_PATH")
+state_name="${state%%$'\t'*}"
+
+case "$state_name" in
+  both_exist)
+    # Re-run path. Branch+worktree from a prior /sr-spec session.
+    # cd in. SPEC_BASE_SHA = current branch HEAD (= prior-spec HEAD).
+    cd "$WORKTREE_PATH"
+    SPEC_BASE_SHA=$(git rev-parse HEAD)
+    ;;
+  neither)
+    # Fresh path. Create branch off default base, cd in.
+    worktree_create_at_base "$WORKTREE_PATH" "$ISSUE_BRANCH" "$SENSIBLE_RALPH_DEFAULT_BASE_BRANCH" \
+      || { echo "sr-spec: worktree create failed for $ISSUE_BRANCH" >&2; exit 1; }
+    cd "$WORKTREE_PATH"
+    SPEC_BASE_SHA=$(git rev-parse HEAD)
+    ;;
+  partial)
+    echo "sr-spec: partial residue for $ISSUE_ID — ${state#*$'\t'} exists in isolation. Manual cleanup required:" >&2
+    echo "    git worktree remove --force \"$WORKTREE_PATH\" 2>/dev/null" >&2
+    echo "    git branch -D \"$ISSUE_BRANCH\" 2>/dev/null" >&2
+    exit 1
+    ;;
+esac
+
+# Write spec doc and commit. The doc is committed on the branch — NOT on
+# main. It will arrive on main when /close-issue merges the branch.
+TOPIC="<short kebab-case summary, picked from the approved design>"
+SPEC_FILE="docs/specs/${TOPIC}.md"
+
+if [ -e "$SPEC_FILE" ] && [ "$state_name" != "both_exist" ]; then
+  # File-exists guard, only on first-time spec creation. On re-spec
+  # (both_exist), the file IS expected to exist and will be overwritten.
+  echo "sr-spec: $SPEC_FILE already exists. Stop and ask the operator." >&2
+  exit 1
+fi
+
+# Write the approved spec content, then:
+git add "$SPEC_FILE"
+git commit -m "docs(spec): <verb-first imperative, e.g. 'add per-issue branch lifecycle spec'>
+
+Ref: $ISSUE_ID"
+```
+
+`SPEC_BASE_SHA` is consumed by step 10 (codex gate) below; it lives only in the shell. **`.sensible-ralph-base-sha` is NOT written by `/sr-spec`** — the orchestrator writes it post-merge at dispatch time. See `docs/design/worktree-contract.md`.
+
+## Spec self-review
+
 After writing the spec, look at it with fresh eyes:
 
 1. **Placeholder scan:** Any "TBD", "TODO", incomplete sections, or vague requirements? Fix them.
@@ -149,37 +295,95 @@ After writing the spec, look at it with fresh eyes:
 4. **Ambiguity check:** Could any requirement be interpreted two different ways? Pick one and make it explicit — the autonomous session has no one to ask.
 5. **Autonomous-session readiness:** Does the spec give the autonomous implementer enough context to proceed without further human input? Requirements, interfaces, testing expectations, out-of-scope callouts — all explicit.
 
-Fix any issues inline. No need to re-review — just fix and move on.
+Fix any issues inline. No need to re-review — just fix and move on. Iteration commits accumulate on the branch; `SPEC_BASE_SHA` stays the same.
 
-**User review gate:**
-After the spec review, ask the user to review:
+## User review gate
 
-> "Spec written and committed to `docs/specs/<topic>.md`. Please review it and let me know if you want any changes before I finalize the Linear issue."
+After the spec self-review, ask the user to review:
 
-Wait for the user's response. If they request changes, make them and re-run the spec review. Only proceed to Linear finalization once the user approves.
+> "Spec written and committed to `docs/specs/<topic>.md` on branch `$ISSUE_BRANCH`. Please review it and let me know if you want any changes before I run the codex gate."
 
-## Finalizing the Linear Issue
+Wait for the user's response. If they request changes, make them and re-run the spec self-review. Only proceed to step 10 once the user approves.
 
-Terminal step. Run substeps in order. Steps 1-2 are mandatory preflight gates — no mutation (comment, description, relation, state) happens until both pass. If any later step fails, STOP before the state transition.
+## Step 10 — Codex review gate
+
+Adversarial probing of the approved spec. Last chance to catch mechanism-level defects before dispatch.
+
+### Purpose
+
+The autonomous implementer follows the spec literally with no human in the loop, so spec-time codex probing is the safety net for ambiguities and mechanism-level claims that don't survive scrutiny. Adversarial probing of user-approved decisions IS the value — no escape hatch exists for findings that contradict prior dialogue. Present findings to the user honestly; the user decides whether to revise or keep the original call. A decision that survives adversarial probing is stronger than one that was never tested.
+
+### Detection (graceful degradation)
+
+```bash
+CODEX_SCRIPT=$(find ~/.claude/plugins -name 'codex-companion.mjs' -path '*/openai-codex/*/scripts/*' 2>/dev/null | head -1)
+```
+
+If empty, log this exact warning verbatim and proceed to step 11:
+
+> codex-review-gate not installed — skipping codex spec review.
+> Operators relying on this gate for autonomous-safety guarantees
+> should install it.
+
+If non-empty, continue.
+
+### Run the gate (we are already on the branch, in the worktree)
+
+```bash
+node "$CODEX_SCRIPT" review --json --base "$SPEC_BASE_SHA" || {
+  echo "sr-spec: standard codex review failed; gate aborted" >&2
+  exit 1
+}
+node "$CODEX_SCRIPT" adversarial-review --json --base "$SPEC_BASE_SHA" "<focus text>" || {
+  echo "sr-spec: adversarial codex review failed; gate aborted" >&2
+  exit 1
+}
+```
+
+`<focus text>` defaults to:
+
+> Probe this design for: (1) ambiguities an autonomous implementer
+> would misinterpret — places where two reasonable readings produce
+> different code; (2) mechanism-level claims that don't hold under
+> scrutiny — interfaces, return values, side effects, error contracts
+> asserted by prose; (3) missing failure modes — what happens when
+> the assumed inputs/state don't hold; (4) scope creep or hidden
+> coupling — does this spec quietly reach into systems it shouldn't?
+
+Override condition: if the spec has a salient targeted risk (concurrency, auth, data integrity, integration boundary), write per-spec focus text naming the mechanism and failure mode per `codex-review-gate`'s "Targeted-risk prompts" guidance. The default is a backstop, not a ceiling.
+
+### Three finding buckets (caller policy)
+
+1. **Trivially actionable** — clear defect, prose tightening, ambiguity fix that doesn't change a mechanism, contract, or scope boundary.
+   *Action:* fix inline → commit (new commit, don't amend) → re-run the gate. `SPEC_BASE_SHA` stays the same; new commits accumulate on the branch and codex sees the cumulative diff.
+
+2. **Substantial actionable** — mechanism redesign, missed failure mode, scope change, contract correction.
+   *Action:* loop back to step 7 (rewrite the spec doc, new commit) → re-run self-review → re-ask user → re-run the gate. `SPEC_BASE_SHA` stays the same.
+
+3. **User judgment / contradicts prior dialogue** — finding is ambiguous, requires a design call, or pushes back on a decision the user already made.
+   *Action:* present to the user → user decides → apply as agreed (becomes bucket 1 or 2 in size). No escape hatch — adversarial probing of user-approved decisions IS the value.
+
+### Skip criterion (re-runs only)
+
+First-run on an issue: the gate **always** invokes codex.
+
+Re-runs on an issue already in `$CLAUDE_PLUGIN_OPTION_APPROVED_STATE`: the gate **may** be skipped if the diff against the prior approved spec is purely cosmetic (typo, formatting, prose clarification with no change to acceptance criteria, mechanism, scope, or interface). The prior approved spec is the previous commit on the branch (or the common ancestor of branch and `$SENSIBLE_RALPH_DEFAULT_BASE_BRANCH` if the operator force-fetches a different reference); compute via `git diff <prior-approved> HEAD -- "$SPEC_FILE"`. When in doubt, run.
+
+### Convergence
+
+No max-iteration count. Trust user judgment. Genuinely-out-of-scope findings get filed as Linear follow-up issues, not crammed into this spec.
+
+## Finalizing the Linear Issue (Step 11)
+
+Terminal step. Run sub-steps in order. Sub-steps 1-2 are mandatory preflight gates — no mutation (comment, description, relation, state) happens until both pass. If any later sub-step fails, STOP before the state transition.
 
 **Shell note:** the snippets below share state across blocks (`SENSIBLE_RALPH_PROJECTS`, `STATE`, `PRIOR`, `ISSUE_ID`, `linear_get_issue_blockers`, …), so the whole finalization must run in a **single** shell session — not per-snippet `bash -c` calls, which spawn a fresh subshell each time and lose that state. Run them in one continuous session (any shell — `lib/scope.sh` is portable between bash 3.2+ and zsh).
 
-### 1. Load the plugin's scope loader
+### 1. Confirm scope is loaded
 
-Workflow state-name values (`CLAUDE_PLUGIN_OPTION_APPROVED_STATE` etc.) are already exported by the Claude Code plugin harness from the plugin's userConfig — no source call needed for them. What we DO need to source is the plugin's `linear.sh` (for the `linear_get_issue_blockers` helper used in step 5) and `scope.sh` (which parses the repo's `.sensible-ralph.json` and exports `SENSIBLE_RALPH_PROJECTS`). Both live in the plugin's top-level `lib/` directory.
+The plugin libraries should already be sourced from step 1. If somehow they aren't, source them now:
 
 ```bash
-# Reuse the plugin's own loaders so behavior doesn't drift.
-# defaults.sh applies CLAUDE_PLUGIN_OPTION_* fallbacks — the plugin
-# harness may skip populating them when the user didn't walk the
-# enable-time config dialog, so the shell-side `:=` assignments keep
-# state-name comparisons working either way.
-# These exports become available after sourcing:
-#   SENSIBLE_RALPH_PROJECTS — newline-joined in-scope project names
-#                    (scope.sh expands initiative-shaped .sensible-ralph.json)
-#   CLAUDE_PLUGIN_OPTION_* — workflow state/label/path defaults
-# And these helpers become callable:
-#   linear_get_issue_blockers — used in step 5 for blocker verification
 source "$CLAUDE_PLUGIN_ROOT/lib/defaults.sh"
 source "$CLAUDE_PLUGIN_ROOT/lib/linear.sh" || {
   echo "sr-spec: failed to source linear.sh — \$CLAUDE_PLUGIN_ROOT may be unset (sensible-ralph plugin not enabled?). Re-enable the plugin and re-run." >&2
@@ -191,89 +395,34 @@ source "$CLAUDE_PLUGIN_ROOT/lib/scope.sh" || {
 }
 ```
 
-If either source command fails, stop — don't hand-roll `.sensible-ralph.json` parsing. `scope.sh` is the source of truth and its validators are load-bearing (e.g. `.sensible-ralph.json` missing vs both-shapes-set vs initiative-zero-expansion).
-
 ### 2. Preflight the target issue (gate before any mutation)
 
-If `ISSUE_ID` is set, fetch state, description, and project in one read, then branch before touching anything:
+`ISSUE_ID` is set by step 1 (with-arg) or step 6.5 (created here). Re-fetch state, description, and project once for the final preflight:
 
 ```bash
-if [ -n "${ISSUE_ID:-}" ]; then
-  VIEW=$(linear issue view "$ISSUE_ID" --json)
-  STATE=$(printf '%s' "$VIEW" | jq -r '.state.name')
-  PRIOR=$(printf '%s' "$VIEW" | jq -r '.description // empty')
-  ISSUE_PROJECT=$(printf '%s' "$VIEW" | jq -r '.project.name // empty')
-fi
+VIEW=$(linear issue view "$ISSUE_ID" --json)
+STATE=$(printf '%s' "$VIEW" | jq -r '.state.name')
+PRIOR=$(printf '%s' "$VIEW" | jq -r '.description // empty')
+ISSUE_PROJECT=$(printf '%s' "$VIEW" | jq -r '.project.name // empty')
 ```
 
-Branch on `$STATE` before running anything below. Use the state names the plugin harness exported (`$CLAUDE_PLUGIN_OPTION_DONE_STATE`, `$CLAUDE_PLUGIN_OPTION_IN_PROGRESS_STATE`, `$CLAUDE_PLUGIN_OPTION_REVIEW_STATE`, `$CLAUDE_PLUGIN_OPTION_APPROVED_STATE`) rather than hard-coded strings — non-default workflow names would otherwise slip past the guards:
+Branch on `$STATE` before running anything below. Use the state names the plugin harness exported (`$CLAUDE_PLUGIN_OPTION_DONE_STATE`, `$CLAUDE_PLUGIN_OPTION_IN_PROGRESS_STATE`, `$CLAUDE_PLUGIN_OPTION_REVIEW_STATE`, `$CLAUDE_PLUGIN_OPTION_APPROVED_STATE`) rather than hard-coded strings:
 
-- **Equals `$CLAUDE_PLUGIN_OPTION_DONE_STATE` or `Canceled`**: stop and ask. Reopening a terminal state warrants explicit confirmation. (`Canceled` is the literal Linear state name — not a plugin option because it's not a pipeline state.)
-- **Equals `$CLAUDE_PLUGIN_OPTION_APPROVED_STATE`**: warn the user the prior spec will be overwritten. Require explicit confirmation before continuing.
+- **Equals `$CLAUDE_PLUGIN_OPTION_DONE_STATE` or `Canceled`**: stop and ask. Reopening a terminal state warrants explicit confirmation.
+- **Equals `$CLAUDE_PLUGIN_OPTION_APPROVED_STATE`**: should not normally occur — step 1 transitioned an Approved re-spec to In Design after explicit confirmation. If somehow we're here on a re-spec without the transition, stop and ask.
 - **Equals `$CLAUDE_PLUGIN_OPTION_IN_PROGRESS_STATE` or `$CLAUDE_PLUGIN_OPTION_REVIEW_STATE`**: stop and ask. Re-speccing an active issue usually means the operator is on the wrong ticket.
-- **Anything else** (typically `Todo`, `Backlog`, `Triage`, or `$CLAUDE_PLUGIN_OPTION_DESIGN_STATE`): proceed.
+- **Anything else** (typically `$CLAUDE_PLUGIN_OPTION_DESIGN_STATE` — the common path after step 1): proceed.
 
 Then validate `$ISSUE_PROJECT` against `$SENSIBLE_RALPH_PROJECTS`:
 
 - **In `$SENSIBLE_RALPH_PROJECTS`**: proceed.
-- **Not in `$SENSIBLE_RALPH_PROJECTS`**: stop. `/sr-start` queries only in-scope projects to build its queue, so an Approved out-of-scope issue is *invisible* to the dispatcher — not flagged as an anomaly, just never picked up. If you noted in step 1 that this invocation successfully transitioned the issue to `In Design` from an idle state, check the issue's current state before rolling back (the operator may have manually moved it during the dialogue — don't overwrite that): if the current state is still `$CLAUDE_PLUGIN_OPTION_DESIGN_STATE`, issue `linear issue update "$ISSUE_ID" --state "<original-state>"` (the state name you noted in step 1, e.g. `Todo`). If the rollback command fails, tell the user explicitly: "Warning: failed to restore `$ISSUE_ID` to `<original-state>`; it is currently in `In Design`. Move it back manually: `linear issue update $ISSUE_ID --state <original-state>`". If no transition happened in step 1 (the issue was already in `In Design`, the update failed, or the current state has since changed), skip the rollback. Then ask the user to either move the issue to an in-scope project first (`linear issue update "$ISSUE_ID" --project "<name>"`) or widen `.sensible-ralph.json`. Do not finalize until one of those lands.
+- **Not in `$SENSIBLE_RALPH_PROJECTS`**: stop. `/sr-start` queries only in-scope projects to build its queue, so an Approved out-of-scope issue is *invisible* to the dispatcher — not flagged as an anomaly, just never picked up. If you noted in step 1 that this invocation successfully transitioned the issue to `In Design` from an idle state, check the issue's current state before rolling back (the operator may have manually moved it during the dialogue — don't overwrite that): if the current state is still `$CLAUDE_PLUGIN_OPTION_DESIGN_STATE`, issue `linear issue update "$ISSUE_ID" --state "<original-state>"`. If the rollback command fails, tell the user explicitly: "Warning: failed to restore `$ISSUE_ID` to `<original-state>`; it is currently in `In Design`. Move it back manually." Then ask the user to either move the issue to an in-scope project first or widen `.sensible-ralph.json`. Do not finalize until one of those lands.
 
-Only after state and project checks both pass (and the user has confirmed any warnings) may you move on to step 3.
+Only after state and project checks both pass (and the user has confirmed any warnings) may you move on to sub-step 3.
 
-### 3. Resolve target project and ensure the issue exists
+### 3. Resolve target project (no-op)
 
-If `ISSUE_ID` is set, skip this step — step 2 already validated the issue's project against `$SENSIBLE_RALPH_PROJECTS` and stopped on mismatch, so if we're here the project is in scope.
-
-If `ISSUE_ID` is unset, the new issue must land in a project listed in `$SENSIBLE_RALPH_PROJECTS` (already resolved by step 1, regardless of whether `.sensible-ralph.json` is `projects`- or `initiative`-shaped):
-
-- **One project**: use it directly — bind to `$TARGET_PROJECT`.
-- **Multiple projects**: ask the user. Accept only an answer that appears in `$SENSIBLE_RALPH_PROJECTS` — reject anything else and re-ask. Bind the chosen name to `$TARGET_PROJECT`.
-
-#### Duplicate prevention
-
-Before creating, scan the target project for existing issues that overlap with the spec. The scan uses the spec's title and a few salient keywords from the approved design:
-
-```bash
-# Query in-project issues; scan returned titles and descriptions for overlap.
-linear issue query --project "$TARGET_PROJECT" --search "<keyword or title phrase>" --json \
-  | jq -r '.nodes[] | "\(.identifier)\t\(.state.name)\t\(.title)"'
-```
-
-Look for:
-
-- **Same feature described differently** (e.g., "Recipe data pipeline" vs "Recipe data loads from msgpack").
-- **Issues that would be superseded** by this spec (e.g., an older approach the design explicitly replaces).
-- **Completed work** that already covers the acceptance criteria.
-
-Apply these rules:
-
-- **Exact duplicate** — don't create. Surface to the user ("This appears to already be filed as `$EXISTING_ID`; want to populate that issue instead?"). If they confirm, capture `ISSUE_ID=$EXISTING_ID` and loop back to step 2 so the state/project preflight applies.
-- **Superseded by this design** — surface to the user and propose canceling the old issue with a comment linking to the new one once created. Don't cancel without confirmation.
-- **Partially overlapping** — surface to the user and let them decide whether to merge, split, or file alongside.
-- **Already done but not marked Done** — surface to the user and propose closing it.
-
-If no overlap is found, proceed to create.
-
-#### Create the issue
-
-```bash
-linear issue create \
-  --project "$TARGET_PROJECT" \
-  --title "<verb-first imperative title from the approved spec>" \
-  --state "Todo"
-```
-
-Conventions for the creation call:
-
-- **Title**: verb-first imperative, scannable at a glance. No prefixes like `[FE]` or `Done when …`.
-- **Project**: `$TARGET_PROJECT` (the validated in-scope project).
-- **State**: `Todo` (the spec is actionable by construction; step 6 will transition to `$CLAUDE_PLUGIN_OPTION_APPROVED_STATE`).
-- **No description**: step 5 overwrites it with the approved spec.
-- **No assignee**: the user assigns manually when they're ready to pick it up.
-- **No priority flag**: Linear's default (Medium / no priority) is fine; the user can adjust after landing.
-- **No labels at creation**.
-
-Capture the new ID as `ISSUE_ID` and set `PRIOR=""` — a freshly-created issue has no prior content to preserve.
+Step 6.5 already created the issue (when needed) in a `$SENSIBLE_RALPH_PROJECTS` project, and sub-step 2 above re-validated. Nothing to do here.
 
 ### 4. Preserve prior description as a comment
 
@@ -292,13 +441,13 @@ if [ -n "$PRIOR" ]; then
 fi
 ```
 
-`--body-file` (not `--body`) so markdown in the prior description round-trips correctly. Never overwrite the description before this comment lands — if the post fails, we must not lose the prior content.
+`--body-file` (not `--body`) so markdown in the prior description round-trips correctly. Never overwrite the description before this comment lands.
 
 ### 5. Push spec, set blockers, verify (all-or-nothing before approval)
 
 Blockers and description must all land cleanly before the state transition. A partial blocker set with the issue in `$CLAUDE_PLUGIN_OPTION_APPROVED_STATE` is materially unsafe — `/sr-start` would dispatch the issue before the missing prerequisite completed.
 
-**Before running anything in this step, explicitly initialize `PREREQS`** from the prerequisites identified during design. Bash treats an unset array as empty, so forgetting this line makes the relation-add loop a no-op AND makes the later verification trivially pass (empty `ACTUAL` matches empty `EXPECTED`) — the guard silently collapses. Declare the array explicitly, even when there are no prerequisites:
+**Before running anything in this sub-step, explicitly initialize `PREREQS`** from the prerequisites identified during design:
 
 ```bash
 # No prerequisites identified during design:
@@ -307,15 +456,13 @@ PREREQS=()
 PREREQS=(ENG-180 ENG-185)
 ```
 
-If the design surfaced prerequisites but the user hasn't supplied them explicitly to this step, STOP and ask — do not guess or default to empty. An Approved issue with missing blockers will be dispatched ahead of its dependencies.
+If the design surfaced prerequisites but the user hasn't supplied them explicitly, STOP and ask — do not guess or default to empty.
 
 ```bash
 linear issue update "$ISSUE_ID" --description-file docs/specs/<topic>.md || {
   echo "sr-spec: description update failed; issue left in $STATE" >&2; exit 1;
 }
 
-# Cross-project blockers are fine as long as the blocker's project is in
-# $SENSIBLE_RALPH_PROJECTS — out-of-scope blockers will trip sr-start's preflight.
 for p in "${PREREQS[@]}"; do
   linear issue relation add "$ISSUE_ID" blocked-by "$p" || {
     echo "sr-spec: failed to add blocked-by $p; issue left in $STATE with partial blockers" >&2
@@ -323,14 +470,7 @@ for p in "${PREREQS[@]}"; do
   }
 done
 
-# Verify the post-add blocker set matches what we asked for. Uses the same
-# helper sr-start's orchestrator uses, so the verification sees exactly
-# what dispatch will see.
-# Capture the helper's output and exit code separately — a naïve
-# `helper | jq | sort` pipeline would take sort's exit code and silently
-# produce an empty ACTUAL when the helper fails (auth/network/API error).
-# With PREREQS also empty (no prerequisites case), that would falsely match
-# and let the state transition proceed with unverified blockers.
+# Verify the post-add blocker set matches what we asked for.
 BLOCKERS_JSON=$(linear_get_issue_blockers "$ISSUE_ID") || {
   echo "sr-spec: linear_get_issue_blockers failed for $ISSUE_ID — cannot verify blocker set; issue left in $STATE" >&2
   exit 1
@@ -346,11 +486,11 @@ if [ "$ACTUAL" != "$EXPECTED" ]; then
 fi
 ```
 
-If any step above fails, STOP. Do **not** run the transition in step 6. Report which mutations landed and which didn't so the user can recover by hand.
+If any step above fails, STOP. Do **not** run the transition in sub-step 6.
 
 ### 6. Transition state
 
-Only reached when steps 1-5 all succeeded.
+Only reached when sub-steps 1-5 all succeeded.
 
 ```bash
 linear issue update "$ISSUE_ID" --state "$CLAUDE_PLUGIN_OPTION_APPROVED_STATE" || {
@@ -361,11 +501,25 @@ linear issue update "$ISSUE_ID" --state "$CLAUDE_PLUGIN_OPTION_APPROVED_STATE" |
 }
 ```
 
+The branch and worktree persist after finalize. They are NOT torn down. `/sr-start` will find them at next dispatch.
+
 Only after the transition succeeds, tell the user:
 
-> "`$ISSUE_ID` is now in `$CLAUDE_PLUGIN_OPTION_APPROVED_STATE`. Run `/sr-start` at your next work session to dispatch it (along with any other Approved issues in the queue)."
+> "`$ISSUE_ID` is now in `$CLAUDE_PLUGIN_OPTION_APPROVED_STATE`. The branch+worktree at `$WORKTREE_PATH` is ready. Run `/sr-start` at your next work session to dispatch it (along with any other Approved issues in the queue)."
 
 If the transition failed, do NOT emit that message — the prior mutations landed but the issue is not dispatchable.
+
+## Cancellation cleanup
+
+With lazy step-7 creation, residue only exists if the operator advances past step 7 (commits a spec doc) and then abandons or cancels the issue. Manual recipe:
+
+```bash
+# Operator manually cancels the issue in Linear, then:
+git worktree remove --force "<repo>/.worktrees/<branch>" 2>/dev/null
+git branch -D "<branch>" 2>/dev/null
+```
+
+A standalone `/sr-cleanup` skill is **out of scope** until pain is observed.
 
 ## Key Principles
 
@@ -375,6 +529,7 @@ If the transition failed, do NOT emit that message — the prior mutations lande
 - **Explore alternatives** — always propose 2-3 approaches before settling.
 - **Incremental validation** — present design, get approval before moving on.
 - **Autonomous-session clarity** — the Linear description IS the PRD for an unattended implementer. Ambiguity costs more here than in a brainstorm for same-session work.
+- **The branch is the workspace** — once step 7 commits the spec, all subsequent work (codex iteration, implementation, prepare-for-review, merge) lives on that branch.
 
 ## Visual Companion
 
@@ -408,3 +563,15 @@ cat "$COMPANION_DIR/visual-companion.md"
 ```
 
 Then use `$COMPANION_DIR/scripts/start-server.sh` and the other referenced scripts from that directory.
+
+## Red flags / when to stop
+
+Stop the session WITHOUT finalizing the issue if:
+
+- Step 1 preflight refuses (terminal state, conflicting impl work).
+- The user can't approve the design and the dialogue isn't converging.
+- The codex gate finds substantial issues that resist resolution after multiple iterations.
+- Branch/worktree creation fails and the partial-residue cleanup recipe doesn't resolve it.
+- The Linear CLI is unreachable for description/state/relation writes.
+
+Cleanup recipe for an abandoned step-7 commit lives in "Cancellation cleanup" above.
