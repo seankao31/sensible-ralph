@@ -283,9 +283,20 @@ in step 10 sees all spec changes from this session.
 
 ### Step 10 — Codex review gate (NEW)
 
-Insert between step 9 and finalize. Adapted from the cancelled
-ENG-252's design, simplified because we are already on the branch (no
-temp worktree needed).
+Insert between step 9 and finalize. ENG-252's bucket policy and focus
+text carry forward verbatim; ENG-252's temp-worktree wrapper is
+dropped because we are already on the issue's own branch.
+
+#### Purpose
+
+The autonomous implementer follows the spec literally with no human
+in the loop, so spec-time codex probing is the last chance to catch
+mechanism-level defects before dispatch. Adversarial probing of
+user-approved decisions IS the value — no escape hatch exists for
+findings that contradict prior dialogue. Present findings to the user
+honestly; the user decides whether to revise or keep the original
+call. A decision that survives adversarial probing is stronger than
+one that was never tested.
 
 #### Detection (graceful degradation)
 
@@ -424,11 +435,13 @@ Orchestrator reuse path" above.
    if either path or branch exists) with a `case` on the helper's
    output:
 
-   - `both_exist`: take the **reuse path**.
-     1. `cd "$path"` (in the same orchestrator-managed shell scope; the
-        existing dispatch's subshell `cd "$path"` for `claude -p` is
-        unchanged).
-     2. Parse `$base_out` from `dag_base.sh`:
+   - `both_exist`: take the **reuse path**. The orchestrator's own CWD
+     stays at the repo root (today's invariant per
+     `docs/design/worktree-contract.md` "CWD convention"); all
+     worktree-side git operations use `git -C "$path"`. The existing
+     dispatch subshell that does `(cd "$path"; claude -p ...)` for
+     dispatch is unchanged.
+     1. Parse `$base_out` from `dag_base.sh`:
         - `$SENSIBLE_RALPH_DEFAULT_BASE_BRANCH`: no parents to merge;
           fast path.
         - single parent (token without spaces, not `INTEGRATION ...`):
@@ -448,10 +461,10 @@ Orchestrator reuse path" above.
           and `refs/remotes/origin/$p` (today's behavior in
           `worktree_create_at_base`). A parent already an ancestor of
           the branch's HEAD merges as a no-op.
-     3. Write `.sensible-ralph-base-sha = $(git -C "$path" rev-parse
+     2. Write `.sensible-ralph-base-sha = $(git -C "$path" rev-parse
         HEAD)` (post-merge HEAD).
-     4. `linear_set_state "$issue_id" "$CLAUDE_PLUGIN_OPTION_IN_PROGRESS_STATE"`.
-     5. Continue to dispatch as today.
+     3. `linear_set_state "$issue_id" "$CLAUDE_PLUGIN_OPTION_IN_PROGRESS_STATE"`.
+     4. Continue to dispatch as today.
    - `neither`: take the **fallback create path** (today's behavior).
      1. `worktree_create_at_base` or `worktree_create_with_integration`.
      2. Write `.sensible-ralph-base-sha`. **Important timing change**:
@@ -470,8 +483,12 @@ Orchestrator reuse path" above.
      4. Continue to dispatch.
    - `partial`: record `local_residue` (no Linear mutation, no taint —
      today's `_record_local_residue` semantics unchanged), continue
-     with next issue. Update the residue record's diagnostic to name
-     the partial-state cause:
+     with next issue. The partial state covers four cases (see
+     `worktree_branch_state_for_issue` definition): branch without
+     worktree, worktree-as-stray-directory without branch, registered
+     worktree at the path checked out to a different branch, and any
+     other inconsistency. Update the residue record's diagnostic to
+     name the specific cause:
 
      ```bash
      printf 'orchestrator: partial residue for %s — %s exists in isolation. Manual cleanup required.\n' \
@@ -578,24 +595,45 @@ sharing exists.
 
 ```bash
 # Returns one of: both_exist | neither | partial
-# - both_exist: branch exists locally AND worktree path exists on disk
-# - neither: branch and worktree path are both absent
-# - partial: exactly one of branch / worktree path exists (genuine residue)
+# - both_exist: branch exists locally AND a git worktree is registered
+#               at $path checked out to $branch
+# - neither:    branch and path are both absent
+# - partial:    any inconsistent state — branch without worktree, path
+#               without branch, path exists but isn't a registered git
+#               worktree, OR registered worktree at $path is checked out
+#               to a different branch. All four collapse to "operator
+#               state we can't safely reuse"; the diagnostic on the
+#               refuse path names the specific cause.
 #
 # Operator sees the partial case as local_residue (orchestrator) or
 # a refuse-with-cleanup-recipe error (sr-spec).
 worktree_branch_state_for_issue() {
   local branch="$1" path="$2"
-  local branch_exists=0 path_exists=0
+  local branch_exists=0 worktree_for_branch=0
+
   if git show-ref --verify --quiet "refs/heads/$branch"; then
     branch_exists=1
   fi
+
+  # Use `git worktree list --porcelain` rather than a plain path-exists
+  # check: a stray directory at $path that isn't a registered worktree
+  # would fool a -e check, and a registered worktree checked out to a
+  # different branch would also fool it. The porcelain output's paired
+  # `worktree <path>` / `branch refs/heads/<name>` lines pin both at
+  # once.
   if [ -e "$path" ]; then
-    path_exists=1
+    if git worktree list --porcelain 2>/dev/null | awk -v p="$path" -v b="refs/heads/$branch" '
+         /^worktree / { wpath = substr($0, 10) }
+         $0 == "branch " b { if (wpath == p) { found = 1; exit } }
+         END { exit found ? 0 : 1 }
+       '; then
+      worktree_for_branch=1
+    fi
   fi
-  if [ "$branch_exists" -eq 1 ] && [ "$path_exists" -eq 1 ]; then
+
+  if [ "$branch_exists" -eq 1 ] && [ "$worktree_for_branch" -eq 1 ]; then
     printf 'both_exist\n'
-  elif [ "$branch_exists" -eq 0 ] && [ "$path_exists" -eq 0 ]; then
+  elif [ "$branch_exists" -eq 0 ] && [ ! -e "$path" ]; then
     printf 'neither\n'
   else
     printf 'partial\n'
