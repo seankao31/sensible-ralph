@@ -529,59 +529,41 @@ from"), but the script itself doesn't need to change.
 | `/sr-start` orchestrator (create path) | no | yes — same as today, but for INTEGRATION mode capture post-merge instead of pre-merge (bug fix) |
 | `/sr-implement` | no | no |
 | `/prepare-for-review` | yes — `--base $(cat .sensible-ralph-base-sha)` for codex and the handoff `git log --first-parent <base>..HEAD` block | no |
-| `/close-issue` stale-parent check | **no** (migrates to ancestry check — see below) | no |
+| `/close-issue` stale-parent check | no — never touched this file; uses `INTEGRATION_SHA` from `.close-branch-result` | no |
 
 ## `close-issue` stale-parent migration
 
-Today's `close_issue_label_stale_children` (in
-`skills/close-issue/scripts/lib/stale_parent.sh`) calls
-`is_branch_fresh_vs_sha` from `lib/branch_ancestry.sh`. Under ENG-279,
-the child's `.sensible-ralph-base-sha` is no longer the parent's HEAD
-at child-dispatch time — it's the child branch's post-merge HEAD,
-which has nothing to do with the parent's HEAD. The SHA-equality check
-breaks.
+**No changes required.** The stale-parent check is completely
+independent of `.sensible-ralph-base-sha` and is unaffected by
+ENG-279.
 
-### New helper: `is_parent_landed_in_child` in `lib/branch_ancestry.sh`
+`close_issue_label_stale_children` in
+`skills/close-issue/scripts/lib/stale_parent.sh` calls
+`is_branch_fresh_vs_sha "$a_sha" "refs/heads/$child_branch"` where
+`a_sha = INTEGRATION_SHA` from `.close-branch-result`. That SHA is
+produced by the project-local `close-branch` as `git rev-parse HEAD`
+immediately after the `--no-ff` merge (the merge commit on `main`).
+`is_branch_fresh_vs_sha` already wraps `git merge-base --is-ancestor`
+— it is NOT a SHA-equality check and does NOT read
+`.sensible-ralph-base-sha`. ENG-279's change to when and what value
+is written to `.sensible-ralph-base-sha` has zero effect on
+`close_issue_label_stale_children`.
 
-```bash
-# Returns 0 if $parent_sha is an ancestor of $child_branch's HEAD
-# (i.e. the child branch's history contains the parent's pre-close
-# state — child is fresh).
-# Returns 1 if it is not (child was branched off an earlier parent
-# state and the parent has since amended — child is stale).
-# Returns 2 on any git error (caller treats as fresh-or-stale-unknown,
-# emits a warning, does not label).
-is_parent_landed_in_child() {
-  local parent_sha="$1"
-  local child_branch="$2"
+The implementer must **leave `is_branch_fresh_vs_sha`,
+`close_issue_label_stale_children`, and their call sites completely
+unchanged**. Do not rename, replace, or delete any helper in
+`lib/branch_ancestry.sh` or `skills/close-issue/scripts/lib/stale_parent.sh`
+as part of this ticket.
 
-  # Verify both refs exist before testing ancestry. A missing ref is a
-  # data anomaly we surface, not a stale signal.
-  git rev-parse --verify --quiet "$parent_sha^{commit}" >/dev/null || return 2
-  git rev-parse --verify --quiet "refs/heads/${child_branch}^{commit}" >/dev/null || return 2
-
-  if git merge-base --is-ancestor "$parent_sha" "refs/heads/$child_branch"; then
-    return 0
-  fi
-  return 1
-}
-```
-
-### Update `is_branch_fresh_vs_sha` callers
-
-Replace the call site in
-`skills/close-issue/scripts/lib/stale_parent.sh::close_issue_label_stale_children`
-with `is_parent_landed_in_child`. The argument shape changes — pass
-the child's branch name (already resolved via `resolve_branch_for_issue`)
-plus the parent's pre-close HEAD captured in `/close-issue` step 5.
-
-### `is_branch_fresh_vs_sha` retention
-
-Today's `is_branch_fresh_vs_sha` reads the child worktree's
-`.sensible-ralph-base-sha` and compares. Under ENG-279 nothing else
-calls this helper (it was always a single-callsite helper). **Delete
-it** rather than retaining a dead function. Update
-`docs/design/shell-helpers.md`'s public-surface table accordingly.
+**Note for future work:** `INTEGRATION_SHA` is the merge commit on
+main; `is_ancestor(merge_commit, child_branch)` is always false for
+any child dispatched before the parent merged, which means every
+In-Review child gets the stale-parent label regardless of whether the
+parent was actually amended. This is a pre-existing conservative
+over-labeling (the label is observational; operators dismiss false
+positives manually). Fixing it — by capturing the feature-branch tip
+before invoking `close-branch` and passing that instead — is a
+separate concern, not in scope for ENG-279.
 
 ## Module relocations
 
@@ -799,8 +781,9 @@ Work" rule). Specific edits:
   `worktree_merge_parents`).
 - **Module-map table for `skills/sr-start/scripts/lib/`:** remove
   `worktree.sh` row.
-- **`branch_ancestry.sh` row:** add NEW `is_parent_landed_in_child`;
-  remove `is_branch_fresh_vs_sha`.
+- **`branch_ancestry.sh` row:** unchanged — no helpers added or removed
+  (stale-parent detection is unaffected by ENG-279; see "close-issue
+  stale-parent migration" section).
 - **"Move when sharing exists" rule of thumb:** add a "this is exactly
   why ENG-279 lifts `worktree.sh`" cross-reference.
 - **Canonical sequence (orchestrator):** update the source path of
@@ -923,8 +906,6 @@ Bats harnesses already exist at `lib/test/` (plugin-wide) and
   parent (clean and conflict cases), multi-parent (clean, conflict on
   first abort, conflict on second abort), parent-already-ancestor
   no-op.
-- **`lib/branch_ancestry.sh::is_parent_landed_in_child`** — fresh
-  case, stale case, missing-ref case (returns 2).
 - **Orchestrator reuse path, clean merge** — synthesize an existing
   branch+worktree and an in-review parent with no conflicts → expects
   merge commit created, `.sensible-ralph-base-sha` = merge commit SHA,
