@@ -76,10 +76,20 @@ Single file, written once. Lifecycle:
   (fresh issue) OR prior-spec HEAD (re-run on Approved).
 - **`/sr-spec` step 10 codex gate:** `--base "$SPEC_BASE_SHA"` →
   diff = this session's spec commits only.
-- **`/sr-start` orchestrator dispatch:** AFTER any in-review parents
-  are merged into the branch and BEFORE `linear_set_state In Progress`,
-  writes `.sensible-ralph-base-sha = $(git rev-parse HEAD)`. Value =
-  post-merge HEAD.
+- **`/sr-start` orchestrator dispatch:** AFTER the merge attempt
+  completes (regardless of outcome) and BEFORE `linear_set_state In
+  Progress`, writes `.sensible-ralph-base-sha = $(git rev-parse HEAD)`.
+  Two sub-cases in the reuse path:
+  - **Clean merge:** HEAD = the merge commit. Parent commits are now
+    ancestors of base-sha → excluded from `/prepare-for-review` diff.
+  - **Single-parent conflict (leave-for-agent):** git is in MERGING
+    state; HEAD has NOT advanced — it is still the pre-merge commit
+    (the spec's last commit). base-sha = spec HEAD. The agent's
+    conflict-resolution commit will therefore be **in scope** for
+    `/prepare-for-review`'s codex review and handoff summary. This is
+    intentional: resolving merge conflicts is implementation work that
+    warrants review, not something to exclude. The fallback create path
+    always writes post-create HEAD (no conflict possible at creation).
 - **`/prepare-for-review`:** reads the file as today; `--base` scopes
   to impl commits only (parent merges and spec commits are ancestors,
   excluded).
@@ -462,7 +472,12 @@ Orchestrator reuse path" above.
           `worktree_create_at_base`). A parent already an ancestor of
           the branch's HEAD merges as a no-op.
      2. Write `.sensible-ralph-base-sha = $(git -C "$path" rev-parse
-        HEAD)` (post-merge HEAD).
+        HEAD)`. In the clean-merge case HEAD = the merge commit. In
+        the single-parent conflict (leave-for-agent) case HEAD = the
+        pre-merge spec commit (MERGING state, no merge commit yet).
+        Both cases are correct — see the "`.sensible-ralph-base-sha`
+        lifecycle" section in Architecture for the intentional
+        semantics of each.
      3. `linear_set_state "$issue_id" "$CLAUDE_PLUGIN_OPTION_IN_PROGRESS_STATE"`.
      4. Continue to dispatch as today.
    - `neither`: take the **fallback create path** (today's behavior).
@@ -483,12 +498,9 @@ Orchestrator reuse path" above.
      4. Continue to dispatch.
    - `partial`: record `local_residue` (no Linear mutation, no taint —
      today's `_record_local_residue` semantics unchanged), continue
-     with next issue. The partial state covers four cases (see
-     `worktree_branch_state_for_issue` definition): branch without
-     worktree, worktree-as-stray-directory without branch, registered
-     worktree at the path checked out to a different branch, and any
-     other inconsistency. Update the residue record's diagnostic to
-     name the specific cause:
+     with next issue. Extract the cause from the helper's tab-separated
+     output and include it in the diagnostic so the operator knows
+     exactly what to clean up:
 
      ```bash
      printf 'orchestrator: partial residue for %s — %s exists in isolation. Manual cleanup required.\n' \
@@ -594,38 +606,42 @@ sharing exists.
 ### New helper: `worktree_branch_state_for_issue` in `lib/worktree.sh`
 
 ```bash
-# Returns one of: both_exist | neither | partial
-# - both_exist: branch exists locally AND a git worktree is registered
-#               at $path checked out to $branch
-# - neither:    branch and path are both absent
-# - partial:    any inconsistent state — branch without worktree, path
-#               without branch, path exists but isn't a registered git
-#               worktree, OR registered worktree at $path is checked out
-#               to a different branch. All four collapse to "operator
-#               state we can't safely reuse"; the diagnostic on the
-#               refuse path names the specific cause.
+# Prints one of:
+#   both_exist            — branch exists AND worktree at $path is registered
+#                           and checked out to $branch
+#   neither               — branch absent AND $path absent
+#   partial\t<cause>      — any inconsistent state; <cause> is one of:
+#     branch-only         branch exists, no registered worktree at $path
+#     path-only           $path exists but branch does not
+#     path-not-worktree   $path exists but is not a registered git worktree
+#     wrong-branch        worktree at $path is checked out to a different branch
 #
-# Operator sees the partial case as local_residue (orchestrator) or
-# a refuse-with-cleanup-recipe error (sr-spec).
+# Callers split the output:
+#   output=$(worktree_branch_state_for_issue "$b" "$p")
+#   state="${output%%$'\t'*}"     # "both_exist" | "neither" | "partial"
+#   cause="${output#*$'\t'}"      # empty for both_exist/neither; non-empty for partial
+#
+# Operator sees partial as local_residue (orchestrator) or a refuse-with-cleanup
+# error (sr-spec). The cause feeds the diagnostic so the operator knows exactly
+# what to clean up.
 worktree_branch_state_for_issue() {
   local branch="$1" path="$2"
-  local branch_exists=0 worktree_for_branch=0
+  local branch_exists=0 worktree_for_branch=0 worktree_at_path_exists=0
 
   if git show-ref --verify --quiet "refs/heads/$branch"; then
     branch_exists=1
   fi
 
-  # Use `git worktree list --porcelain` rather than a plain path-exists
-  # check: a stray directory at $path that isn't a registered worktree
-  # would fool a -e check, and a registered worktree checked out to a
-  # different branch would also fool it. The porcelain output's paired
-  # `worktree <path>` / `branch refs/heads/<name>` lines pin both at
-  # once.
+  # Use `git worktree list --porcelain` to detect both presence of $path
+  # as a registered worktree AND whether it is checked out to $branch.
+  # A plain `[ -e "$path" ]` check would admit stray directories and
+  # worktrees checked out to unrelated branches.
   if [ -e "$path" ]; then
+    worktree_at_path_exists=1
     if git worktree list --porcelain 2>/dev/null | awk -v p="$path" -v b="refs/heads/$branch" '
          /^worktree / { wpath = substr($0, 10) }
          $0 == "branch " b { if (wpath == p) { found = 1; exit } }
-         END { exit found ? 0 : 1 }
+         END { exit (found ? 0 : 1) }
        '; then
       worktree_for_branch=1
     fi
@@ -633,12 +649,35 @@ worktree_branch_state_for_issue() {
 
   if [ "$branch_exists" -eq 1 ] && [ "$worktree_for_branch" -eq 1 ]; then
     printf 'both_exist\n'
-  elif [ "$branch_exists" -eq 0 ] && [ ! -e "$path" ]; then
+  elif [ "$branch_exists" -eq 0 ] && [ "$worktree_at_path_exists" -eq 0 ]; then
     printf 'neither\n'
-  else
-    printf 'partial\n'
+  elif [ "$branch_exists" -eq 1 ] && [ "$worktree_at_path_exists" -eq 0 ]; then
+    printf 'partial\tbranch-only\n'
+  elif [ "$branch_exists" -eq 0 ]; then
+    # path exists (either registered worktree or stray dir) but branch is absent
+    printf 'partial\tpath-only\n'
+  elif [ "$worktree_for_branch" -eq 0 ]; then
+    # path exists, branch exists, but the registered worktree at $path is on a
+    # different branch (or $path is a stray directory, not a registered worktree)
+    if git worktree list --porcelain 2>/dev/null | awk -v p="$path" '
+         /^worktree / { if (substr($0, 10) == p) { found = 1; exit } }
+         END { exit (found ? 0 : 1) }
+       '; then
+      printf 'partial\twrong-branch\n'
+    else
+      printf 'partial\tpath-not-worktree\n'
+    fi
   fi
 }
+```
+
+**Callers** extract state and cause with POSIX parameter expansion
+(bash 3.2-compatible, no `read -r` array needed):
+
+```bash
+_brwt=$(worktree_branch_state_for_issue "$branch" "$path")
+_brwt_state="${_brwt%%$'\t'*}"
+_brwt_cause="${_brwt#*$'\t'}"  # empty string when state is not 'partial'
 ```
 
 ### New helper: `worktree_merge_parents` in `lib/worktree.sh`
@@ -874,17 +913,27 @@ Bats harnesses already exist at `lib/test/` (plugin-wide) and
 `skills/sr-start/scripts/test/` (sr-start). Add tests for:
 
 - **`lib/worktree.sh::worktree_branch_state_for_issue`** —
-  `both_exist`, `neither`, `partial` (path-only and branch-only).
+  `both_exist`, `neither`, `partial\tbranch-only`,
+  `partial\tpath-only`, `partial\twrong-branch`,
+  `partial\tpath-not-worktree`. Includes detached-HEAD worktree at
+  path (appears as `wrong-branch` — no `branch` line in porcelain
+  output → awk finds path but not matching branch → falls through to
+  "is it a registered worktree at all?" secondary probe → yes → wrong-branch).
 - **`lib/worktree.sh::worktree_merge_parents`** — zero parents, single
   parent (clean and conflict cases), multi-parent (clean, conflict on
   first abort, conflict on second abort), parent-already-ancestor
   no-op.
 - **`lib/branch_ancestry.sh::is_parent_landed_in_child`** — fresh
   case, stale case, missing-ref case (returns 2).
-- **Orchestrator reuse path** — synthesize an existing branch+worktree
-  (mimicking post-`/sr-spec` state) and an in-review parent →
-  expects merge + post-merge `.sensible-ralph-base-sha` write +
-  `linear_set_state In Progress` + dispatch.
+- **Orchestrator reuse path, clean merge** — synthesize an existing
+  branch+worktree and an in-review parent with no conflicts → expects
+  merge commit created, `.sensible-ralph-base-sha` = merge commit SHA,
+  `linear_set_state In Progress`, dispatch.
+- **Orchestrator reuse path, single-parent conflict** — synthesize a
+  conflict between the existing branch and the in-review parent →
+  expects MERGING state, `.sensible-ralph-base-sha` = pre-merge commit
+  SHA (spec HEAD), `linear_set_state In Progress`, dispatch (agent
+  resolves on entry).
 - **Orchestrator partial-residue path** — path without branch and
   branch without path → expects `local_residue` outcome with no
   Linear mutation.
