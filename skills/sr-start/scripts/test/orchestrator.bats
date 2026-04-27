@@ -6,7 +6,7 @@
 
 SCRIPT_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
 ORCH_SH="$SCRIPT_DIR/orchestrator.sh"
-WORKTREE_SH="$SCRIPT_DIR/lib/worktree.sh"
+WORKTREE_SH="$(cd "$SCRIPT_DIR/../../.." && pwd)/lib/worktree.sh"
 AUTONOMOUS_PREAMBLE="$SCRIPT_DIR/autonomous-preamble.md"
 
 # ---------------------------------------------------------------------------
@@ -59,14 +59,13 @@ setup() {
   : > "$STUB_LINEAR_CALLS_FILE"
 
   # Stub layout:
-  #   $STUB_DIR/lib/{defaults,linear}.sh               — moved plugin-wide libs
+  #   $STUB_DIR/lib/{defaults,linear,worktree}.sh      — plugin-wide libs
   #   $STUB_DIR/scripts/{orchestrator,dag_base}.sh     — entry-point scripts
-  #   $STUB_DIR/scripts/lib/worktree.sh                — sr-start-only lib
   mkdir -p "$STUB_DIR/lib"
-  mkdir -p "$STUB_DIR/scripts/lib"
+  mkdir -p "$STUB_DIR/scripts"
   cp "$ORCH_SH" "$STUB_DIR/scripts/orchestrator.sh"
   # Real worktree.sh — we want real git worktree operations
-  cp "$WORKTREE_SH" "$STUB_DIR/scripts/lib/worktree.sh"
+  cp "$WORKTREE_SH" "$STUB_DIR/lib/worktree.sh"
   # defaults.sh is sourced from $CLAUDE_PLUGIN_ROOT/lib for CLAUDE_PLUGIN_OPTION_* fallbacks
   cp "$SCRIPT_DIR/../../../lib/defaults.sh" "$STUB_DIR/lib/defaults.sh"
   # orchestrator.sh prepends this file to the claude -p prompt

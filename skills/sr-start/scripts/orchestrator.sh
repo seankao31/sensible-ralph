@@ -11,7 +11,7 @@ set -euo pipefail
 #
 # Input contract: $1 is a file path containing one issue ID per line,
 # pre-sorted by toposort.sh. .sensible-ralph/progress.json is written under the repo root
-# (resolved via lib/worktree.sh::_resolve_repo_root), independent of cwd.
+# (resolved via $PLUGIN_ROOT/lib/worktree.sh::_resolve_repo_root), independent of cwd.
 #
 # Required env: CLAUDE_PLUGIN_OPTION_IN_PROGRESS_STATE,
 #               CLAUDE_PLUGIN_OPTION_REVIEW_STATE,
@@ -47,8 +47,8 @@ if [[ "${SENSIBLE_RALPH_SCOPE_LOADED:-}" != "$EXPECTED_SCOPE_LOADED" ]]; then
   source "$PLUGIN_ROOT/lib/scope.sh"
 fi
 
-# shellcheck source=lib/worktree.sh
-source "$SCRIPT_DIR/lib/worktree.sh"
+# shellcheck source=../../../lib/worktree.sh
+source "$PLUGIN_ROOT/lib/worktree.sh"
 
 queue_file="${1:?orchestrator.sh: queue file path required as \$1}"
 
