@@ -384,71 +384,84 @@ _dispatch_issue() {
     return 1
   fi
 
-  # Pre-flight: detect local residue from a prior crashed run, manual mkdir,
-  # or in-flight branch the operator created out-of-band. If either the target
-  # path or the target branch already exists at the start of this invocation,
-  # `git worktree add -b` will fail and we want to surface this as operator
-  # state needing manual cleanup — NOT as a real setup failure.
-  # _record_local_residue skips the ralph-failed label and descendant taint
-  # so a stale residue cannot mutate Linear state for an issue this invocation
-  # never actually touched (codex adversarial review, finding A).
-  if [[ -e "$path" ]] || git show-ref --verify --quiet "refs/heads/$branch"; then
+  # ENG-279: classify the per-issue (branch, path) pair before deciding whether
+  # to reuse (the common case under per-issue branch lifecycle, where /sr-spec
+  # step 7 already created branch+worktree) or create (fallback for manual
+  # issues / legacy state). Partial states — exactly one of branch/path —
+  # are operator state we cannot interpret and surface as local_residue.
+  local _brwt _brwt_state _brwt_cause
+  _brwt="$(worktree_branch_state_for_issue "$branch" "$path")"
+  _brwt_state="${_brwt%%$'\t'*}"
+  _brwt_cause="${_brwt#*$'\t'}"
+
+  if [[ "$_brwt_state" == "partial" ]]; then
     set -e
-    printf 'orchestrator: pre-existing worktree path or branch for %s — skipping (no Linear mutation)\n' "$issue_id" >&2
+    printf 'orchestrator: partial residue for %s — %s exists in isolation. Manual cleanup required.\n' \
+      "$issue_id" "$_brwt_cause" >&2
     _record_local_residue "$issue_id" "$path" "$branch" "$timestamp"
     return 1
   fi
 
-  # Create the worktree per base type, capturing the branch's creation point
-  # (main's SHA for integration, post-create HEAD otherwise) for the
-  # .sensible-ralph-base-sha contract consumed by prepare-for-review (ENG-182).
-  #
-  # Worktree creation helpers can fail AFTER `git worktree add` has already
-  # succeeded (e.g. a merge error mid-integration, or a later step that
-  # references the partial worktree). Cleanup must run on failure so a stale
-  # branch/dir doesn't block the next run. We've already filtered out the
-  # pre-existing-path case above, so any state at $path here was created by
-  # this invocation and is safe to remove.
-  if [[ "$base_out" == "main" ]]; then
-    worktree_create_at_base "$path" "$branch" "main"
+  # Parse base_out into a parent list (zero, one, or many parents). Same
+  # interpretation in both reuse and create paths — but applied differently:
+  # reuse merges into the existing branch; create branches off and (for
+  # INTEGRATION) merges onto the trunk-based new branch.
+  local merge_parents=()
+  if [[ "$base_out" == INTEGRATION\ * ]]; then
+    # shellcheck disable=SC2206
+    merge_parents=(${base_out#INTEGRATION })
+  elif [[ "$base_out" != "$SENSIBLE_RALPH_DEFAULT_BASE_BRANCH" ]]; then
+    merge_parents=("$base_out")
+  fi
+
+  if [[ "$_brwt_state" == "both_exist" ]]; then
+    # Reuse path: branch+worktree already exist (from /sr-spec step 7 or a
+    # prior dispatch). Merge in any in-review parents into the existing
+    # branch, then write base-sha = HEAD of the (possibly merged) worktree.
+    # On single-parent conflict the helper returns 0 with the worktree in
+    # MERGING state (HEAD = pre-merge spec commit) — base-sha captures that
+    # spec commit so the agent's resolution commit lands in /prepare-for-
+    # review's diff. On multi-parent conflict the helper aborts and returns
+    # non-zero (subsequent parents would otherwise be silently dropped).
+    worktree_merge_parents "$path" ${merge_parents[@]+"${merge_parents[@]}"}
     if [[ $? -ne 0 ]]; then
       set -e
-      _cleanup_worktree "$path" "$branch"
-      _record_setup_failure "$issue_id" "worktree_create_at_base" "$timestamp"
+      _record_setup_failure "$issue_id" "worktree_merge_parents" "$timestamp"
       return 1
     fi
     base_sha="$(git -C "$path" rev-parse HEAD)"
-  elif [[ "$base_out" == INTEGRATION\ * ]]; then
-    # shellcheck disable=SC2206
-    parents=(${base_out#INTEGRATION })
-    # Capture trunk SHA BEFORE any parent merges — that's the branch's true
-    # creation point. Post-merge HEAD would pull parent commits into the
-    # prepare-for-review diff, which must be scoped to this session's work.
-    # The trunk is configured via .sensible-ralph.json `default_base_branch` (ENG-214);
-    # lib/scope.sh exports SENSIBLE_RALPH_DEFAULT_BASE_BRANCH (defaulting to "main").
-    base_sha="$(git rev-parse "${SENSIBLE_RALPH_DEFAULT_BASE_BRANCH}")"
-    if [[ $? -ne 0 || -z "$base_sha" ]]; then
-      set -e
-      # "rev_parse_main" is intentionally stable — renaming it to "rev_parse_trunk"
-      # would silently break any operator grep/jq on existing progress.json files.
-      _record_setup_failure "$issue_id" "rev_parse_main" "$timestamp"
-      return 1
-    fi
-    worktree_create_with_integration "$path" "$branch" "${parents[@]}"
-    if [[ $? -ne 0 ]]; then
-      set -e
-      _cleanup_worktree "$path" "$branch"
-      _record_setup_failure "$issue_id" "worktree_create_with_integration" "$timestamp"
-      return 1
-    fi
   else
-    worktree_create_at_base "$path" "$branch" "$base_out"
-    if [[ $? -ne 0 ]]; then
-      set -e
-      _cleanup_worktree "$path" "$branch"
-      _record_setup_failure "$issue_id" "worktree_create_at_base" "$timestamp"
-      return 1
+    # neither path: fallback create path. Mirrors today's behavior — branch
+    # off the chosen base, then (for INTEGRATION) merge the parent list onto
+    # the new branch.
+    #
+    # Worktree creation helpers can fail AFTER `git worktree add` has already
+    # succeeded (e.g. a merge error mid-integration). Cleanup must run on
+    # failure so a stale branch/dir doesn't block the next run. The state
+    # check above filtered out partial residue, so any state at $path here
+    # was created by this invocation and is safe to remove.
+    if [[ "$base_out" == INTEGRATION\ * ]]; then
+      worktree_create_with_integration "$path" "$branch" "${merge_parents[@]}"
+      if [[ $? -ne 0 ]]; then
+        set -e
+        _cleanup_worktree "$path" "$branch"
+        _record_setup_failure "$issue_id" "worktree_create_with_integration" "$timestamp"
+        return 1
+      fi
+    else
+      worktree_create_at_base "$path" "$branch" "$base_out"
+      if [[ $? -ne 0 ]]; then
+        set -e
+        _cleanup_worktree "$path" "$branch"
+        _record_setup_failure "$issue_id" "worktree_create_at_base" "$timestamp"
+        return 1
+      fi
     fi
+    # ENG-279: capture HEAD AFTER the helper returns (post-merge in
+    # INTEGRATION mode, post-create-no-merge otherwise). Today's pre-merge
+    # capture in the INTEGRATION case included parent commits in the
+    # prepare-for-review diff; post-merge HEAD makes parent commits ancestors
+    # of base-sha → correctly excluded.
     base_sha="$(git -C "$path" rev-parse HEAD)"
   fi
 
@@ -456,7 +469,11 @@ _dispatch_issue() {
   printf '%s\n' "$base_sha" > "$path/.sensible-ralph-base-sha"
   if [[ $? -ne 0 ]]; then
     set -e
-    _cleanup_worktree "$path" "$branch"
+    # Cleanup only on the create path — never tear down a reused branch+worktree
+    # the operator already populated via /sr-spec.
+    if [[ "$_brwt_state" == "neither" ]]; then
+      _cleanup_worktree "$path" "$branch"
+    fi
     _record_setup_failure "$issue_id" "write_base_sha" "$timestamp"
     return 1
   fi
@@ -465,7 +482,11 @@ _dispatch_issue() {
   linear_set_state "$issue_id" "$CLAUDE_PLUGIN_OPTION_IN_PROGRESS_STATE"
   if [[ $? -ne 0 ]]; then
     set -e
-    _cleanup_worktree "$path" "$branch"
+    # Cleanup only on the create path — a reused branch+worktree predates
+    # this invocation and must not be torn down on a transient setup failure.
+    if [[ "$_brwt_state" == "neither" ]]; then
+      _cleanup_worktree "$path" "$branch"
+    fi
     _record_setup_failure "$issue_id" "linear_set_state" "$timestamp"
     return 1
   fi

@@ -544,21 +544,24 @@ CLAUDESH
 }
 
 # ---------------------------------------------------------------------------
-# 10. P1: integration base records main's SHA (NOT post-merge HEAD) in .sensible-ralph-base-sha
+# 10. ENG-279 base-sha post-merge fix: integration mode now records the
+#     post-merge HEAD (the worktree's HEAD after parents are merged in),
+#     not the pre-merge trunk SHA. The codex review of impl commits stays
+#     scoped to this session's work because parent commits become ancestors
+#     of base-sha → excluded from prepare-for-review's diff.
 # ---------------------------------------------------------------------------
-@test "integration base records main's SHA in .sensible-ralph-base-sha, not post-merge HEAD" {
+@test "integration base records post-merge HEAD in .sensible-ralph-base-sha" {
   export STUB_CLAUDE_EXIT=0
   export STUB_CLAUDE_TRANSITION_STATE="In Review"
 
   # Build a parent branch with real commits so merge produces a non-empty diff
-  # and the post-merge HEAD is different from main.
+  # and the post-merge HEAD differs from main.
   git -C "$REPO_DIR" checkout -b eng-90-parent-a -q
   echo "a" > "$REPO_DIR/a.txt"
   git -C "$REPO_DIR" add a.txt
   git -C "$REPO_DIR" commit -m "parent a" -q
   git -C "$REPO_DIR" checkout main -q
 
-  # Capture main's SHA now — this is what .sensible-ralph-base-sha should contain.
   local main_sha; main_sha="$(git -C "$REPO_DIR" rev-parse main)"
 
   export STUB_DAG_BASE_ENG_91="INTEGRATION eng-90-parent-a"
@@ -575,14 +578,16 @@ CLAUDESH
   local recorded_sha; recorded_sha="$(cat "$wt_path/.sensible-ralph-base-sha")"
   local post_merge_sha; post_merge_sha="$(git -C "$wt_path" rev-parse HEAD)"
 
-  # The recorded SHA must equal main's SHA (branch creation point)
-  [ "$recorded_sha" = "$main_sha" ]
+  # ENG-279: base-sha is post-merge HEAD (the merge commit). Parent commits
+  # become ancestors of base-sha and are correctly excluded from the impl
+  # diff in prepare-for-review.
+  [ "$recorded_sha" = "$post_merge_sha" ]
 
   # Sanity: post-merge HEAD must differ from main (proves the merge happened)
   [ "$post_merge_sha" != "$main_sha" ]
 
-  # Therefore recorded_sha must differ from post-merge HEAD
-  [ "$recorded_sha" != "$post_merge_sha" ]
+  # Therefore recorded_sha must differ from main_sha
+  [ "$recorded_sha" != "$main_sha" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -1204,6 +1209,149 @@ CLAUDESH
   # ENG-192 was NOT skipped — taint did not propagate
   local eng192_outcome; eng192_outcome="$(jq -r '.[] | select(.issue == "ENG-192" and .event == "end") | .outcome' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$eng192_outcome" != "skipped" ]
+}
+
+# ---------------------------------------------------------------------------
+# 20c. ENG-279 reuse path — branch+worktree pre-exist (created at /sr-spec
+#      step 7); orchestrator reuses, merges in-review parents in, writes
+#      post-merge HEAD to .sensible-ralph-base-sha, dispatches.
+# ---------------------------------------------------------------------------
+@test "reuse path clean merge: existing branch+worktree, in-review parent merged in, base-sha = merge commit" {
+  export STUB_CLAUDE_EXIT=0
+  export STUB_CLAUDE_TRANSITION_STATE="In Review"
+
+  # In-review parent with content the merge will pull in.
+  git -C "$REPO_DIR" checkout -b eng-280-parent -q
+  echo "parent content" > "$REPO_DIR/parent.txt"
+  git -C "$REPO_DIR" add parent.txt
+  git -C "$REPO_DIR" commit -m "parent commit" -q
+  git -C "$REPO_DIR" checkout main -q
+
+  # Pre-create the issue's branch+worktree (simulating /sr-spec step 7) with
+  # a spec commit so the spec HEAD is identifiable.
+  local wt_path="$REPO_DIR/.worktrees/eng-300"
+  git -C "$REPO_DIR" worktree add "$wt_path" -b "eng-300" -q
+  echo "spec content" > "$wt_path/docs-spec.md"
+  git -C "$wt_path" add docs-spec.md
+  git -C "$wt_path" commit -m "spec commit" -q
+  local spec_head; spec_head="$(git -C "$wt_path" rev-parse HEAD)"
+
+  export STUB_DAG_BASE_ENG_300="eng-280-parent"
+  export STUB_CLAUDE_ISSUE_ID="ENG-300"
+
+  local q; q="$(write_queue ENG-300)"
+  run_orch "$q"
+
+  [ "$status" -eq 0 ]
+
+  # Worktree was reused (still exists, contains both spec + parent content)
+  [ -d "$wt_path" ]
+  [ -f "$wt_path/docs-spec.md" ]
+  [ -f "$wt_path/parent.txt" ]
+
+  # Base-sha = post-merge HEAD = the merge commit (NOT spec_head, NOT parent_head)
+  local recorded_sha; recorded_sha="$(cat "$wt_path/.sensible-ralph-base-sha")"
+  local post_merge_head; post_merge_head="$(git -C "$wt_path" rev-parse HEAD)"
+  [ "$recorded_sha" = "$post_merge_head" ]
+  [ "$post_merge_head" != "$spec_head" ]
+
+  # Linear: In Progress was set; claude was dispatched once
+  grep -qF "set_state ENG-300 In Progress" "$STUB_LINEAR_CALLS_FILE"
+  local invocations; invocations="$(wc -l < "$STUB_CLAUDE_ARGS_FILE" | tr -d ' ')"
+  [ "$invocations" -eq 1 ]
+
+  # Outcome is in_review (the dispatched session transitioned the state)
+  local outcome; outcome="$(jq -r '.[] | select(.issue == "ENG-300" and .event == "end") | .outcome' < "$REPO_DIR/.sensible-ralph/progress.json")"
+  [ "$outcome" = "in_review" ]
+}
+
+# ---------------------------------------------------------------------------
+# 20d. ENG-279 reuse path, single-parent conflict — leave-for-agent. Base-sha
+#      stays at the pre-merge spec HEAD (MERGING state, no merge commit yet);
+#      the agent's conflict-resolution commit is intentionally in scope for
+#      prepare-for-review's codex review.
+# ---------------------------------------------------------------------------
+@test "reuse path single-parent conflict: MERGING state, base-sha = pre-merge spec HEAD, dispatched" {
+  # Skip the smart-claude — this session must dispatch even though the
+  # worktree is mid-merge (the agent resolves on entry per /sr-implement
+  # Step 2). Use a stub that records the call but does NOT transition state
+  # (we expect outcome = exit_clean_no_review — that's fine, we just want to
+  # observe that dispatch happened and the base-sha is correct).
+  export STUB_CLAUDE_EXIT=0
+
+  # Conflicting parent.
+  git -C "$REPO_DIR" checkout -b eng-281-parent-conflict -q
+  echo "parent version" > "$REPO_DIR/conflict.txt"
+  git -C "$REPO_DIR" add conflict.txt
+  git -C "$REPO_DIR" commit -m "parent conflict" -q
+  git -C "$REPO_DIR" checkout main -q
+
+  # Pre-create issue branch+worktree with a conflicting commit.
+  local wt_path="$REPO_DIR/.worktrees/eng-301"
+  git -C "$REPO_DIR" worktree add "$wt_path" -b "eng-301" -q
+  echo "spec version" > "$wt_path/conflict.txt"
+  git -C "$wt_path" add conflict.txt
+  git -C "$wt_path" commit -m "spec conflict commit" -q
+  local spec_head; spec_head="$(git -C "$wt_path" rev-parse HEAD)"
+
+  export STUB_DAG_BASE_ENG_301="eng-281-parent-conflict"
+  export STUB_CLAUDE_ISSUE_ID="ENG-301"
+
+  local q; q="$(write_queue ENG-301)"
+  run_orch "$q"
+
+  [ "$status" -eq 0 ]
+
+  # Worktree is in MERGING state — conflict markers, no merge commit yet.
+  [ -d "$wt_path" ]
+  run git -C "$wt_path" status --porcelain
+  [[ "$output" =~ ^(UU|AA) ]]
+
+  # Base-sha = pre-merge spec HEAD (HEAD has not advanced — single-parent
+  # leave-for-agent intentionally captures the spec HEAD so the resolution
+  # commit lands in /prepare-for-review's diff).
+  local recorded_sha; recorded_sha="$(cat "$wt_path/.sensible-ralph-base-sha")"
+  [ "$recorded_sha" = "$spec_head" ]
+  local current_head; current_head="$(git -C "$wt_path" rev-parse HEAD)"
+  [ "$current_head" = "$spec_head" ]
+
+  # Linear: In Progress was set; claude was dispatched once
+  grep -qF "set_state ENG-301 In Progress" "$STUB_LINEAR_CALLS_FILE"
+  local invocations; invocations="$(wc -l < "$STUB_CLAUDE_ARGS_FILE" | tr -d ' ')"
+  [ "$invocations" -eq 1 ]
+}
+
+# ---------------------------------------------------------------------------
+# 20e. ENG-279 partial residue — wrong-branch case (branch exists but the
+#      worktree at $path is checked out to a different branch) is treated
+#      as local_residue with no Linear mutation, like other partial cases.
+# ---------------------------------------------------------------------------
+@test "partial residue (wrong-branch): outcome=local_residue, no Linear mutation, no dispatch" {
+  export STUB_CLAUDE_EXIT=0
+  export STUB_CLAUDE_TRANSITION_STATE="In Review"
+
+  # Issue branch eng-310 exists, but the worktree path is registered to a
+  # different branch (operator state we cannot interpret).
+  local wt_path="$REPO_DIR/.worktrees/eng-310"
+  git -C "$REPO_DIR" worktree add "$wt_path" -b "unrelated-branch" -q
+  git -C "$REPO_DIR" branch eng-310
+
+  export STUB_BLOCKERS_ENG_310='[]'
+
+  local q; q="$(write_queue ENG-310)"
+  run_orch "$q"
+
+  [ "$status" -eq 0 ]
+
+  # claude was NOT invoked
+  local invocations; invocations="$(wc -l < "$STUB_CLAUDE_ARGS_FILE" | tr -d ' ')"
+  [ "$invocations" -eq 0 ]
+
+  # progress.json records local_residue; no Linear mutation
+  local outcome; outcome="$(jq -r '.[] | select(.issue == "ENG-310" and .event == "end") | .outcome' < "$REPO_DIR/.sensible-ralph/progress.json")"
+  [ "$outcome" = "local_residue" ]
+  ! grep -q "add_label ENG-310" "$STUB_LINEAR_CALLS_FILE"
+  ! grep -q "set_state ENG-310" "$STUB_LINEAR_CALLS_FILE"
 }
 
 # ---------------------------------------------------------------------------
