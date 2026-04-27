@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Worktree creation helpers: worktree_create_at_base, worktree_create_with_integration,
-# worktree_path_for_issue.
+# Worktree helpers: worktree_create_at_base, worktree_create_with_integration,
+# worktree_merge_parents, worktree_path_for_issue, worktree_branch_state_for_issue,
+# _resolve_repo_root.
 #
 # Callers run with set -euo pipefail; do NOT call set at the top level here.
 # Use `return` for errors, not `exit`.
