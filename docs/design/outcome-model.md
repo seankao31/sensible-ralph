@@ -32,7 +32,7 @@ invocation occurs and the issue lands as `skipped` directly.
 | `exit_clean_no_review` | `exit_code == 0` AND `post_state != REVIEW_STATE` (state fetched successfully) | yes | yes | `cd` into the worktree, read `<worktree>/<stdout_log_filename>` for the session's final output. Decide: retry (remove `ralph-failed`, re-queue), cancel the issue, or debug interactively. |
 | `failed` | `exit_code != 0` | yes | yes | Same as `exit_clean_no_review` — read the log, decide retry / cancel / debug. |
 | `setup_failed` | A pre-dispatch setup step failed (branch lookup, `dag_base`, worktree creation, base-SHA write, Linear `In Progress` transition, etc.) | yes | yes | Check the `failed_step` field in `.sensible-ralph/progress.json`. Worktree cleanup has already run for any state this invocation created. Fix the underlying cause (Linear connectivity, missing branch name, `dag_base` mismatch) and re-queue. |
-| `local_residue` | The target worktree path or branch already existed at the start of dispatch — orchestrator never touched anything | **no** | **no** | Check `residue_path` and `residue_branch` in `.sensible-ralph/progress.json`. Manually clean up the residue (commit the work, or remove the path/branch), then re-queue. |
+| `local_residue` | The target branch and worktree path are in inconsistent states — exactly one exists, or the path is checked out to a different branch — at the start of dispatch. The orchestrator never touched anything. | **no** | **no** | Check `residue_path` and `residue_branch` in `.sensible-ralph/progress.json`; the orchestrator's stderr names the specific cause (`branch-only`, `path-only`, `wrong-branch`, `path-not-worktree`). Manually clean up the residue (commit the work, or remove the orphan path/branch), then re-queue. |
 | `unknown_post_state` | `exit_code == 0` AND post-dispatch state fetch failed transiently | **no** | **no** | Open the issue in Linear. If state is `In Review`, treat as success (no `ralph-failed` was applied). If still `In Progress`, treat as a soft failure and re-queue. |
 | `skipped` | Issue's transitive ancestor failed earlier in this run; orchestrator never dispatched it | no | no (descendants were already tainted by the originating failure) | Resolve the failed ancestor first; the skipped issue becomes pickup-ready again on the next `/sr-start`. |
 
@@ -70,16 +70,24 @@ branches on whether the post-dispatch state fetch succeeded:
 ## Why `local_residue` deliberately leaves Linear untouched
 
 `local_residue` fires *before* the orchestrator invokes `claude -p` or
-mutates Linear, when a pre-flight check finds either the target worktree
-path or the target branch already on disk. The pre-existing state is
-operator state — a manual `mkdir`, a prior crashed run, or an in-flight
-branch the operator created out-of-band. The Linear issue itself is in
-fine shape; only the local environment is stale. Adding `ralph-failed`
-to the issue would misrepresent a healthy ticket as broken. Tainting
-descendants would be similarly wrong: the unmutated issue remains
-`Approved`, so `dag_base` (which only incorporates blockers in
-`In Review`) would not pick it up as a parent for any descendant
-anyway — descendants safely dispatch from the default base.
+mutates Linear, when the state check via `worktree_branch_state_for_issue`
+finds the target branch and worktree path in inconsistent states —
+exactly one exists, or the path is a registered worktree on a different
+branch. Under ENG-279's per-issue branch lifecycle the common case
+("both branch and worktree exist") is the reuse path, not residue;
+`local_residue` narrows to genuine partial-state anomalies the
+orchestrator cannot interpret without operator input.
+
+The pre-existing state is operator state — a stray `mkdir`, a prior
+crashed run that left a path without a branch (or a branch without a
+path), or a worktree the operator manually checked out to a different
+branch. The Linear issue itself is in fine shape; only the local
+environment is stale. Adding `ralph-failed` to the issue would
+misrepresent a healthy ticket as broken. Tainting descendants would be
+similarly wrong: the unmutated issue remains `Approved`, so `dag_base`
+(which only incorporates blockers in `In Review`) would not pick it up
+as a parent for any descendant anyway — descendants safely dispatch
+from the default base.
 
 ## Why `unknown_post_state` deliberately leaves Linear untouched
 

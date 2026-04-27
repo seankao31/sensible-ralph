@@ -110,8 +110,11 @@ in [`docs/decisions/`](docs/decisions/).
 Brief summary:
 
 - **`/sr-spec`** — turn an idea into an Approved Linear issue. Runs
-  a brainstorming dialogue, writes a spec to `docs/specs/<topic>.md` in
-  your repo, updates the Linear issue, and transitions it to Approved.
+  a brainstorming dialogue, lazily creates the issue's per-issue
+  branch+worktree after design approval, writes a spec to
+  `docs/specs/<topic>.md` on that branch, runs an adversarial codex
+  review of the spec, updates the Linear issue, and transitions it to
+  Approved. The branch+worktree persist until `/close-issue` merges them.
 - **`/sr-start`** — dispatch the queue. Collects pickup-ready Approved
   issues, sorts them by blocked-by relations, previews the plan, and
   hands control to the orchestrator. The orchestrator creates worktrees,

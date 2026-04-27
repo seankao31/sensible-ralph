@@ -33,11 +33,13 @@ Every state change has exactly one actor — there is no shared write path. The 
 
 Each automated transition is **conditional** on the prior state matching expectations:
 
-- `/sr-spec`'s start-of-dialogue transition only fires when the issue is in `Todo`, `Backlog`, or `Triage` (avoids stomping on `Approved`, `In Progress`, `In Review`, `Done`, or an in-flight `In Design` re-run).
+- `/sr-spec`'s step 1 preflight validates BOTH the issue's Linear state AND the per-issue branch+worktree state (via `worktree_branch_state_for_issue`). The full matrix lives in `skills/sr-spec/SKILL.md`; in summary: from `Todo`/`Backlog`/`Triage` it transitions to `In Design` (and refuses if branch+worktree residue is present); from `In Design` it resumes; from `Approved` it warns the user about overwriting the prior spec, requires confirmation, and transitions back to `In Design` for the new dialogue; from `In Progress`/`In Review`/`Done`/`Canceled` it refuses outright.
 - `/prepare-for-review` checks the current state via `linear issue view --json` before transitioning; if the issue is already `In Review`, it skips the write to keep the activity feed clean. Anything other than `In Progress` or `In Review` is a red flag that aborts the skill.
 - `/close-issue`'s pre-flight requires the issue to be in `In Review` and every `blocked-by` parent to be in `Done`. A non-`Done` blocker stops the close — the supported fix is to remove the relation explicitly via `linear issue relation delete` if the dependency was resolved out of band, not to override the gate.
 
 The orchestrator never writes `Approved` (only `/sr-spec` produces Approved issues) and never writes `Done` (only `/close-issue` does). This single-actor-per-transition discipline keeps every state change traceable to one skill or script.
+
+Under ENG-279's per-issue branch lifecycle, the branch and worktree are created lazily at `/sr-spec` step 7 (after design approval) and persist through `In Progress` / `In Review` until `/close-issue` tears them down. State and worktree existence are coupled: by the time an issue reaches `Approved`, its branch+worktree should exist on disk. See `docs/design/worktree-contract.md`.
 
 ## Labels
 

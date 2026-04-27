@@ -175,6 +175,7 @@ Nothing else changes. The state machine, the pickup rule, the pre-flight anomaly
 | `skills/sr-start/scripts/preflight_scan.sh` | Updated `_chain_runnable`; out-of-scope-blocker anomaly added |
 | `skills/sr-start/scripts/build_queue.sh` | Matches updated `_chain_runnable` semantics |
 | `skills/sr-start/SKILL.md` | Prerequisites: `.sensible-ralph.json` replaces `project`; scope-resolution section added |
+| `skills/sr-spec/SKILL.md` | Sources `lib/scope.sh` at step 1 to read `$SENSIBLE_RALPH_PROJECTS`; uses it again at step 6.5 (issue creation, target-project resolution) and at finalize sub-step 2 (in-scope project validation). |
 | `docs/usage.md` | Operator flow updated for scope model |
 | `docs/design/scope-model.md` (this file, moved from `docs/specs/`) | Migrated from frozen spec to living design doc |
 | `<consumer-repo>/.sensible-ralph.json` (new per repo) | `{ "projects": [...] }` or `{ "initiative": "..." }` |
