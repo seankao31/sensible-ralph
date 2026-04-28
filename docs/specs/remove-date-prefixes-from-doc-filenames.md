@@ -98,16 +98,28 @@ or Linear issue header" and is left as-is.
   are part of the file's contents, not its filename. The acceptance criteria
   here are filename-only, and archived decisions in `docs/archive/decisions/`
   also keep inline date metadata — that practice continues.
-- **Historical-narrative cross-references in frozen specs.** Specifically,
-  `docs/specs/rename-to-sensible-ralph.md:222-223` lists two of the
-  date-prefixed filenames inside a "Spec filenames containing `ralph`"
-  carve-out whose explicit purpose is to record what the rename ticket
-  did NOT touch. Per the precedent in
+- **Historical-narrative cross-references in frozen specs.** Two frozen
+  specs contain date-prefixed filenames in narrative contexts that must
+  stay verbatim:
+  - `docs/specs/rename-to-sensible-ralph.md` — "Spec filenames containing
+    `ralph`" carve-out (currently around lines 220-223), whose explicit
+    purpose is to record what the rename ticket did NOT touch.
+  - `docs/specs/persistent-design-doc-layer.md` — uses
+    `2026-04-25-codex-review-gate-in-sr-spec.md` and
+    `2026-04-25-scope-model.md` as **hypothetical examples** in prose
+    describing what `docs/specs/` looked like at the time the docs-layer
+    convention was being introduced. The first isn't even a real filename
+    (it's a hypothetical name used to illustrate the pattern); the second
+    is given as a counter-example of what a filename should NOT look like.
+    Both serve their narrative purpose only at the historical paths they
+    name.
+  Per the precedent in
   `docs/decisions/2026-04-25-frozen-spec-cross-refs-preserved.md`,
   retroactive edits to historical-narrative lists falsify the historical
-  claim. **Leave this file's references verbatim.** A future reader running
-  `git grep '2026-04-25-codex-review-gate-in-ralph-spec'` will hit this file
-  — that's expected and is not a stale-cross-ref bug.
+  claim. **Leave both files' references verbatim.** A future reader running
+  `git grep '2026-04-25-codex-review-gate-in-ralph-spec'` will hit
+  `rename-to-sensible-ralph.md` — that's expected and is not a
+  stale-cross-ref bug.
 - **`docs/archive/**`.** Already kebab-case-no-date.
 - **CI / lint guardrail.** A pre-commit or CI check that enforces "no
   date-prefixed filenames in `docs/specs/` or `docs/decisions/`" was
@@ -139,32 +151,46 @@ Execute on the per-issue branch `eng-305-remove-date-prefixes-from-doc-filenames
 
 ## Acceptance criteria
 
-All four must hold simultaneously after the work commit lands on the issue
+All three must hold simultaneously after the work commit lands on the issue
 branch:
 
-1. `git ls-files docs/specs docs/decisions | grep -E '^docs/(specs|decisions)/[0-9]{4}-'`
+1. **No date-prefixed filenames remain in the in-scope directories.**
+   `git ls-files docs/specs docs/decisions | grep -E '^docs/(specs|decisions)/[0-9]{4}-'`
    returns no matches and exits with status 1.
-2. `grep -rIn '2026-04-2[567]-' docs/ CLAUDE.md` returns matches only inside
-   `docs/specs/rename-to-sensible-ralph.md` (the historical-narrative
-   carve-out) and inside `docs/archive/**` (point-in-time records). No
-   matches in `docs/design/`. No matches in `CLAUDE.md`.
-3. `git log --follow docs/decisions/progress-json-event-discriminator.md`
-   shows the file's pre-rename commit history (sanity check that `git mv`
-   was used, not `mv` + `git add`). Pick any one of the renamed files for
-   this check; if it works for one, the same machinery applies to all.
-4. `git diff --stat <spec-commit>..HEAD -- ':!docs/specs/remove-date-prefixes-from-doc-filenames.md'`
-   — where `<spec-commit>` is the most recent commit added by `/sr-spec`
-   (visible at the tip of the branch when `/sr-implement` starts) — shows
-   exactly: 9 renames (each as `R100`, since none of the renamed files'
-   content is changed by this work), 1 modified file
-   `docs/design/orchestrator.md`, 1 modified file `CLAUDE.md` at the repo
-   root. No other files touched. The exclusion of the spec doc itself is
-   so iteration commits to the spec (if any happen during impl) don't show
-   up in the verification diff.
+
+2. **No live cross-references to the date-prefixed paths survive in the
+   live-doc surfaces.** Run:
+   `grep -rIln '2026-04-2[567]-' docs/design/ CLAUDE.md` → returns no
+   matches (status 1).
+   And the broader `grep -rIln '2026-04-2[567]-' .` (excluding `.git/`)
+   may return only the following files, all of which are
+   intentionally-preserved historical or self-references:
+   - `docs/specs/remove-date-prefixes-from-doc-filenames.md` — this spec
+     (the rename tables and prose quote the old paths by design).
+   - `docs/specs/rename-to-sensible-ralph.md` — frozen-spec
+     historical-narrative carve-out (out of scope per above).
+   - `docs/specs/persistent-design-doc-layer.md` — frozen-spec hypothetical
+     examples (out of scope per above).
+   - Any file under `docs/archive/**` — point-in-time records.
+
+   Any other file matching the broader grep is a bug — investigate before
+   marking the work complete.
+
+3. **The work commit's diff is exactly what the spec describes.**
+   `git diff --stat <spec-tip>..HEAD -- ':!docs/specs/remove-date-prefixes-from-doc-filenames.md'`
+   — where `<spec-tip>` is the most recent `/sr-spec` commit (visible at
+   the tip of the branch when `/sr-implement` starts) — shows exactly:
+   9 renames (each as `R100`, since none of the renamed files' content is
+   changed by this work), 1 modified file `docs/design/orchestrator.md`,
+   1 modified file `CLAUDE.md` at the repo root. No other files touched.
+   The `R100` rename detection on each of the 9 entries is the actual
+   evidence that the rename was tracked — `git mv` is the recommended
+   path, but the test here is the rename-detection outcome, not the tool
+   that produced it.
 
 No bats coverage is added — there are no tests for doc filenames in the
-repo today, and the four acceptance criteria above are exhaustive for the
-filename rename + cross-ref update + CLAUDE.md tightening.
+repo today, and the three acceptance criteria above are exhaustive for
+the filename rename + cross-ref update + CLAUDE.md tightening.
 
 ## Reasoning
 
