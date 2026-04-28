@@ -281,9 +281,14 @@ only `outcome`, the existing renderer pre-deploy) keep working.
 
 ### `transcript_path`
 - **Where:** same records as `session_id`.
-- **Value:** `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/<slug>/<session_id>.jsonl`
-  as computed in shell. Stored as absolute path.
-- **Not validated at write time.**
+- **Value:** `<config_dir>/projects/<slug>/<session_id>.jsonl` where
+  `<config_dir>` is `CLAUDE_CONFIG_DIR` if set and absolute, else
+  `$HOME/.claude`. Stored as absolute path; a non-absolute
+  `CLAUDE_CONFIG_DIR` is rejected (with a stderr warning) and the
+  default is used instead — see the orchestrator wiring below for the
+  exact validation.
+- **Not validated for file existence at write time** (the JSONL may
+  not exist yet when the start record is written).
 
 ### `worktree_log_path`
 - **Where:** same records as `session_id` (start records and
@@ -347,15 +352,30 @@ start-record write. Done once per issue and reused for both records.
 
 ```bash
 local session_id; session_id="$(uuidgen | tr 'A-Z' 'a-z')"
+
+# Resolve config_dir, requiring an absolute path. Empty or relative
+# CLAUDE_CONFIG_DIR falls back to the default — a relative value would
+# produce a relative transcript_path that resolves differently in the
+# orchestrator's cwd vs. /sr-status's cwd vs. the helper's cwd, and
+# would silently misdirect H3 and the rendered session: line.
 local config_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+case "$config_dir" in
+  /*) ;;
+  *)
+    printf 'orchestrator: CLAUDE_CONFIG_DIR=%q is not absolute; falling back to $HOME/.claude\n' \
+      "$config_dir" >&2
+    config_dir="$HOME/.claude"
+    ;;
+esac
+
 local slug; slug="${path//\//-}"
 local transcript_path="${config_dir}/projects/${slug}/${session_id}.jsonl"
 local worktree_log_path="${path}/${CLAUDE_PLUGIN_OPTION_STDOUT_LOG_FILENAME}"
 ```
 
-`config_dir` resolution honors `CLAUDE_CONFIG_DIR` for operators who've
-relocated Claude Code's config directory; the fallback is the
-documented default.
+`$path` is the worktree absolute path (already absolute by orchestrator
+construction), so `worktree_log_path` is guaranteed absolute when the
+orchestrator's existing path-resolution invariants hold.
 
 `worktree_log_path` is captured at dispatch time and persisted into both
 records so the renderer never reconstructs from live config. Renaming
@@ -453,10 +473,15 @@ The `+ (if $hint == "" then {} else {hint: $hint} end)` idiom keeps the
 field absent (not empty) when no heuristic fires.
 
 `_record_unknown_post_state` follows the same pattern: pass
-`session_id`, `transcript_path`, and `hint` in; emit with the same
-conditional-presence idiom. `_record_setup_failure` and
-`_record_local_residue` remain unchanged — they don't get `session_id`
-fields per the schema above.
+`session_id`, `transcript_path`, `worktree_log_path`, and `hint` in;
+emit with the same conditional-presence idiom. The helper signature
+must be extended to accept `worktree_log_path` (it currently takes
+six positional args; this becomes the seventh). The illustrative end
+record's `worktree_log_path` field appears on `unknown_post_state`
+records exactly the same as on `failed`/`exit_clean_no_review` —
+the renderer's per-line gates rely on this. `_record_setup_failure`
+and `_record_local_residue` remain unchanged — they don't get
+`session_id` fields per the schema above.
 
 ### What the orchestrator does NOT do
 
@@ -502,15 +527,18 @@ only local-FS reads.
   `exit_clean_no_review` updated to match `outcome-model.md`.
 - `skills/sr-start/scripts/test/orchestrator.bats` — assert start
   records carry `session_id` + `transcript_path` + `worktree_log_path`;
-  assert end records on the four eligible outcomes carry them; assert
+  assert end records on the four eligible outcomes (including
+  `unknown_post_state`) carry all three; assert
   `setup_failed`/`local_residue`/`skipped` records do **not**; assert
-  `transcript_path` honors `CLAUDE_CONFIG_DIR` when set (and falls
-  back to `$HOME/.claude` when unset); assert `worktree_log_path` is
-  the dispatch-time absolute path even when
-  `CLAUDE_PLUGIN_OPTION_STDOUT_LOG_FILENAME` is changed between
-  dispatch and a follow-up render; assert the diagnose helper is
-  invoked with empty `spec_base_sha` when `.sensible-ralph-base-sha`
-  is missing (and not gated out).
+  `transcript_path` honors `CLAUDE_CONFIG_DIR` when set to an absolute
+  path, falls back to `$HOME/.claude` when unset, falls back to
+  `$HOME/.claude` (with stderr warning) when set to an empty string,
+  and falls back to `$HOME/.claude` (with stderr warning) when set to
+  a relative path; assert `worktree_log_path` is the dispatch-time
+  absolute path even when `CLAUDE_PLUGIN_OPTION_STDOUT_LOG_FILENAME`
+  is changed between dispatch and a follow-up render; assert the
+  diagnose helper is invoked with empty `spec_base_sha` when
+  `.sensible-ralph-base-sha` is missing (and not gated out).
 - `skills/sr-status/scripts/test/render_status.bats` — fixture cases for
   hint+transcript+session sub-block on a `failed` row; back-compat case
   for a record without the new fields (sub-block lines suppressed
