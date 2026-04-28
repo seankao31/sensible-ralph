@@ -71,20 +71,45 @@ The transcript path is computed in shell, not by introspecting Claude
 Code internals:
 
 ```bash
+config_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 slug="${path//\//-}"   # absolute worktree path with / → -
-transcript_path="$HOME/.claude/projects/${slug}/${session_id}.jsonl"
+transcript_path="${config_dir}/projects/${slug}/${session_id}.jsonl"
 ```
 
-The slug rule is verified by inspection of `~/.claude/projects/` on this
-host and by Claude Code's documented behavior; it is the cwd absolute
-path with every `/` replaced by `-`. The orchestrator dispatches via
+`CLAUDE_CONFIG_DIR` is honored explicitly: when an operator has
+relocated Claude Code's config directory, the orchestrator follows.
+Fallback is `$HOME/.claude` (the documented default).
+
+The slug rule (worktree absolute path with `/` → `-`) is **empirically
+observed** by inspection of `~/.claude/projects/` on macOS and Linux
+hosts running Claude Code 2.x; it is **not** a documented public
+contract. Anthropic's docs describe the project directory name as a
+"filesystem-safe encoding of the working directory," leaving the exact
+encoding rule unspecified. The orchestrator dispatches via
 `(cd $path; claude -p ...)` so cwd = worktree path; the slug is a pure
-function of that path.
+function of that path **as long as the encoding rule holds**.
+
+Implications when the assumption breaks:
+- A future Claude Code release that changes the encoding rule (e.g.
+  introduces additional escaping for special characters) will cause
+  `transcript_path` to point at a non-existent file. The hint and
+  worktree-log surfaces are unaffected; only the JSONL pointer goes
+  stale.
+- The pointer is **not validated at write time** — the JSONL may not
+  exist yet when the start record is written, and we don't want to
+  pay an `[ -e ]` check on every dispatch.
+- The pointer is **not validated at render time** in `/sr-status` — we
+  print the path even if the file is missing, on the theory that a
+  missing file is more useful diagnostically (the operator sees the
+  intended location and can investigate) than no pointer at all.
+
+A future ENG-N follow-up could harden this by reading the actual
+session path via `--output-format stream-json` (one extra parse step
+per dispatch); deferred pending observed need.
 
 `transcript_path` is stored as an absolute path (not `~`-relative) so
-copy-paste into a fresh shell works without depending on tilde expansion.
-It is **not** validated at write time: the JSONL may not exist yet when
-the start record is written.
+copy-paste into a fresh shell works without depending on tilde
+expansion.
 
 ### C — diagnosis pass
 
@@ -103,8 +128,12 @@ diagnose_session.sh <outcome> <worktree_path> <spec_base_sha> <transcript_path>
 - `<spec_base_sha>` — the SHA captured by the orchestrator post-merge,
   pre-dispatch (already at `<worktree>/.sensible-ralph-base-sha` per
   `docs/design/worktree-contract.md`). Passed explicitly so the
-  orchestrator stays the single source of truth.
+  orchestrator stays the single source of truth. **Empty string is a
+  valid value** and means "base-sha unavailable" — H1 must silently
+  suppress in that case; H2 and H3 must still run.
 - `<transcript_path>` — full absolute path the orchestrator computed.
+  May not exist on disk; H3 handles missing/unreadable files
+  defensively (silent suppression).
 
 **Output:**
 
@@ -133,11 +162,14 @@ the script accepts every outcome but no-ops when it doesn't apply.
 
 **Heuristics (v1):**
 
-- **H1-nocommits** (always-on for eligible outcomes). `git rev-list
+- **H1-nocommits** (always-on for eligible outcomes when
+  `spec_base_sha` is non-empty). `git rev-list
   "$spec_base_sha"..HEAD --count` on the worktree branch. When 0,
   emit `no implementation commits`. Validate `spec_base_sha` exists
   (`git cat-file -e "$spec_base_sha^{commit}"`) before counting; on
-  validation failure, suppress the heuristic.
+  validation failure or empty `spec_base_sha`, suppress the heuristic.
+  H1 is the only heuristic that consults `spec_base_sha`; H2 and H3
+  must run regardless of its presence.
 
 - **H2-dirtytree** (always-on for eligible outcomes). `git status
   --porcelain` non-empty → emit `uncommitted edits left in worktree`.
@@ -174,8 +206,8 @@ inference). Empty array → no output.
 
 Modify the Done-section render loop in
 `skills/sr-status/scripts/render_status.sh` (lines 165–179): after the
-existing one-line row, if `outcome` is not `in_review` and not
-`skipped`, render an indented sub-block:
+existing one-line row, render an indented sub-block driven by
+**field presence**, not outcome name. Each line is independent.
 
 ```
   ENG-294  exit_clean_no_review      14m
@@ -184,21 +216,50 @@ existing one-line row, if `outcome` is not `in_review` and not
       session: <transcript_path>
 ```
 
-- `↳` is U+21B3 — emitted as the UTF-8 byte sequence `\xe2\x86\xb3`
-  (`printf '\xe2\x86\xb3'`) so the renderer doesn't depend on the source
-  file's encoding being preserved through editing tools.
-- The `transcript:` line is the worktree log path (`ralph-output.log`),
-  not the JSONL — operators get both, with the worktree log being the
-  faster glance and the session JSONL being the deep-dive option.
-- The `session:` line is omitted if the end record has no
-  `transcript_path` (legacy records or `setup_failed`/`local_residue`
-  records that lack the field).
-- The `↳` line is omitted if the end record has no `hint` field
-  (heuristics ran but matched nothing, or the record predates this
-  change).
-- `skipped` rows stay one-line — they have no transcript, no session,
-  and the operator already knows the upstream cause; surfacing an empty
-  sub-block under each one would be visual noise.
+**Render conditions (per line, all checked independently):**
+
+- The `↳` (hint) line is rendered iff the record's `hint` field is
+  present and non-empty. Outcome-independent.
+- The `transcript:` line is rendered iff the record's `branch` field
+  is present **and** the outcome is one of `failed`,
+  `exit_clean_no_review`, `unknown_post_state` (these are the outcomes
+  guaranteed to have invoked claude and produced a worktree log).
+  Constructed as
+  `${repo_root}/${worktree_base}/${branch}/${stdout_log_filename}`.
+- The `session:` line is rendered iff the record's `transcript_path`
+  field is present and non-empty.
+- If none of the three lines would render, no sub-block is emitted —
+  the row stays one-line.
+
+This per-line gating handles every outcome correctly without an outcome
+allowlist:
+- `in_review`: no hint field → `↳` suppressed; `branch` present + outcome
+  matches → `transcript:` rendered; `session_id`/`transcript_path`
+  present → `session:` rendered. Sub-block contains transcript+session
+  but no hint. *Decision:* successful rows should stay one-line for
+  scannability — see explicit suppression below.
+- `failed`/`exit_clean_no_review`/`unknown_post_state`: typically all
+  three lines render.
+- `setup_failed`: no `session_id`/`transcript_path` → `session:`
+  suppressed; outcome not in transcript-line allowlist → `transcript:`
+  suppressed; `hint` absent (helper not invoked for setup_failed) →
+  `↳` suppressed. Row stays one-line.
+- `local_residue`: same as `setup_failed`. Row stays one-line.
+- `skipped`: same. Row stays one-line.
+
+**Explicit one-line suppression for `in_review`:** even though the
+per-line gates above would render `transcript:` and `session:` for an
+`in_review` row, suppress the entire sub-block when outcome is
+`in_review`. Successful rows stay one-line for visual scannability;
+operators don't need diagnostic plumbing on green outcomes.
+
+`↳` is U+21B3 — emitted as the UTF-8 byte sequence `\xe2\x86\xb3`
+(`printf '\xe2\x86\xb3'`) so the renderer doesn't depend on the source
+file's encoding being preserved through editing tools.
+
+The `transcript:` line is the worktree log path (`ralph-output.log`),
+not the JSONL — operators get both, with the worktree log being the
+faster glance and the session JSONL being the deep-dive option.
 
 The pre-existing footer "Tip: tail …" line for the in-flight Running
 row stays unchanged.
@@ -313,13 +374,21 @@ case "$outcome" in
     if [[ -r "$path/.sensible-ralph-base-sha" ]]; then
       spec_base_sha="$(cat "$path/.sensible-ralph-base-sha")"
     fi
-    if [[ -n "$spec_base_sha" ]]; then
-      hint="$(bash "$SCRIPT_DIR/diagnose_session.sh" \
-        "$outcome" "$path" "$spec_base_sha" "$transcript_path" 2>/dev/null)" || hint=""
-    fi
+    # Always invoke diagnose, even if base-sha is missing/blank. The helper
+    # handles per-heuristic suppression: H1 silently skips on invalid
+    # spec_base_sha, while H2 and H3 proceed independently. Gating the whole
+    # call on base-sha presence would create a hidden single point of
+    # failure for the entire diagnostic path.
+    hint="$(bash "$SCRIPT_DIR/diagnose_session.sh" \
+      "$outcome" "$path" "$spec_base_sha" "$transcript_path" 2>/dev/null)" || hint=""
     ;;
 esac
 ```
+
+The empty-sentinel for `spec_base_sha` is part of `diagnose_session.sh`'s
+contract: when the third positional arg is empty, H1 is suppressed
+(documented in the helper's invocation contract above). H2 and H3 do
+not consult `spec_base_sha` and proceed regardless.
 
 Then in the end-record `jq -n` invocation, conditionally include the
 `hint` field:
@@ -397,10 +466,17 @@ only local-FS reads.
 - `skills/sr-start/scripts/test/orchestrator.bats` — assert start
   records carry `session_id` + `transcript_path`; assert end records on
   the four eligible outcomes carry them; assert
-  `setup_failed`/`local_residue`/`skipped` records do **not**.
+  `setup_failed`/`local_residue`/`skipped` records do **not**; assert
+  `transcript_path` honors `CLAUDE_CONFIG_DIR` when set; assert the
+  diagnose helper is invoked with empty `spec_base_sha` when
+  `.sensible-ralph-base-sha` is missing (and not gated out).
 - `skills/sr-status/scripts/test/render_status.bats` — fixture cases for
-  hint+transcript+session sub-block on a `failed` row, and back-compat
-  case for a record without the new fields.
+  hint+transcript+session sub-block on a `failed` row; back-compat case
+  for a record without the new fields; per-line suppression cases
+  (record with `hint` but no `transcript_path`, record with
+  `transcript_path` but no `hint`, `setup_failed` record stays
+  one-line, `in_review` record stays one-line even when fields are
+  present).
 - `skills/sr-start/scripts/test/diagnose_session.bats` — *new file*,
   fixture-driven coverage for each heuristic and composition.
 - `docs/decisions/2026-04-28-session-diagnostics-A-C-E.md` — capture
@@ -435,8 +511,11 @@ only local-FS reads.
    stderr at default verbosity).
 9. Malformed JSONL, outcome=`failed`: H3 silently skipped.
 10. `RALPH_DIAGNOSE_DEBUG=1`: per-heuristic decisions appear on stderr.
-11. Invalid `spec_base_sha`: H1 suppressed (git cat-file fails),
-    H2 still runs.
+11. Invalid `spec_base_sha` (well-formed but unknown SHA): H1
+    suppressed (git cat-file fails), H2 still runs.
+12. Empty `spec_base_sha` (orchestrator passed `""` because
+    `.sensible-ralph-base-sha` was unreadable): H1 suppressed without
+    even attempting `git cat-file`, H2 and H3 still run.
 
 ## Acceptance criteria
 
