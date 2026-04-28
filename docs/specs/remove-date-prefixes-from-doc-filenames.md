@@ -219,20 +219,44 @@ branch:
    sweep of every dated reference in the repo.
 
 3. **The work commit's diff over the relevant paths is exactly what
-   the spec describes, including rename detection.** Run, scoped to
-   only the paths this ticket touches (so unrelated branch state — if
-   any — can't poison the check):
+   the spec describes, including rename detection.**
+
+   *Determining the diff base (`SPEC_TIP`).* The branch contains
+   multiple `/sr-spec` commits (the original spec plus codex-iteration
+   fixes). Define `SPEC_TIP` as the branch HEAD captured *before* any
+   implementation work begins — i.e., the last commit on the branch
+   when `/sr-implement` is dispatched. The implementer should record
+   it deterministically as the very first action of the impl session:
 
    ```sh
-   git diff --name-status -M <spec-tip>..HEAD -- \
+   SPEC_TIP=$(git rev-parse HEAD)
+   # …perform the rename + cross-ref + CLAUDE.md edits…
+   ```
+
+   Equivalently, after the work commits land, `SPEC_TIP` is the most
+   recent ancestor of `HEAD` whose commit message starts with
+   `docs(spec):` — every spec-iteration commit on this branch uses
+   that prefix and no work commit will. So a robust late-bound
+   selector is:
+
+   ```sh
+   SPEC_TIP=$(git log --format='%H %s' HEAD \
+     | awk '/ docs\(spec\): / { print $1; exit }')
+   ```
+
+   Use whichever form is convenient; both produce the same SHA on
+   this branch. Then run, scoped to only the paths this ticket
+   touches (so unrelated changes to other paths — if any — can't
+   poison the check):
+
+   ```sh
+   git diff --name-status -M "$SPEC_TIP"..HEAD -- \
      'docs/specs/' 'docs/decisions/' 'docs/design/orchestrator.md' \
      'CLAUDE.md' \
      ':!docs/specs/remove-date-prefixes-from-doc-filenames.md'
    ```
 
-   …where `<spec-tip>` is the most recent `/sr-spec` commit (visible at
-   the tip of the branch when `/sr-implement` starts). The output must
-   contain exactly 11 lines, in any order:
+   The output must contain exactly 11 lines, in any order:
    - 9 lines, each beginning with `R100<TAB><old-path><TAB><new-path>`
      — one per rename in the table above. The `R100` rename score
      requires the renamed file's content to be byte-identical across
