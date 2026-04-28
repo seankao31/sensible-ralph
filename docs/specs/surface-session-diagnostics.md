@@ -185,13 +185,29 @@ the script accepts every outcome but no-ops when it doesn't apply.
   tool_use. Emit `context-loss after Skill (<skill-name>)
   (claude-code#17351)`.
 
-  JSONL parsing posture: **defensive, suppress on uncertainty.** If the
-  JSONL is missing, unreadable, or any `jq` access errors, the
-  heuristic is silently suppressed. If a future Claude Code release
-  changes the JSONL schema (which is undocumented internal format),
-  the heuristic stops firing rather than emitting wrong hints. This
-  trade-off — under-report rather than mis-report — is the explicit
-  design choice for JSONL-dependent heuristics.
+  **Bounded poll for JSONL readiness:** Claude Code's JSONL flush
+  timing relative to `claude -p` process exit is undocumented; in
+  practice the file may not be fully materialized for a brief window
+  after exit. Before reading, H3 polls for `transcript_path`
+  readability up to 20 times at 100 ms intervals (≤ 2 s total). On
+  the common case (file already present) the poll exits on first
+  iteration. On true absence (slug-rule mismatch, or claude-code
+  didn't write the file at all) the poll exhausts and the heuristic
+  silently suppresses. When `RALPH_DIAGNOSE_DEBUG=1` is set, the
+  helper emits `H3: transcript_path not ready after 2s — suppressing`
+  to stderr so operators can distinguish a flush race from a genuine
+  no-match. The 2 s budget is per dispatched non-success outcome only
+  (not on every dispatch), and is dwarfed by the 5–15 min `claude -p`
+  wall time.
+
+  JSONL parsing posture: **defensive, suppress on uncertainty.** If
+  the JSONL is missing after the bounded poll, unreadable, or any
+  `jq` access errors, the heuristic is silently suppressed. If a
+  future Claude Code release changes the JSONL schema (which is
+  undocumented internal format), the heuristic stops firing rather
+  than emitting wrong hints. This trade-off — under-report rather
+  than mis-report — is the explicit design choice for JSONL-dependent
+  heuristics.
 
   `tac` is not on macOS; the implementation must use `tail -r` (BSD)
   or an `awk` line-reverser. Implementer choice.
@@ -264,8 +280,17 @@ The `transcript:` line is the worktree log path (`ralph-output.log`),
 not the JSONL — operators get both, with the worktree log being the
 faster glance and the session JSONL being the deep-dive option.
 
-The pre-existing footer "Tip: tail …" line for the in-flight Running
-row stays unchanged.
+**Footer "Tip: tail …" for the in-flight Running row** also switches
+to the persisted `worktree_log_path` from the matching start record.
+The current renderer rebuilds this path from
+`CLAUDE_PLUGIN_OPTION_WORKTREE_BASE` + `CLAUDE_PLUGIN_OPTION_STDOUT_LOG_FILENAME`
++ the record's `branch`, which exhibits the same live-config drift
+problem as the Done-row reconstruction did. Reading
+`worktree_log_path` directly from the running issue's start record
+keeps the tip accurate after config changes mid-run. When the start
+record lacks `worktree_log_path` (legacy run from before this change),
+fall back to the current live-config reconstruction so the footer
+keeps rendering something useful.
 
 ## `progress.json` schema additions
 
@@ -579,10 +604,17 @@ only local-FS reads.
 6. Same JSONL, outcome=`unknown_post_state`: H3 suppressed.
 7. Same JSONL, outcome=`in_review`: script not invoked (orchestrator
    contract); test invokes anyway and asserts no output.
-8. Missing JSONL, outcome=`failed`: H3 silently skipped (no error to
-   stderr at default verbosity).
+8. Missing JSONL, outcome=`failed`: H3 silently skipped after the
+   bounded poll exhausts (no error to stderr at default verbosity).
 9. Malformed JSONL, outcome=`failed`: H3 silently skipped.
-10. `RALPH_DIAGNOSE_DEBUG=1`: per-heuristic decisions appear on stderr.
+9b. JSONL appears mid-poll (created at t=500 ms, well within the 2 s
+    budget): H3 reads it on a subsequent poll iteration and fires
+    normally. Verifies the bounded-poll behavior, not just the
+    file-already-present and file-never-appears extremes.
+10. `RALPH_DIAGNOSE_DEBUG=1`: per-heuristic decisions appear on
+    stderr, including the
+    `H3: transcript_path not ready after 2s — suppressing` line when
+    the bounded poll exhausts.
 11. Invalid `spec_base_sha` (well-formed but unknown SHA): H1
     suppressed (git cat-file fails), H2 still runs.
 12. Empty `spec_base_sha` (orchestrator passed `""` because
