@@ -223,31 +223,28 @@ branch:
 
    *Determining the diff base (`SPEC_TIP`).* The branch contains
    multiple `/sr-spec` commits (the original spec plus codex-iteration
-   fixes). Define `SPEC_TIP` as the branch HEAD captured *before* any
+   fixes). `SPEC_TIP` is the branch HEAD captured *before* any
    implementation work begins — i.e., the last commit on the branch
-   when `/sr-implement` is dispatched. The implementer should record
-   it deterministically as the very first action of the impl session:
+   when `/sr-implement` is dispatched.
+
+   The implementer MUST record it deterministically as the very first
+   action of the impl session, before making any other change:
 
    ```sh
    SPEC_TIP=$(git rev-parse HEAD)
-   # …perform the rename + cross-ref + CLAUDE.md edits…
+   # …perform the rename + cross-ref + CLAUDE.md edits below…
    ```
 
-   Equivalently, after the work commits land, `SPEC_TIP` is the most
-   recent ancestor of `HEAD` whose commit message starts with
-   `docs(spec):` — every spec-iteration commit on this branch uses
-   that prefix and no work commit will. So a robust late-bound
-   selector is:
+   Do NOT try to reconstruct `SPEC_TIP` after the fact from commit
+   metadata (subject prefixes, author, etc.) — this ticket is itself
+   a `docs/` change and a reasonable work-commit subject like
+   `docs(spec): ...` could collapse a heuristic selector to `HEAD`,
+   producing an empty diff instead of the expected 11 lines. The
+   recorded-up-front SHA is the only sound source for `SPEC_TIP`.
 
-   ```sh
-   SPEC_TIP=$(git log --format='%H %s' HEAD \
-     | awk '/ docs\(spec\): / { print $1; exit }')
-   ```
-
-   Use whichever form is convenient; both produce the same SHA on
-   this branch. Then run, scoped to only the paths this ticket
-   touches (so unrelated changes to other paths — if any — can't
-   poison the check):
+   Then run, scoped to only the paths this ticket touches (so
+   unrelated changes to other paths — if any — can't poison the
+   check):
 
    ```sh
    git diff --name-status -M "$SPEC_TIP"..HEAD -- \
@@ -289,23 +286,37 @@ review easier — the diff is small (9 renames + 4 modified lines + 2
 CLAUDE.md sentences). Per `CLAUDE.md` "Unit of Work", code/docs/comment
 changes for the same conceptual edit land together.
 
-**Why criteria 1 and 2 are intentionally repo-wide, not narrowed to the
-9 enumerated files.** Once `CLAUDE.md` codifies "kebab-case topic name,
-no date prefix" for `docs/specs/` and `docs/decisions/`, the convention
-is repo-wide, not just retroactive cleanup. Acceptance criterion 1
-(`git ls-files docs/{specs,decisions} | grep -E '^docs/(specs|decisions)/[0-9]{4}-'`
-returns empty) and criterion 2's literal-string scan over the 9 old
-basenames are convention-enforcement checks, not pure ticket-delta
-checks. If a concurrent or later ticket introduces a *new* date-prefixed
-filename in those directories, or a *new* stale reference to one of the
-9 renamed files outside the carve-outs, the ticket failing those
-criteria is the desired behavior — that's what convention enforcement
-*is*. The trade-off is that a future legitimate file in the carve-out
-list would need to be added to the allowlist; that's accepted as a
-known maintenance cost. Code-level pre-commit / CI enforcement is
-deferred (see "Out of scope: CI / lint guardrail"); until that lands,
-criteria 1 and 2 carry the convention's enforcement contract for this
-ticket.
+**Why the verification contract is intentionally branch-state-coupled,
+not narrowed to a pure ticket-delta check.** Once `CLAUDE.md`
+codifies "kebab-case topic name, no date prefix" for `docs/specs/` and
+`docs/decisions/`, the convention is repo-wide, not just retroactive
+cleanup. The acceptance criteria, taken together, enforce the
+convention at this ticket's land-time:
+
+- Criterion 1 (`git ls-files | grep` over `docs/{specs,decisions}/`)
+  fails on any date-prefixed file in those directories, not just on
+  the 9 renamed ones. If a concurrent ticket added another
+  date-prefixed file in those dirs, that file is itself a convention
+  violation and should be caught.
+- Criterion 2's literal-string scan over the 9 old basenames fails on
+  any *new* stale reference to a renamed file outside the carve-outs.
+  Same logic: the renamed files no longer exist at their old paths,
+  so any reference to those old paths outside the documented
+  carve-outs is stale.
+- Criterion 3's exact-11-line diff (over the four scoped paths) fails
+  if the implementer makes any other edit to those paths on the same
+  branch. Per-issue branch isolation is part of the
+  one-issue-at-a-time flow `/sr-start` enforces, so this is the
+  correct discipline check: this ticket's work on these paths is the
+  9 renames + 2 modifications; anything else is scope drift.
+
+The trade-off accepted: if a concurrent ticket lands work on the same
+paths or introduces convention violations, ENG-305's verification will
+fail until those are resolved. This is treated as a feature, not a
+bug — for an autonomous flow with one Approved issue dispatched at a
+time, the criteria let ENG-305's verification stand in for the
+convention's enforcement until a code-level guardrail (deferred — see
+"Out of scope: CI / lint guardrail") replaces it.
 
 **Why leave `rename-to-sensible-ralph.md` untouched.** The file is a
 frozen spec for ENG-276. Two of the renamed filenames appear in its
