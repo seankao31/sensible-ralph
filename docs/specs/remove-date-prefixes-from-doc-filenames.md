@@ -158,35 +158,57 @@ branch:
    `git ls-files docs/specs docs/decisions | grep -E '^docs/(specs|decisions)/[0-9]{4}-'`
    returns no matches and exits with status 1.
 
-2. **No live cross-references to the date-prefixed paths survive in the
-   live-doc surfaces.** Run:
-   `grep -rIln '2026-04-2[567]-' docs/design/ CLAUDE.md` → returns no
-   matches (status 1).
-   And the broader `grep -rIln '2026-04-2[567]-' .` (excluding `.git/`)
-   may return only the following files, all of which are
-   intentionally-preserved historical or self-references:
-   - `docs/specs/remove-date-prefixes-from-doc-filenames.md` — this spec
-     (the rename tables and prose quote the old paths by design).
-   - `docs/specs/rename-to-sensible-ralph.md` — frozen-spec
-     historical-narrative carve-out (out of scope per above).
-   - `docs/specs/persistent-design-doc-layer.md` — frozen-spec hypothetical
-     examples (out of scope per above).
-   - Any file under `docs/archive/**` — point-in-time records.
+2. **The orchestrator.md cross-refs were rewritten to the correct new
+   path.** Both a positive and a negative check:
+
+   - *Positive (file resolves):* the new file exists at the expected path
+     after rename. `test -f docs/decisions/progress-json-event-discriminator.md`
+     exits with status 0.
+   - *Positive (refs point at it):* the new path appears exactly twice in
+     `docs/design/orchestrator.md`.
+     `grep -cF 'docs/decisions/progress-json-event-discriminator.md' docs/design/orchestrator.md`
+     prints `2`.
+   - *Negative (no leftover dated paths in live-doc surfaces):*
+     `grep -rIln '2026-04-2[567]-' docs/design/ CLAUDE.md` returns no
+     matches (status 1).
+   - *Negative (broader scan):* `grep -rIln '2026-04-2[567]-' .`
+     (excluding `.git/`) returns only the four
+     intentionally-preserved files:
+     - `docs/specs/remove-date-prefixes-from-doc-filenames.md` — this
+       spec (the rename tables and prose quote the old paths by design).
+     - `docs/specs/rename-to-sensible-ralph.md` — frozen-spec
+       historical-narrative carve-out (out of scope per above).
+     - `docs/specs/persistent-design-doc-layer.md` — frozen-spec
+       hypothetical examples (out of scope per above).
+     - Any file under `docs/archive/**` — point-in-time records.
 
    Any other file matching the broader grep is a bug — investigate before
    marking the work complete.
 
-3. **The work commit's diff is exactly what the spec describes.**
-   `git diff --stat <spec-tip>..HEAD -- ':!docs/specs/remove-date-prefixes-from-doc-filenames.md'`
-   — where `<spec-tip>` is the most recent `/sr-spec` commit (visible at
-   the tip of the branch when `/sr-implement` starts) — shows exactly:
-   9 renames (each as `R100`, since none of the renamed files' content is
-   changed by this work), 1 modified file `docs/design/orchestrator.md`,
-   1 modified file `CLAUDE.md` at the repo root. No other files touched.
-   The `R100` rename detection on each of the 9 entries is the actual
-   evidence that the rename was tracked — `git mv` is the recommended
-   path, but the test here is the rename-detection outcome, not the tool
-   that produced it.
+3. **The work commit's diff is exactly what the spec describes,
+   including rename detection.** Run:
+
+   ```sh
+   git diff --name-status -M <spec-tip>..HEAD \
+     -- ':!docs/specs/remove-date-prefixes-from-doc-filenames.md'
+   ```
+
+   …where `<spec-tip>` is the most recent `/sr-spec` commit (visible at
+   the tip of the branch when `/sr-implement` starts). The output must
+   contain exactly 11 lines:
+   - 9 lines beginning with `R100<TAB><old-path><TAB><new-path>` — one
+     per rename in the table above. The `R100` is the rename score from
+     `-M`; it requires the renamed file's content to be byte-identical
+     across the rename, which is the case here (none of the renamed
+     files' content changes).
+   - 1 line `M<TAB>docs/design/orchestrator.md` — the cross-ref fix.
+   - 1 line `M<TAB>CLAUDE.md` — the doc-layer convention tightening.
+
+   No other lines in the output. `git mv` is the recommended path because
+   it produces this outcome cleanly; the test here is the rename-detection
+   outcome itself, not the tool that produced it. (Plain `mv` followed by
+   `git add` of both old and new can also produce `R100` if content is
+   unchanged, but `git mv` is more direct and atomic.)
 
 No bats coverage is added — there are no tests for doc filenames in the
 repo today, and the three acceptance criteria above are exhaustive for
