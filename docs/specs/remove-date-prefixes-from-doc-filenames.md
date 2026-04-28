@@ -237,8 +237,10 @@ branch:
      branch).
    - *Negative (no stale references to the 9 specific renamed
      basenames outside the carve-outs):* For each old basename in the
-     rename table, run `grep -rIln -F "<old-basename>" .` (excluding
-     `.git/` and `.worktrees/`). The matches must be a subset of:
+     rename table, run `git grep -lF "<old-basename>"`. `git grep`
+     searches only tracked files (no editor backups, scratch notes,
+     or other untracked working-tree residue), so the sweep stays on
+     repository content. The matches must be a subset of:
      - `docs/specs/remove-date-prefixes-from-doc-filenames.md` — this
        spec quotes all 9 old paths in its rename table by design.
      - `docs/specs/rename-to-sensible-ralph.md` — frozen-spec
@@ -326,11 +328,43 @@ branch:
    - 1 line `M<TAB>docs/design/orchestrator.md` — the cross-ref fix.
    - 1 line `M<TAB>CLAUDE.md` — the doc-layer convention tightening.
 
-   No other lines in the output. The pathspecs above narrow the diff to
-   the paths this ticket is responsible for, so the criterion is robust
-   to other commits the implementer or codex iteration may add to the
-   branch (e.g., spec doc fixes, which are excluded by the
-   `':!docs/specs/remove-date-prefixes-from-doc-filenames.md'` exclusion).
+   No other lines in the output. The pathspecs above narrow the diff
+   to the paths this ticket is responsible for. **`--name-status`
+   collapses each modified file to a single `M` line, so the
+   line-count check above does NOT prove that the contents of the two
+   `M` files are exactly the intended substitutions** — the
+   line-count check only proves that the *file set* is right.
+   Content correctness is verified separately, below:
+
+   *Sub-check 3a — orchestrator.md content diff is exactly the two
+   path substitutions:* run
+
+   ```sh
+   git diff --unified=0 "$SPEC_TIP"..HEAD -- docs/design/orchestrator.md
+   ```
+
+   The hunks must show only the two replacements
+   `2026-04-25-progress-json-event-discriminator` →
+   `progress-json-event-discriminator` (the prefix `docs/decisions/`
+   is unchanged on both sides), with no other added or removed lines
+   in the file. Equivalently, `git diff "$SPEC_TIP"..HEAD --
+   docs/design/orchestrator.md | grep -E '^[+-]' | grep -v '^[+-]{3}
+   '` returns exactly four lines — two `-` lines containing the old
+   path and two `+` lines containing the new path — and nothing else.
+
+   *Sub-check 3b — CLAUDE.md content diff is exactly the two convention
+   sub-edits:* run
+
+   ```sh
+   git diff --unified=0 "$SPEC_TIP"..HEAD -- CLAUDE.md
+   ```
+
+   The hunks must add exactly the two specified prose changes (the
+   per-layer kebab-case sentence in each of the `docs/specs/` and
+   `docs/decisions/` paragraphs, plus the source-of-truth note
+   appended to the closing `**Implementer responsibility:**`
+   paragraph) and no other content changes — no other paragraphs
+   touched, no whitespace-only edits elsewhere in the file.
 
 No bats coverage is added — there are no tests for doc filenames in the
 repo today, and the three acceptance criteria above cover the
