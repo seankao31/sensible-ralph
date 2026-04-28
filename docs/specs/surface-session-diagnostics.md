@@ -242,52 +242,51 @@ inference). Empty array → no output.
 
 Modify the Done-section render loop in
 `skills/sr-status/scripts/render_status.sh` (lines 165–179): after the
-existing one-line row, render an indented sub-block driven by
-**field presence**, not outcome name. Each line is independent.
+existing one-line row, render an indented sub-block driven entirely
+by **field presence**, with one whole-sub-block override for
+`in_review`.
 
 ```
   ENG-294  exit_clean_no_review      14m
     ↳ no implementation commits; context-loss after Skill (using-superpowers) (claude-code#17351)
-      transcript: <repo_root>/<worktree-base>/<branch>/<stdout-log-filename>
+      transcript: <worktree_log_path>
       session: <transcript_path>
 ```
 
-**Render conditions (per line, all checked independently):**
+**The single rule:** for each Done row, the renderer attempts to emit
+three sub-block lines. Each line is gated on the presence and
+non-emptiness of one specific record field — no outcome-name checks.
 
-- The `↳` (hint) line is rendered iff the record's `hint` field is
-  present and non-empty. Outcome-independent.
-- The `transcript:` line is rendered iff the record's
-  `worktree_log_path` field is present and non-empty. The renderer
-  prints that field's value verbatim — no live-config
-  reconstruction. (For pre-this-change records that lack
-  `worktree_log_path`, the line is suppressed; the operator can find
-  the log at the conventional location if needed.)
-- The `session:` line is rendered iff the record's `transcript_path`
-  field is present and non-empty.
-- If none of the three lines would render, no sub-block is emitted —
-  the row stays one-line.
+| Line | Gate (single condition, no other checks) |
+|---|---|
+| `↳ <hint>` | `record.hint` present and non-empty |
+| `transcript: <worktree_log_path>` | `record.worktree_log_path` present and non-empty; printed verbatim, no reconstruction |
+| `session: <transcript_path>` | `record.transcript_path` present and non-empty |
 
-This per-line gating handles every outcome correctly without an outcome
-allowlist:
-- `in_review`: no hint field → `↳` suppressed; `branch` present + outcome
-  matches → `transcript:` rendered; `session_id`/`transcript_path`
-  present → `session:` rendered. Sub-block contains transcript+session
-  but no hint. *Decision:* successful rows should stay one-line for
-  scannability — see explicit suppression below.
-- `failed`/`exit_clean_no_review`/`unknown_post_state`: typically all
-  three lines render.
-- `setup_failed`: no `session_id`/`transcript_path` → `session:`
-  suppressed; outcome not in transcript-line allowlist → `transcript:`
-  suppressed; `hint` absent (helper not invoked for setup_failed) →
-  `↳` suppressed. Row stays one-line.
-- `local_residue`: same as `setup_failed`. Row stays one-line.
-- `skipped`: same. Row stays one-line.
+If **all three** gates fail, no sub-block is emitted — the row stays
+one-line. There is no outcome allowlist, no per-outcome reasoning, no
+fallback reconstruction. A record that doesn't carry the field doesn't
+get the line.
 
-**Explicit one-line suppression for `in_review`:** even though the
-per-line gates above would render `transcript:` and `session:` for an
-`in_review` row, suppress the entire sub-block when outcome is
-`in_review`. Successful rows stay one-line for visual scannability;
-operators don't need diagnostic plumbing on green outcomes.
+**Whole-sub-block override for `in_review`:** the only outcome-named
+rule. Even if an `in_review` end record carries `worktree_log_path` and
+`transcript_path` (which it will), the renderer suppresses the entire
+sub-block on `in_review` rows. Successful rows stay one-line for
+scannability; operators don't need diagnostic plumbing on green
+outcomes. This is the only place outcome name appears in the renderer
+contract.
+
+**Consequences (worked through, not enforced by code):**
+- `failed` / `exit_clean_no_review` / `unknown_post_state`: all three
+  fields are populated by the orchestrator → all three lines render.
+- `in_review`: fields are populated but the whole-sub-block override
+  fires → row stays one-line.
+- `setup_failed`, `local_residue`, `skipped`: orchestrator does not
+  populate the three fields per Section 2's schema → all three gates
+  fail → row stays one-line via field-absence.
+- Legacy records (pre-this-change): same as `setup_failed` —
+  field-absence keeps the row one-line. Back-compat is automatic; no
+  migration needed.
 
 `↳` is U+21B3 — emitted as the UTF-8 byte sequence `\xe2\x86\xb3`
 (`printf '\xe2\x86\xb3'`) so the renderer doesn't depend on the source
@@ -395,12 +394,29 @@ start-record write. Done once per issue and reused for both records.
 ```bash
 local session_id; session_id="$(uuidgen | tr 'A-Z' 'a-z')"
 
-# Resolve config_dir, requiring an absolute path. Empty or relative
-# CLAUDE_CONFIG_DIR falls back to the default — a relative value would
-# produce a relative transcript_path that resolves differently in the
-# orchestrator's cwd vs. /sr-status's cwd vs. the helper's cwd, and
-# would silently misdirect H3 and the rendered session: line.
-local config_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+# Resolve config_dir, distinguishing unset from empty so we can warn
+# explicitly on an empty value (a misconfiguration) without warning
+# on the common unset case (the documented default path).
+#
+# `${VAR-default}` (no colon) substitutes default ONLY when VAR is
+# unset; `${VAR:-default}` substitutes for both unset AND empty.
+# We need to differentiate, so we use the no-colon form and handle
+# empty separately.
+local config_dir
+if [[ -z "${CLAUDE_CONFIG_DIR+set}" ]]; then
+  # CLAUDE_CONFIG_DIR is unset — silent default.
+  config_dir="$HOME/.claude"
+elif [[ -z "$CLAUDE_CONFIG_DIR" ]]; then
+  # CLAUDE_CONFIG_DIR is set but empty — likely misconfiguration.
+  printf 'orchestrator: CLAUDE_CONFIG_DIR is set but empty; falling back to $HOME/.claude\n' >&2
+  config_dir="$HOME/.claude"
+else
+  config_dir="$CLAUDE_CONFIG_DIR"
+fi
+
+# Require absolute path. Relative values would resolve differently in
+# the orchestrator's cwd vs. /sr-status's cwd vs. the helper's cwd,
+# and would silently misdirect H3 and the rendered session: line.
 case "$config_dir" in
   /*) ;;
   *)
@@ -513,16 +529,31 @@ case "$outcome" in
     # any argument-validation errors) surface to the operator. Helper
     # is silent at default verbosity, so this isn't noisy in the
     # common path.
-    if [[ -n "${RALPH_DIAGNOSE_DEBUG:-}" ]]; then
-      hint="$(bash "$SCRIPT_DIR/diagnose_session.sh" \
-        "$outcome" "$path" "$spec_base_sha" "$transcript_path")" || hint=""
+    # Bound the helper with a hard timeout (5 s budget) so a hung
+    # heuristic cannot block failure bookkeeping (label writes, taint
+    # propagation, end-record write). Diagnostic output is best-effort;
+    # critical-path side effects must always run. On timeout, hint stays
+    # empty and the orchestrator proceeds.
+    #
+    # `timeout` (GNU coreutils) is on every Linux box and via Homebrew
+    # on macOS as `gtimeout`. Detect at invocation time and degrade
+    # to a no-timeout call with a one-time stderr note when neither
+    # is present. This is acceptable degradation: H3's own bounded
+    # poll already caps it at 2 s, and H1/H2 are bounded by physics
+    # (a few git commands).
+    local timeout_cmd=""
+    if command -v timeout >/dev/null 2>&1; then
+      timeout_cmd="timeout 5"
+    elif command -v gtimeout >/dev/null 2>&1; then
+      timeout_cmd="gtimeout 5"
     else
-      # Pass stderr through; helper is silent by contract unless debug
-      # mode or argument validation fails. Argument-validation errors
-      # are implementation defects worth surfacing.
-      hint="$(bash "$SCRIPT_DIR/diagnose_session.sh" \
-        "$outcome" "$path" "$spec_base_sha" "$transcript_path")" || hint=""
+      printf 'orchestrator: timeout/gtimeout not available; running diagnose unbounded (H3 self-caps at 2s)\n' >&2
     fi
+    # Helper stderr passes through to the orchestrator's stderr by
+    # contract (silent at default verbosity, breadcrumbs only when
+    # RALPH_DIAGNOSE_DEBUG=1). Never blanket-redirect.
+    hint="$($timeout_cmd bash "$SCRIPT_DIR/diagnose_session.sh" \
+      "$outcome" "$path" "$spec_base_sha" "$transcript_path")" || hint=""
     ;;
 esac
 
@@ -546,13 +577,14 @@ case "$outcome" in
 esac
 ```
 
-The two stderr-handling branches in the snippet above are intentionally
-identical at the byte level — both pass stderr through. The
-`if [[ -n RALPH_DIAGNOSE_DEBUG ]]` split is kept in the spec to make
-the contract explicit: stderr is **never** swallowed. If a future
-revision wants to suppress the validation-error stream in production,
-it should be done with a deliberate edit, not by losing the per-line
-`2>/dev/null` we previously had.
+The diagnose call is wrapped in a 5-second `timeout`/`gtimeout` budget
+so a hung heuristic cannot block failure bookkeeping. On timeout,
+`hint` stays empty and the orchestrator proceeds with `linear_add_label`,
+`_taint_descendants`, and the end-record write. Critical-path side
+effects always run; diagnostic augmentation is best-effort. When
+neither `timeout` nor `gtimeout` is available, the helper runs
+unbounded with a one-time stderr note — H3's own internal 2-second
+poll cap is the second line of defense; H1/H2 are bounded by physics.
 
 The empty-sentinel for `spec_base_sha` is part of `diagnose_session.sh`'s
 contract: when the third positional arg is empty, H1 is suppressed
