@@ -145,8 +145,25 @@ diagnose_session.sh <outcome> <worktree_path> <spec_base_sha> <transcript_path>
   output (caller checks for empty string).
 - stderr: silent at default verbosity. Per-heuristic decisions go to
   stderr only when `RALPH_DIAGNOSE_DEBUG=1`.
-- Exit code: always 0 unless misinvoked (missing positional arg). A
-  failed individual heuristic is silently dropped.
+- Exit code: 0 on successful invocation (whether or not any heuristic
+  fired); non-zero on misinvocation (see arg validation below). A
+  failed individual heuristic is silently dropped, not propagated.
+
+**Argument validation (non-zero exit on failure):**
+
+- `outcome` must be non-empty and one of the seven outcome strings.
+- `worktree_path` must be non-empty.
+- `spec_base_sha` may be empty (documented sentinel; H1 suppresses).
+  Any other value is treated as a candidate SHA and fed to git.
+- `transcript_path` must be non-empty.
+
+On any of these validation failures, the helper exits non-zero and
+writes a diagnostic to stderr describing which arg failed validation
+(`diagnose_session: missing required arg <name>`). The orchestrator
+must treat a non-zero exit as "no hint produced" and proceed with the
+end-record write — argument-validation errors are an implementation
+defect to surface (visible in the orchestrator's stderr), not a
+silent-failure path that suppresses observability.
 
 **Outcome eligibility matrix:**
 
@@ -440,13 +457,44 @@ claude -p \
   2>&1 | tee "$path/$CLAUDE_PLUGIN_OPTION_STDOUT_LOG_FILENAME"
 ```
 
-### Edit 3 — invoke `diagnose_session.sh` and thread hint into end record
+### Edit 3 — invoke `diagnose_session.sh` and thread hint through both control-flow paths
 
-Inserted after outcome classification, before the existing end-record
-write. The spec-base-sha is read from `<path>/.sensible-ralph-base-sha`
-(written pre-dispatch per `docs/design/worktree-contract.md`).
+Inserted **before** the existing
+`if [[ "$claude_exit" -eq 0 && "$state_fetch_ok" -eq 0 ]]` early-return
+that calls `_record_unknown_post_state`. The current orchestrator
+flow is:
+
+```
+classify post_state / state_fetch_ok
+  if claude_exit == 0 && state_fetch_ok == 0:
+    _record_unknown_post_state ...; return 0   # ← early return
+  classify outcome (in_review | exit_clean_no_review | failed)
+  apply ralph-failed / taint as needed
+  write end record (the jq -n block)
+```
+
+**Move the outcome derivation up** so a single computed `outcome`
+variable is available before the early-return decision, and compute
+`hint` in one place that runs for all three dispatched non-success
+outcomes:
 
 ```bash
+# Compute outcome FIRST (was inline below; promote so unknown_post_state
+# also benefits from the diagnose call without duplicating logic).
+local outcome
+if [[ "$claude_exit" -eq 0 && "$state_fetch_ok" -eq 0 ]]; then
+  outcome="unknown_post_state"
+elif [[ "$claude_exit" -eq 0 && "$post_state" == "$CLAUDE_PLUGIN_OPTION_REVIEW_STATE" ]]; then
+  outcome="in_review"
+elif [[ "$claude_exit" -eq 0 ]]; then
+  outcome="exit_clean_no_review"
+else
+  outcome="failed"
+fi
+
+# Compute hint once for all three dispatched non-success outcomes. The
+# spec-base-sha is read from <path>/.sensible-ralph-base-sha (written
+# pre-dispatch per docs/design/worktree-contract.md).
 local hint=""
 case "$outcome" in
   exit_clean_no_review|failed|unknown_post_state)
@@ -454,16 +502,57 @@ case "$outcome" in
     if [[ -r "$path/.sensible-ralph-base-sha" ]]; then
       spec_base_sha="$(cat "$path/.sensible-ralph-base-sha")"
     fi
-    # Always invoke diagnose, even if base-sha is missing/blank. The helper
-    # handles per-heuristic suppression: H1 silently skips on invalid
-    # spec_base_sha, while H2 and H3 proceed independently. Gating the whole
-    # call on base-sha presence would create a hidden single point of
-    # failure for the entire diagnostic path.
-    hint="$(bash "$SCRIPT_DIR/diagnose_session.sh" \
-      "$outcome" "$path" "$spec_base_sha" "$transcript_path" 2>/dev/null)" || hint=""
+    # Always invoke diagnose, even if base-sha is missing/blank. The
+    # helper handles per-heuristic suppression: H1 silently skips on
+    # invalid spec_base_sha, while H2 and H3 proceed independently.
+    # Gating the whole call on base-sha presence would create a hidden
+    # single point of failure for the entire diagnostic path.
+    #
+    # Stderr handling: by default we let helper stderr through to the
+    # orchestrator's stderr, so RALPH_DIAGNOSE_DEBUG=1 breadcrumbs (and
+    # any argument-validation errors) surface to the operator. Helper
+    # is silent at default verbosity, so this isn't noisy in the
+    # common path.
+    if [[ -n "${RALPH_DIAGNOSE_DEBUG:-}" ]]; then
+      hint="$(bash "$SCRIPT_DIR/diagnose_session.sh" \
+        "$outcome" "$path" "$spec_base_sha" "$transcript_path")" || hint=""
+    else
+      # Pass stderr through; helper is silent by contract unless debug
+      # mode or argument validation fails. Argument-validation errors
+      # are implementation defects worth surfacing.
+      hint="$(bash "$SCRIPT_DIR/diagnose_session.sh" \
+        "$outcome" "$path" "$spec_base_sha" "$transcript_path")" || hint=""
+    fi
+    ;;
+esac
+
+# Branch on outcome for Linear-mutation side effects + which record
+# helper to call. Both branches receive the same hint.
+if [[ "$outcome" == "unknown_post_state" ]]; then
+  _record_unknown_post_state "$issue_id" "$branch" "$base_out" \
+    "$claude_exit" "$duration" "$dispatch_timestamp" \
+    "$session_id" "$transcript_path" "$worktree_log_path" "$hint"
+  return 0
+fi
+
+# in_review / exit_clean_no_review / failed take the existing end-record path
+case "$outcome" in
+  exit_clean_no_review|failed)
+    linear_add_label "$issue_id" "$CLAUDE_PLUGIN_OPTION_FAILED_LABEL" || \
+      printf 'orchestrator: failed to add %s label to %s (continuing)\n' \
+        "$CLAUDE_PLUGIN_OPTION_FAILED_LABEL" "$issue_id" >&2
+    _taint_descendants "$issue_id"
     ;;
 esac
 ```
+
+The two stderr-handling branches in the snippet above are intentionally
+identical at the byte level — both pass stderr through. The
+`if [[ -n RALPH_DIAGNOSE_DEBUG ]]` split is kept in the spec to make
+the contract explicit: stderr is **never** swallowed. If a future
+revision wants to suppress the validation-error stream in production,
+it should be done with a deliberate edit, not by losing the per-line
+`2>/dev/null` we previously had.
 
 The empty-sentinel for `spec_base_sha` is part of `diagnose_session.sh`'s
 contract: when the third positional arg is empty, H1 is suppressed
@@ -497,16 +586,19 @@ record="$(jq -n \
 The `+ (if $hint == "" then {} else {hint: $hint} end)` idiom keeps the
 field absent (not empty) when no heuristic fires.
 
-`_record_unknown_post_state` follows the same pattern: pass
-`session_id`, `transcript_path`, `worktree_log_path`, and `hint` in;
-emit with the same conditional-presence idiom. The helper signature
-must be extended to accept `worktree_log_path` (it currently takes
-six positional args; this becomes the seventh). The illustrative end
-record's `worktree_log_path` field appears on `unknown_post_state`
+`_record_unknown_post_state`'s signature is extended to accept
+`session_id`, `transcript_path`, `worktree_log_path`, and `hint` (it
+currently takes six positional args; this becomes ten). The body
+emits with the same conditional-presence idiom as the inline end-record
+write: include `hint` only when non-empty, include the three new path
+fields unconditionally (they're always non-empty when the helper is
+called from the dispatch path). The illustrative end record's
+`worktree_log_path` and `hint` fields appear on `unknown_post_state`
 records exactly the same as on `failed`/`exit_clean_no_review` —
 the renderer's per-line gates rely on this. `_record_setup_failure`
 and `_record_local_residue` remain unchanged — they don't get
-`session_id` fields per the schema above.
+`session_id` fields per the schema above, and they're not invoked
+from the dispatch-time control flow that computes `hint`.
 
 ### What the orchestrator does NOT do
 
