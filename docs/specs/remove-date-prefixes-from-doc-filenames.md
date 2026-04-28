@@ -289,6 +289,24 @@ review easier — the diff is small (9 renames + 4 modified lines + 2
 CLAUDE.md sentences). Per `CLAUDE.md` "Unit of Work", code/docs/comment
 changes for the same conceptual edit land together.
 
+**Why criteria 1 and 2 are intentionally repo-wide, not narrowed to the
+9 enumerated files.** Once `CLAUDE.md` codifies "kebab-case topic name,
+no date prefix" for `docs/specs/` and `docs/decisions/`, the convention
+is repo-wide, not just retroactive cleanup. Acceptance criterion 1
+(`git ls-files docs/{specs,decisions} | grep -E '^docs/(specs|decisions)/[0-9]{4}-'`
+returns empty) and criterion 2's literal-string scan over the 9 old
+basenames are convention-enforcement checks, not pure ticket-delta
+checks. If a concurrent or later ticket introduces a *new* date-prefixed
+filename in those directories, or a *new* stale reference to one of the
+9 renamed files outside the carve-outs, the ticket failing those
+criteria is the desired behavior — that's what convention enforcement
+*is*. The trade-off is that a future legitimate file in the carve-out
+list would need to be added to the allowlist; that's accepted as a
+known maintenance cost. Code-level pre-commit / CI enforcement is
+deferred (see "Out of scope: CI / lint guardrail"); until that lands,
+criteria 1 and 2 carry the convention's enforcement contract for this
+ticket.
+
 **Why leave `rename-to-sensible-ralph.md` untouched.** The file is a
 frozen spec for ENG-276. Two of the renamed filenames appear in its
 "Spec filenames containing `ralph`" section, which explicitly states "the
