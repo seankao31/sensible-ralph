@@ -92,9 +92,12 @@ function of that path **as long as the encoding rule holds**.
 Implications when the assumption breaks:
 - A future Claude Code release that changes the encoding rule (e.g.
   introduces additional escaping for special characters) will cause
-  `transcript_path` to point at a non-existent file. The hint and
-  worktree-log surfaces are unaffected; only the JSONL pointer goes
-  stale.
+  `transcript_path` to point at a non-existent file. **Both the
+  printed `session:` line in `/sr-status` and H3 (skill-context-loss
+  detection) are affected** — H3 reads the same computed JSONL path
+  and will silently suppress when the file is unreadable. The
+  worktree-log path (`ralph-output.log`) and the H1/H2 git heuristics
+  are independent of the slug rule and continue to work.
 - The pointer is **not validated at write time** — the JSONL may not
   exist yet when the start record is written, and we don't want to
   pay an `[ -e ]` check on every dispatch.
@@ -220,12 +223,12 @@ existing one-line row, render an indented sub-block driven by
 
 - The `↳` (hint) line is rendered iff the record's `hint` field is
   present and non-empty. Outcome-independent.
-- The `transcript:` line is rendered iff the record's `branch` field
-  is present **and** the outcome is one of `failed`,
-  `exit_clean_no_review`, `unknown_post_state` (these are the outcomes
-  guaranteed to have invoked claude and produced a worktree log).
-  Constructed as
-  `${repo_root}/${worktree_base}/${branch}/${stdout_log_filename}`.
+- The `transcript:` line is rendered iff the record's
+  `worktree_log_path` field is present and non-empty. The renderer
+  prints that field's value verbatim — no live-config
+  reconstruction. (For pre-this-change records that lack
+  `worktree_log_path`, the line is suppressed; the operator can find
+  the log at the conventional location if needed.)
 - The `session:` line is rendered iff the record's `transcript_path`
   field is present and non-empty.
 - If none of the three lines would render, no sub-block is emitted —
@@ -278,9 +281,26 @@ only `outcome`, the existing renderer pre-deploy) keep working.
 
 ### `transcript_path`
 - **Where:** same records as `session_id`.
-- **Value:** `<HOME>/.claude/projects/<slug>/<session_id>.jsonl` as
-  computed in shell. Stored as absolute path.
+- **Value:** `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/<slug>/<session_id>.jsonl`
+  as computed in shell. Stored as absolute path.
 - **Not validated at write time.**
+
+### `worktree_log_path`
+- **Where:** same records as `session_id` (start records and
+  dispatched-outcome end records).
+- **Value:** absolute path to the per-session stdout log file as it
+  existed *at dispatch time* —
+  `${path}/${CLAUDE_PLUGIN_OPTION_STDOUT_LOG_FILENAME}` resolved during
+  dispatch and persisted into the record. Stored verbatim so historical
+  rows keep pointing at the right file even if
+  `CLAUDE_PLUGIN_OPTION_STDOUT_LOG_FILENAME` or
+  `CLAUDE_PLUGIN_OPTION_WORKTREE_BASE` is later reconfigured.
+- **Why persisted (not recomputed):** the renderer was previously
+  expected to reconstruct this path from current config + the record's
+  `branch`. Live-config reconstruction would render a plausible-but-wrong
+  path for historical rows after a config change — a silent diagnostic
+  misdirection that's hard to notice in failure recovery. Persisting
+  the dispatch-time path makes the record self-contained.
 
 ### `hint`
 - **Where:** end records on `exit_clean_no_review`, `failed`,
@@ -310,6 +330,7 @@ only `outcome`, the existing renderer pre-deploy) keep working.
   "run_id": "2026-04-26T22:00:00Z",
   "session_id": "ecff8ef9-5ab7-4159-b86c-80fea80919c6",
   "transcript_path": "/Users/seankao/.claude/projects/-Users-seankao-Workplace-Projects-sensible-ralph--worktrees-eng-294-write-docsdesignorchestratormd/ecff8ef9-5ab7-4159-b86c-80fea80919c6.jsonl",
+  "worktree_log_path": "/Users/seankao/Workplace/Projects/sensible-ralph/.worktrees/eng-294-write-docsdesignorchestratormd/ralph-output.log",
   "hint": "no implementation commits; context-loss after Skill (using-superpowers) (claude-code#17351)"
 }
 ```
@@ -319,21 +340,33 @@ only `outcome`, the existing renderer pre-deploy) keep working.
 Three edits to `skills/sr-start/scripts/orchestrator.sh`, all confined
 to `_dispatch_issue` and the start/end record-emission paths.
 
-### Edit 1 — pre-generate `session_id` and compute `transcript_path`
+### Edit 1 — pre-generate `session_id`, compute `transcript_path` and `worktree_log_path`
 
 Inserted after `path` is resolved (line ~395 region) and before the
 start-record write. Done once per issue and reused for both records.
 
 ```bash
 local session_id; session_id="$(uuidgen | tr 'A-Z' 'a-z')"
+local config_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 local slug; slug="${path//\//-}"
-local transcript_path="$HOME/.claude/projects/${slug}/${session_id}.jsonl"
+local transcript_path="${config_dir}/projects/${slug}/${session_id}.jsonl"
+local worktree_log_path="${path}/${CLAUDE_PLUGIN_OPTION_STDOUT_LOG_FILENAME}"
 ```
+
+`config_dir` resolution honors `CLAUDE_CONFIG_DIR` for operators who've
+relocated Claude Code's config directory; the fallback is the
+documented default.
+
+`worktree_log_path` is captured at dispatch time and persisted into both
+records so the renderer never reconstructs from live config. Renaming
+`CLAUDE_PLUGIN_OPTION_WORKTREE_BASE` or
+`CLAUDE_PLUGIN_OPTION_STDOUT_LOG_FILENAME` between dispatch and triage
+must not silently misdirect operators to a non-existent log path.
 
 ### Edit 2 — thread fields into start record + claude invocation
 
-Existing start-record write gets two `--arg` additions and two new keys
-in the `jq` body:
+Existing start-record write gets three `--arg` additions and three new
+keys in the `jq` body:
 
 ```bash
 start_record="$(jq -n \
@@ -344,8 +377,10 @@ start_record="$(jq -n \
   --arg run "$run_id" \
   --arg sid "$session_id" \
   --arg tp "$transcript_path" \
+  --arg wlp "$worktree_log_path" \
   '{event: "start", issue: $issue, branch: $branch, base: $base,
-    timestamp: $ts, run_id: $run, session_id: $sid, transcript_path: $tp}')"
+    timestamp: $ts, run_id: $run, session_id: $sid,
+    transcript_path: $tp, worktree_log_path: $wlp}')"
 ```
 
 Existing dispatch invocation gains one flag:
@@ -405,10 +440,12 @@ record="$(jq -n \
   --arg run "$run_id" \
   --arg sid "$session_id" \
   --arg tp "$transcript_path" \
+  --arg wlp "$worktree_log_path" \
   --arg hint "$hint" \
   '{event: "end", issue: $issue, branch: $branch, base: $base, outcome: $outcome,
     exit_code: $exit_code, duration_seconds: $duration, timestamp: $ts,
-    run_id: $run, session_id: $sid, transcript_path: $tp}
+    run_id: $run, session_id: $sid, transcript_path: $tp,
+    worktree_log_path: $wlp}
    + (if $hint == "" then {} else {hint: $hint} end)')"
 ```
 
@@ -464,19 +501,26 @@ only local-FS reads.
 - `skills/sr-start/SKILL.md` — operator-triage bullet for `failed` /
   `exit_clean_no_review` updated to match `outcome-model.md`.
 - `skills/sr-start/scripts/test/orchestrator.bats` — assert start
-  records carry `session_id` + `transcript_path`; assert end records on
-  the four eligible outcomes carry them; assert
+  records carry `session_id` + `transcript_path` + `worktree_log_path`;
+  assert end records on the four eligible outcomes carry them; assert
   `setup_failed`/`local_residue`/`skipped` records do **not**; assert
-  `transcript_path` honors `CLAUDE_CONFIG_DIR` when set; assert the
-  diagnose helper is invoked with empty `spec_base_sha` when
-  `.sensible-ralph-base-sha` is missing (and not gated out).
+  `transcript_path` honors `CLAUDE_CONFIG_DIR` when set (and falls
+  back to `$HOME/.claude` when unset); assert `worktree_log_path` is
+  the dispatch-time absolute path even when
+  `CLAUDE_PLUGIN_OPTION_STDOUT_LOG_FILENAME` is changed between
+  dispatch and a follow-up render; assert the diagnose helper is
+  invoked with empty `spec_base_sha` when `.sensible-ralph-base-sha`
+  is missing (and not gated out).
 - `skills/sr-status/scripts/test/render_status.bats` — fixture cases for
   hint+transcript+session sub-block on a `failed` row; back-compat case
-  for a record without the new fields; per-line suppression cases
-  (record with `hint` but no `transcript_path`, record with
-  `transcript_path` but no `hint`, `setup_failed` record stays
+  for a record without the new fields (sub-block lines suppressed
+  individually); per-line suppression cases (record with `hint` but no
+  `worktree_log_path`/`transcript_path`, record with
+  `worktree_log_path` but no `hint`, `setup_failed` record stays
   one-line, `in_review` record stays one-line even when fields are
-  present).
+  present); assert `transcript:` line uses the persisted
+  `worktree_log_path` verbatim and is **not** affected by changing
+  `CLAUDE_PLUGIN_OPTION_STDOUT_LOG_FILENAME` at render time.
 - `skills/sr-start/scripts/test/diagnose_session.bats` — *new file*,
   fixture-driven coverage for each heuristic and composition.
 - `docs/decisions/2026-04-28-session-diagnostics-A-C-E.md` — capture
@@ -520,10 +564,14 @@ only local-FS reads.
 ## Acceptance criteria
 
 1. **`progress.json` records carry the new fields.** A real `/sr-start`
-   run produces start records with `session_id` and `transcript_path`,
-   and end records on the four eligible outcomes carry both plus a
-   conditionally-present `hint` field. `setup_failed`, `local_residue`,
-   and `skipped` records do not include the session fields.
+   run produces start records with `session_id`, `transcript_path`, and
+   `worktree_log_path`. End records on the four eligible outcomes carry
+   all three plus a conditionally-present `hint` field.
+   `setup_failed`, `local_residue`, and `skipped` records do not
+   include the session fields. `transcript_path` honors
+   `CLAUDE_CONFIG_DIR` when set; falls back to `$HOME/.claude` otherwise.
+   `worktree_log_path` is captured at dispatch time and persisted
+   verbatim — never reconstructed from live config at render time.
 
 2. **`/sr-status` renders the diagnostic sub-block.** A `progress.json`
    containing a `failed` or `exit_clean_no_review` end record with
