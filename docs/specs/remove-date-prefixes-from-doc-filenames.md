@@ -231,32 +231,42 @@ branch:
    when `/sr-implement` is dispatched.
 
    The implementer MUST persist `SPEC_TIP` to a durable artifact
-   inside `.git/` as the very first action of the impl session,
-   before making any other change. `.git/` is excluded from every
-   pathspec and grep in this spec, so it cannot pollute the
-   verification:
+   inside the worktree's gitdir as the very first action of the impl
+   session, before making any other change. Use
+   `git rev-parse --git-path` to resolve a worktree-safe path — this
+   ticket runs in a linked worktree where `.git` is a file (a
+   `gitfile`) pointing at the per-worktree gitdir under
+   `<repo-root>/.git/worktrees/<branch>/`, not a directory, so a
+   literal `.git/foo` redirection would fail before any rename work
+   starts:
 
    ```sh
-   git rev-parse HEAD > .git/sensible-ralph-spec-tip-eng-305
+   SPEC_TIP_FILE=$(git rev-parse --git-path sensible-ralph-spec-tip-eng-305)
+   git rev-parse HEAD > "$SPEC_TIP_FILE"
    # …perform the rename + cross-ref + CLAUDE.md edits below…
    ```
 
    When verification runs (in the same session or a later one), read
-   it back:
+   it back via the same resolver — the gitdir path is stable across
+   shell sessions for the same worktree:
 
    ```sh
-   SPEC_TIP=$(cat .git/sensible-ralph-spec-tip-eng-305)
+   SPEC_TIP_FILE=$(git rev-parse --git-path sensible-ralph-spec-tip-eng-305)
+   SPEC_TIP=$(cat "$SPEC_TIP_FILE")
    ```
 
-   If `.git/sensible-ralph-spec-tip-eng-305` is missing at
-   verification time, the implementer skipped the durable-record
-   step — that is itself a verification failure, not a recoverable
-   condition. Do NOT try to reconstruct `SPEC_TIP` after the fact
-   from commit metadata (subject prefixes, author, etc.) — this
-   ticket is itself a `docs/` change and a reasonable work-commit
-   subject like `docs(spec): ...` could collapse a heuristic selector
-   to `HEAD`, producing an empty diff instead of the expected 11
-   lines. The persisted file is the only sound source for `SPEC_TIP`.
+   The gitdir is per-worktree, so the file does not collide with
+   other concurrent worktrees. It is also outside the working tree,
+   so it never appears in any rename, diff, or grep this spec
+   defines. If the file is missing at verification time, the
+   implementer skipped the durable-record step — that is itself a
+   verification failure, not a recoverable condition. Do NOT try to
+   reconstruct `SPEC_TIP` after the fact from commit metadata
+   (subject prefixes, author, etc.) — this ticket is itself a `docs/`
+   change and a reasonable work-commit subject like `docs(spec): ...`
+   could collapse a heuristic selector to `HEAD`, producing an empty
+   diff instead of the expected 11 lines. The persisted file is the
+   only sound source for `SPEC_TIP`.
 
    Then run, scoped to only the paths this ticket touches (so
    unrelated changes to other paths — if any — can't poison the
