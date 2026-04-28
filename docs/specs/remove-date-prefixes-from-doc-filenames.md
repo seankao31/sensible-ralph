@@ -70,10 +70,13 @@ between spec time and implementation time:
 ```
 
 **`CLAUDE.md` "Documentation layers" section** — the project-root
-`CLAUDE.md` (`<repo-root>/CLAUDE.md`), not `~/.claude/CLAUDE.md`. Extend the
-kebab-case-no-date phrasing currently scoped to `docs/design/` so it
-covers all three layers. Add the bolded sentence to each of the
-`docs/specs/` and `docs/decisions/` paragraphs:
+`CLAUDE.md` (`<repo-root>/CLAUDE.md`), not `~/.claude/CLAUDE.md`. Two
+edits:
+
+1. *Per-layer kebab-case rule.* Extend the kebab-case-no-date phrasing
+   currently scoped to `docs/design/` so it covers all three layers.
+   Add the bolded sentence to each of the `docs/specs/` and
+   `docs/decisions/` paragraphs:
 
 ```diff
  - **`docs/specs/`** — per-ticket implementation specs. Written by
@@ -93,6 +96,25 @@ covers all three layers. Add the bolded sentence to each of the
 
 The `docs/design/` paragraph already states "kebab-case topic name, no date
 or Linear issue header" and is left as-is.
+
+2. *Source-of-truth note for frozen-spec quotes of CLAUDE.md.* Append
+   one sentence to the closing `**Implementer responsibility:**`
+   paragraph at the bottom of the `## Documentation layers` section,
+   so future readers know that frozen-spec quotes of CLAUDE.md
+   content are point-in-time and not authoritative:
+
+```diff
+ **Implementer responsibility:** when a change touches a subsystem with
+ a design doc, update the design doc in the same commit/PR. Same rule
+ as code + comments + READMEs (see `~/.claude/CLAUDE.md` "Unit of Work").
+ Skill-level enforcement of this rule is a deferred follow-up — for
+-now it's social.
++now it's social. Frozen specs in `docs/specs/` may quote earlier
++versions of these conventions or other rules; those quotes are
++point-in-time records of what the ticket added at the time, not the
++current convention. This file (project-root `CLAUDE.md`) is the live
++source of truth.
+```
 
 ### Out of scope
 
@@ -157,8 +179,10 @@ Execute on the per-issue branch `eng-305-remove-date-prefixes-from-doc-filenames
    straight string substitution of
    `2026-04-25-progress-json-event-discriminator` →
    `progress-json-event-discriminator` on those two lines only.
-3. **Tighten `CLAUDE.md`.** Apply the diff above to the project-root
-   `CLAUDE.md` "Documentation layers" section.
+3. **Tighten `CLAUDE.md`.** Apply both diffs above to the project-root
+   `CLAUDE.md` "Documentation layers" section: the per-layer
+   kebab-case rule (sub-edit 1) and the source-of-truth note inside
+   the closing `**Implementer responsibility:**` paragraph (sub-edit 2).
 4. **Commit on the issue branch.** Single commit covering renames +
    `docs/design/orchestrator.md` updates + `CLAUDE.md` update. Use
    conventional-commits format with `Ref: ENG-305` trailer.
@@ -343,6 +367,18 @@ bug — for an autonomous flow with one Approved issue dispatched at a
 time, the criteria let ENG-305's verification stand in for the
 convention's enforcement until a code-level guardrail (deferred — see
 "Out of scope: CI / lint guardrail") replaces it.
+
+This trade-off was probed adversarially by codex across multiple
+spec-review iterations (the adversarial reviewer kept proposing to
+narrow the criteria to a pure ticket-delta check). The repeated
+re-raising of the same concern under different framings is consistent
+with the criteria functioning as designed: they enforce the convention
+the spec adds to CLAUDE.md, and that enforcement is precisely what
+makes them broader than a ticket-delta check. If a future ticket
+genuinely needs to relax this — for example because a CI-level
+guardrail makes the per-spec checks redundant — the right path is to
+file a follow-up that moves convention enforcement to CI and then
+narrows the per-ticket criteria, not to weaken ENG-305's contract.
 
 **Why leave `rename-to-sensible-ralph.md` untouched.** The file is a
 frozen spec for ENG-276. Two of the renamed filenames appear in its
