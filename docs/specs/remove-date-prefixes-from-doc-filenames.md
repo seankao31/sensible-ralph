@@ -45,9 +45,12 @@ Two reasons:
 | `docs/specs/2026-04-25-codex-review-gate-in-ralph-spec.md` | `docs/specs/codex-review-gate-in-ralph-spec.md` |
 | `docs/specs/2026-04-25-ralph-start-default-base-branch.md` | `docs/specs/ralph-start-default-base-branch.md` |
 
-`git mv` is required (not plain `mv` followed by `git add`) so that
-`git log --follow` and `git blame` continue to track these files across the
-rename.
+The invariant is that the rename is detected as `R100` in the final
+diff (criterion 3 below). `git mv` is the simplest way to produce that
+outcome, but `mv` followed by `git add` of both the deletion and the
+addition will also yield `R100` as long as the file's content is
+byte-identical across the rename. The contract is on the outcome, not
+the tool — `git mv` is recommended as the cleanest path.
 
 **Live cross-reference updates in `docs/design/orchestrator.md`** — two
 occurrences, both pointing at
@@ -159,31 +162,47 @@ branch:
    returns no matches and exits with status 1.
 
 2. **The orchestrator.md cross-refs were rewritten to the correct new
-   path.** Both a positive and a negative check:
+   path, and no stale references to the 9 renamed files survive
+   anywhere except the carve-outs.** Four checks — two positive, two
+   negative.
 
-   - *Positive (file resolves):* the new file exists at the expected path
-     after rename. `test -f docs/decisions/progress-json-event-discriminator.md`
+   - *Positive (new file resolves):* the new file exists at the expected
+     path after rename.
+     `test -f docs/decisions/progress-json-event-discriminator.md`
      exits with status 0.
-   - *Positive (refs point at it):* the new path appears exactly twice in
-     `docs/design/orchestrator.md`.
+   - *Positive (live-doc refs point at the new path):* the new path
+     appears exactly twice in `docs/design/orchestrator.md`.
      `grep -cF 'docs/decisions/progress-json-event-discriminator.md' docs/design/orchestrator.md`
      prints `2`.
-   - *Negative (no leftover dated paths in live-doc surfaces):*
-     `grep -rIln '2026-04-2[567]-' docs/design/ CLAUDE.md` returns no
-     matches (status 1).
-   - *Negative (broader scan):* `grep -rIln '2026-04-2[567]-' .`
-     (excluding `.git/`) returns only the four
-     intentionally-preserved files:
+   - *Negative (live-doc surfaces have no date-prefixed file
+     references at all — the convention as a durable invariant):*
+     `grep -rIEln '[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9-]+\.md' docs/design/ CLAUDE.md`
+     returns no matches (status 1). This is pattern-based, not
+     date-coupled — it would catch any future date-prefixed reference
+     leaking into the design layer or CLAUDE.md, not just today's
+     known dates.
+   - *Negative (no stale references to the 9 specific renamed files
+     outside the carve-outs):* For each old basename in the rename
+     table, run `grep -rIln -F "<old-basename>" .` (excluding `.git/`
+     and `.worktrees/`). The matches must be a subset of:
      - `docs/specs/remove-date-prefixes-from-doc-filenames.md` — this
-       spec (the rename tables and prose quote the old paths by design).
+       spec quotes all 9 old paths in its rename table by design.
      - `docs/specs/rename-to-sensible-ralph.md` — frozen-spec
-       historical-narrative carve-out (out of scope per above).
-     - `docs/specs/persistent-design-doc-layer.md` — frozen-spec
-       hypothetical examples (out of scope per above).
-     - Any file under `docs/archive/**` — point-in-time records.
+       carve-out (matches 2 of the 9 basenames per "Out of scope" above).
+     - Any file under `docs/archive/**` — point-in-time records (none
+       expected to match the 9 specific basenames today, but allowed if
+       a future archived doc happens to reference one).
 
-   Any other file matching the broader grep is a bug — investigate before
-   marking the work complete.
+     Any match outside this allowlist is a stale reference that
+     escaped the rename — fix it before marking the work complete.
+
+   Note: a broader `[0-9]{4}-` pattern grep across the whole repo
+   intentionally is *not* an acceptance criterion. This ticket renames
+   only the 9 files in the table. Other files contain dated references
+   to **different** historical artifacts — a deleted `docs/plans/`
+   tree, chezmoi-repo paths from before the plugin was extracted, an
+   archived recon note. Those references are out of scope: this ticket
+   is not a sweep of every dated reference in the repo.
 
 3. **The work commit's diff is exactly what the spec describes,
    including rename detection.** Run:
@@ -211,8 +230,11 @@ branch:
    unchanged, but `git mv` is more direct and atomic.)
 
 No bats coverage is added — there are no tests for doc filenames in the
-repo today, and the three acceptance criteria above are exhaustive for
-the filename rename + cross-ref update + CLAUDE.md tightening.
+repo today, and the three acceptance criteria above cover the
+deliverables of this ticket: that the 9 renames produced rename
+detection, that the live cross-refs in `docs/design/orchestrator.md`
+point at the new path, and that no stale references to the 9 specific
+old basenames survive outside the carve-outs.
 
 ## Reasoning
 
@@ -239,12 +261,18 @@ historical meaning of the carve-out. This precedent is established in
 itself one of the files being renamed in this ticket — leaving its own
 historical references untouched is consistent with the principle.
 
-**Why `git mv`, not `mv` + `git add`.** Git rename detection is heuristic:
-it works on `mv` + `git add` as long as the file's content is unchanged at
-detection time, but `git mv` is a clearer signal of intent and keeps the
-operation atomic in the working tree. The renamed files are foundational
-context documents — `git blame` and `git log --follow` get used on them by
-operators learning the system, so preserving the rename trail matters.
+**Why recommend `git mv` over `mv` + `git add`.** Both produce the
+`R100` rename detection that criterion 3 verifies, so the contract
+holds either way. `git mv` is recommended because it's a single
+command that keeps the working tree consistent at every step — the
+old path is removed and the new path is staged in the same operation.
+With `mv` + `git add`, the implementer has to remember to `git add`
+both the deletion and the addition; forgetting one half leaves a
+partial commit that fails criterion 3. The renamed files are
+foundational context documents that get hit by `git blame` and
+`git log --follow` regularly, so the rename trail matters — but `R100`
+detection (which both paths produce) is what preserves the trail, not
+which command produced it.
 
 ## Prerequisites
 
