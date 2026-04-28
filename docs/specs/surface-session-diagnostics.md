@@ -194,6 +194,20 @@ the script accepts every outcome but no-ops when it doesn't apply.
 - **H2-dirtytree** (always-on for eligible outcomes). `git status
   --porcelain` non-empty → emit `uncommitted edits left in worktree`.
 
+  **Exclude orchestrator-owned files** before emitting. The
+  orchestrator writes `${CLAUDE_PLUGIN_OPTION_STDOUT_LOG_FILENAME}`
+  (default `ralph-output.log`) and `.sensible-ralph-base-sha` into the
+  worktree as part of normal dispatch. The repo's `.gitignore`
+  ignores both at their default names, but operators can override
+  `stdout_log_filename` via plugin config; an operator who renames
+  without updating their repo's `.gitignore` would see false-positive
+  H2 hints on every run. The implementation must filter out paths
+  matching either filename from the porcelain output before deciding
+  whether to fire — for example, by piping through
+  `grep -vE "^.. (\.sensible-ralph-base-sha|${CLAUDE_PLUGIN_OPTION_STDOUT_LOG_FILENAME})$"`
+  or equivalent. After filtering, fire only if at least one line
+  remains.
+
 - **H3-skill-context-loss** (gated to `failed` /
   `exit_clean_no_review` only). Defensive JSONL parsing: read up to
   the last 5 events whose `type == "assistant"`. Fire if (a) at least
@@ -461,10 +475,10 @@ start_record="$(jq -n \
     transcript_path: $tp, worktree_log_path: $wlp}')"
 ```
 
-Existing dispatch invocation gains one flag:
+Existing dispatch invocation gains one flag and an env-var override:
 
 ```bash
-claude -p \
+CLAUDE_CONFIG_DIR="$config_dir" claude -p \
   --permission-mode auto \
   --model "$CLAUDE_PLUGIN_OPTION_MODEL" \
   --name "$issue_id: $title" \
@@ -472,6 +486,14 @@ claude -p \
   "$prompt" \
   2>&1 | tee "$path/$CLAUDE_PLUGIN_OPTION_STDOUT_LOG_FILENAME"
 ```
+
+The `CLAUDE_CONFIG_DIR="$config_dir"` prefix forces the subprocess to
+use the **same** config directory the orchestrator just normalized.
+Without this, an empty/relative `CLAUDE_CONFIG_DIR` set in the parent
+shell would cause the orchestrator to record one path while claude
+writes the JSONL elsewhere (or fails with a config error). With it,
+the recorded `transcript_path` and the actual JSONL location stay in
+sync regardless of caller-side misconfiguration.
 
 ### Edit 3 — invoke `diagnose_session.sh` and thread hint through both control-flow paths
 
@@ -653,11 +675,14 @@ get distinct UUIDs. Claude Code requires `--session-id` to be unique per
 active session; v4 UUID collision across two simultaneous dispatches is
 negligible.
 
-The diagnosis call is synchronous within `_dispatch_issue` — bounded by
-a few git commands plus a tail of one JSONL file (≈100 ms vs. 5–15 min
-of `claude -p` wall time). No timeout is set; if the helper hangs the
-orchestrator hangs, but the helper has no network, no Linear calls, and
-only local-FS reads.
+The diagnosis call is synchronous within `_dispatch_issue` and **hard
+bounded** by the 5-second `timeout`/`gtimeout` wrapper described in
+Edit 3 above. When neither `timeout` nor `gtimeout` is available, the
+helper runs unbounded with a one-time stderr note; in that degraded
+mode H3's own internal 2-second poll cap remains in place, and H1/H2
+are bounded by physics (a few git commands, ~100 ms worst case). The
+authoritative timeout contract lives in Edit 3; this section is the
+operator-facing summary.
 
 ## Files touched
 
