@@ -124,7 +124,7 @@ diagnose_session.sh <outcome> <worktree_path> <spec_base_sha> <transcript_path>
 | `exit_clean_no_review` | yes | yes | yes |
 | `failed` | yes | yes | yes |
 | `unknown_post_state` | yes | yes | no |
-| `setup_failed` | yes (only if worktree exists) | yes (only if worktree exists) | no |
+| `setup_failed` | no — `failed_step` is the correct diagnostic | no | no |
 | `local_residue` | n/a — script not invoked | n/a | n/a |
 | `skipped` | n/a — script not invoked | n/a | n/a |
 
@@ -161,8 +161,9 @@ the script accepts every outcome but no-ops when it doesn't apply.
   `tac` is not on macOS; the implementation must use `tail -r` (BSD)
   or an `awk` line-reverser. Implementer choice.
 
-  Skill-name extraction: try `.message.content[].input.skill` first,
-  then fall back to `.input.skill_name`. If neither resolves, emit the
+  Skill-name extraction: read
+  `.message.content[] | select(.type == "tool_use" and .name == "Skill") | .input.skill`
+  from the matched assistant turn. If the path doesn't resolve, emit the
   hint without the parenthetical name (`context-loss after Skill
   (claude-code#17351)`); never fail the heuristic over name lookup.
 
@@ -183,8 +184,9 @@ existing one-line row, if `outcome` is not `in_review` and not
       session: <transcript_path>
 ```
 
-- `↳` is U+21B3 (ASCII-printable terminal glyph; `printf '\xe2\x86\xb3'`
-  for portability).
+- `↳` is U+21B3 — emitted as the UTF-8 byte sequence `\xe2\x86\xb3`
+  (`printf '\xe2\x86\xb3'`) so the renderer doesn't depend on the source
+  file's encoding being preserved through editing tools.
 - The `transcript:` line is the worktree log path (`ralph-output.log`),
   not the JSONL — operators get both, with the worktree log being the
   faster glance and the session JSONL being the deep-dive option.
@@ -221,14 +223,16 @@ only `outcome`, the existing renderer pre-deploy) keep working.
 
 ### `hint`
 - **Where:** end records on `exit_clean_no_review`, `failed`,
-  `unknown_post_state` (and on `setup_failed` if a git heuristic fires;
-  rare since `setup_failed` typically means no worktree existed).
+  `unknown_post_state`. The diagnose pass is invoked for these three
+  outcomes only.
 - **Format:** single string, semicolon-separated when multiple
   heuristics fire. **Field is omitted entirely** when no heuristic
   matched (do not write `"hint": ""`; absent is cleaner for `jq`
   consumers).
-- **Not on `in_review`:** the diagnose pass is invoked for non-success
-  outcomes only. Successful sessions don't get diagnostic noise.
+- **Not on `in_review`, `setup_failed`, `local_residue`, or `skipped`:**
+  successful sessions don't get diagnostic noise; `setup_failed` is
+  already characterized by `failed_step`; `local_residue` and `skipped`
+  never invoked claude.
 
 ### Illustrative end record (`exit_clean_no_review`)
 
