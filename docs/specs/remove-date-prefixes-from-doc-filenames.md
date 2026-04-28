@@ -115,7 +115,18 @@ or Linear issue header" and is left as-is.
     (it's a hypothetical name used to illustrate the pattern); the second
     is given as a counter-example of what a filename should NOT look like.
     Both serve their narrative purpose only at the historical paths they
-    name.
+    name. Additionally, this same frozen spec contains (under
+    "### CLAUDE.md convention block") a verbatim copy of the original
+    `## Documentation layers` text that was proposed for CLAUDE.md by
+    ENG-278. After ENG-305 lands, the version in this frozen spec will
+    no longer match the live CLAUDE.md (the frozen spec lacks the
+    "no date prefix" sentence that ENG-305 adds). That divergence is
+    by design — frozen specs are point-in-time records of what a
+    ticket added, and CLAUDE.md is the live source of truth for the
+    current convention. The same precedent that motivates this whole
+    out-of-scope list applies: do not retroactively edit the frozen
+    spec to make its proposed-CLAUDE.md text match the current
+    CLAUDE.md.
   Per the precedent in
   `docs/decisions/2026-04-25-frozen-spec-cross-refs-preserved.md`,
   retroactive edits to historical-narrative lists falsify the historical
@@ -163,71 +174,78 @@ branch:
 
 2. **The orchestrator.md cross-refs were rewritten to the correct new
    path, and no stale references to the 9 renamed files survive
-   anywhere except the carve-outs.** Four checks — two positive, two
-   negative.
+   anywhere except the carve-outs.** Three checks — two positive, one
+   negative — all scoped to the 9 specific basenames this ticket
+   renames.
 
-   - *Positive (new file resolves):* the new file exists at the expected
-     path after rename.
+   - *Positive (new file resolves):* the new file exists at the
+     expected path after rename.
      `test -f docs/decisions/progress-json-event-discriminator.md`
      exits with status 0.
-   - *Positive (live-doc refs point at the new path):* the new path
-     appears exactly twice in `docs/design/orchestrator.md`.
-     `grep -cF 'docs/decisions/progress-json-event-discriminator.md' docs/design/orchestrator.md`
-     prints `2`.
-   - *Negative (live-doc surfaces have no date-prefixed file
-     references at all — the convention as a durable invariant):*
-     `grep -rIEln '[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9-]+\.md' docs/design/ CLAUDE.md`
-     returns no matches (status 1). This is pattern-based, not
-     date-coupled — it would catch any future date-prefixed reference
-     leaking into the design layer or CLAUDE.md, not just today's
-     known dates.
-   - *Negative (no stale references to the 9 specific renamed files
-     outside the carve-outs):* For each old basename in the rename
-     table, run `grep -rIln -F "<old-basename>" .` (excluding `.git/`
-     and `.worktrees/`). The matches must be a subset of:
+   - *Positive (the orchestrator.md refs were rewritten):* the old
+     basename appears nowhere in `docs/design/orchestrator.md` and the
+     new basename appears at least once.
+     `grep -cF '2026-04-25-progress-json-event-discriminator' docs/design/orchestrator.md`
+     prints `0`.
+     `grep -cF 'progress-json-event-discriminator.md' docs/design/orchestrator.md`
+     prints a number ≥ 2 (the rewritten count of the originally-paired
+     references; today that's exactly 2, and the implementer's diff
+     shouldn't add or remove any so it should remain 2 — but the
+     criterion accepts ≥ 2 to avoid a false failure if a legitimate
+     third reference is added by a different ticket landing on the
+     branch).
+   - *Negative (no stale references to the 9 specific renamed
+     basenames outside the carve-outs):* For each old basename in the
+     rename table, run `grep -rIln -F "<old-basename>" .` (excluding
+     `.git/` and `.worktrees/`). The matches must be a subset of:
      - `docs/specs/remove-date-prefixes-from-doc-filenames.md` — this
        spec quotes all 9 old paths in its rename table by design.
      - `docs/specs/rename-to-sensible-ralph.md` — frozen-spec
-       carve-out (matches 2 of the 9 basenames per "Out of scope" above).
+       carve-out (matches 2 of the 9 basenames per "Out of scope"
+       above).
      - Any file under `docs/archive/**` — point-in-time records (none
-       expected to match the 9 specific basenames today, but allowed if
-       a future archived doc happens to reference one).
+       expected to match the 9 specific basenames today, but allowed
+       if a future archived doc happens to reference one).
 
      Any match outside this allowlist is a stale reference that
      escaped the rename — fix it before marking the work complete.
 
-   Note: a broader `[0-9]{4}-` pattern grep across the whole repo
-   intentionally is *not* an acceptance criterion. This ticket renames
-   only the 9 files in the table. Other files contain dated references
-   to **different** historical artifacts — a deleted `docs/plans/`
-   tree, chezmoi-repo paths from before the plugin was extracted, an
-   archived recon note. Those references are out of scope: this ticket
-   is not a sweep of every dated reference in the repo.
+   Note: a broader `[0-9]{4}-` pattern grep is intentionally *not* an
+   acceptance criterion. This ticket renames only the 9 files in the
+   table. Other files contain dated references to **different**
+   historical artifacts — a deleted `docs/plans/` tree, chezmoi-repo
+   paths from before the plugin was extracted, an archived recon
+   note. Those references are out of scope: this ticket is not a
+   sweep of every dated reference in the repo.
 
-3. **The work commit's diff is exactly what the spec describes,
-   including rename detection.** Run:
+3. **The work commit's diff over the relevant paths is exactly what
+   the spec describes, including rename detection.** Run, scoped to
+   only the paths this ticket touches (so unrelated branch state — if
+   any — can't poison the check):
 
    ```sh
-   git diff --name-status -M <spec-tip>..HEAD \
-     -- ':!docs/specs/remove-date-prefixes-from-doc-filenames.md'
+   git diff --name-status -M <spec-tip>..HEAD -- \
+     'docs/specs/' 'docs/decisions/' 'docs/design/orchestrator.md' \
+     'CLAUDE.md' \
+     ':!docs/specs/remove-date-prefixes-from-doc-filenames.md'
    ```
 
    …where `<spec-tip>` is the most recent `/sr-spec` commit (visible at
    the tip of the branch when `/sr-implement` starts). The output must
-   contain exactly 11 lines:
-   - 9 lines beginning with `R100<TAB><old-path><TAB><new-path>` — one
-     per rename in the table above. The `R100` is the rename score from
-     `-M`; it requires the renamed file's content to be byte-identical
-     across the rename, which is the case here (none of the renamed
-     files' content changes).
+   contain exactly 11 lines, in any order:
+   - 9 lines, each beginning with `R100<TAB><old-path><TAB><new-path>`
+     — one per rename in the table above. The `R100` rename score
+     requires the renamed file's content to be byte-identical across
+     the rename, which is the case here (none of the renamed files'
+     content changes).
    - 1 line `M<TAB>docs/design/orchestrator.md` — the cross-ref fix.
    - 1 line `M<TAB>CLAUDE.md` — the doc-layer convention tightening.
 
-   No other lines in the output. `git mv` is the recommended path because
-   it produces this outcome cleanly; the test here is the rename-detection
-   outcome itself, not the tool that produced it. (Plain `mv` followed by
-   `git add` of both old and new can also produce `R100` if content is
-   unchanged, but `git mv` is more direct and atomic.)
+   No other lines in the output. The pathspecs above narrow the diff to
+   the paths this ticket is responsible for, so the criterion is robust
+   to other commits the implementer or codex iteration may add to the
+   branch (e.g., spec doc fixes, which are excluded by the
+   `':!docs/specs/remove-date-prefixes-from-doc-filenames.md'` exclusion).
 
 No bats coverage is added — there are no tests for doc filenames in the
 repo today, and the three acceptance criteria above cover the
