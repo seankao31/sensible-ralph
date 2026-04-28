@@ -50,8 +50,11 @@ Two reasons:
 rename.
 
 **Live cross-reference updates in `docs/design/orchestrator.md`** — two
-occurrences (currently at lines 184 and 194), both pointing at
-`docs/decisions/2026-04-25-progress-json-event-discriminator.md`:
+occurrences, both pointing at
+`docs/decisions/2026-04-25-progress-json-event-discriminator.md` (one
+inline cross-ref in the schema description, one bullet under "See also").
+Locate by substring rather than line number — line numbers may shift
+between spec time and implementation time:
 
 ```diff
 -See `docs/decisions/2026-04-25-progress-json-event-discriminator.md` for the alternatives considered.
@@ -63,10 +66,11 @@ occurrences (currently at lines 184 and 194), both pointing at
 +- `docs/decisions/progress-json-event-discriminator.md` — why `event` is a discriminator field rather than a separate file or nested structure.
 ```
 
-**`CLAUDE.md` "Documentation layers" section** — extend the kebab-case-
-no-date phrasing currently scoped to `docs/design/` so it covers all three
-layers. Add the bolded sentence to each of the `docs/specs/` and
-`docs/decisions/` paragraphs:
+**`CLAUDE.md` "Documentation layers" section** — the project-root
+`CLAUDE.md` (`<repo-root>/CLAUDE.md`), not `~/.claude/CLAUDE.md`. Extend the
+kebab-case-no-date phrasing currently scoped to `docs/design/` so it
+covers all three layers. Add the bolded sentence to each of the
+`docs/specs/` and `docs/decisions/` paragraphs:
 
 ```diff
  - **`docs/specs/`** — per-ticket implementation specs. Written by
@@ -148,9 +152,15 @@ branch:
    shows the file's pre-rename commit history (sanity check that `git mv`
    was used, not `mv` + `git add`). Pick any one of the renamed files for
    this check; if it works for one, the same machinery applies to all.
-4. `git diff --stat HEAD~1 HEAD` shows: 9 renames (each as `R100` —
-   100% identical content), 1 modified file in `docs/design/orchestrator.md`,
-   1 modified file at the repo root (`CLAUDE.md`). No other files touched.
+4. `git diff --stat <spec-commit>..HEAD -- ':!docs/specs/remove-date-prefixes-from-doc-filenames.md'`
+   — where `<spec-commit>` is the most recent commit added by `/sr-spec`
+   (visible at the tip of the branch when `/sr-implement` starts) — shows
+   exactly: 9 renames (each as `R100`, since none of the renamed files'
+   content is changed by this work), 1 modified file
+   `docs/design/orchestrator.md`, 1 modified file `CLAUDE.md` at the repo
+   root. No other files touched. The exclusion of the spec doc itself is
+   so iteration commits to the spec (if any happen during impl) don't show
+   up in the verification diff.
 
 No bats coverage is added — there are no tests for doc filenames in the
 repo today, and the four acceptance criteria above are exhaustive for the
