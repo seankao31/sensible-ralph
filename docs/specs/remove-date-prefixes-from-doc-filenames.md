@@ -170,6 +170,20 @@ Execute on the per-issue branch `eng-305-remove-date-prefixes-from-doc-filenames
 (already created by `/sr-spec`), inside the worktree at
 `.worktrees/eng-305-remove-date-prefixes-from-doc-filenames`.
 
+0. **Capture `SPEC_TIP` to a worktree-safe path before any other
+   action.** Acceptance criterion 3 treats a missing
+   `sensible-ralph-spec-tip-eng-305` file as a hard verification
+   failure, so this MUST be the very first action of the impl
+   session — before any rename, edit, or commit:
+
+   ```sh
+   SPEC_TIP_FILE=$(git rev-parse --git-path sensible-ralph-spec-tip-eng-305)
+   git rev-parse HEAD > "$SPEC_TIP_FILE"
+   ```
+
+   See "Acceptance criteria → criterion 3" below for why the resolver
+   form (`git rev-parse --git-path`) matters in a linked worktree.
+
 1. **Rename via `git mv`.** Run nine `git mv` invocations from the worktree
    root. Each command moves a single file; do not glob or batch them so
    that mistakes are localized. The renames are independent — order does
