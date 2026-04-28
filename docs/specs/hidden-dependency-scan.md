@@ -42,33 +42,42 @@ companion issue that adds the equivalent backstop scan to
 
 ## Architecture
 
-The scan lives at a new step 12 in `/sr-spec`, between the codex
-review gate (step 11) and finalize (which becomes step 13). Cleanup
-lives at a new step 8 in `/close-issue`, between the `Done`
-transition (step 7) and the codex-broker reap + worktree teardown
-(which becomes step 9).
+The scan lives at a new **step 11** in `/sr-spec`, between the codex
+review gate (existing step 10, unchanged) and finalize (currently
+step 11, renumbered to step 12). Cleanup lives at a new **step 8** in
+`/close-issue`, between the `Done` transition (step 7, unchanged) and
+the codex-broker reap + worktree teardown (currently step 8,
+renumbered to step 9).
+
+The renumbering is intentionally minimal — only the new steps and
+the immediately-following existing step bump. All other step numbers
+in both skills' SKILL.md stay as they are today.
 
 ```
-/sr-spec
-  step 1-10  (unchanged)
-  step 11    codex review gate
-  step 12    hidden-dependency scan          ← NEW
-               ├─ skills/sr-spec/scripts/hidden_dep_scan.sh   (data assembly)
-               ├─ structured-prompt reasoning (skill prose)   (judgment)
-               └─ on accepted findings: linear issue relation add
-                                        linear_add_label (once)
-                                        linear issue comment add (one comment per scan run)
-  step 13    finalize (description push, blocker verify, transition Approved)
+/sr-spec  (current step numbers: 1, 6.5, 7, 10, 11; with informal
+           "Spec self-review" and "User review gate" sections
+           between 7 and 10 — those informal sections stay informal)
+  step 1-10   (unchanged, including step 10 = codex review gate)
+  step 11     hidden-dependency scan         ← NEW
+                ├─ skills/sr-spec/scripts/hidden_dep_scan.sh   (data assembly)
+                ├─ structured-prompt reasoning (skill prose)   (judgment)
+                └─ on accepted findings: linear issue relation add
+                                         linear_add_label (once)
+                                         linear issue comment add (one comment per scan run)
+  step 12     finalize (description push, blocker verify, transition Approved;
+              was step 11)
 
-/close-issue
-  step 1-6   (unchanged)
-  step 7     transition Linear issue to Done
-  step 8     hidden-dep cleanup              ← NEW
-               └─ skills/close-issue/scripts/cleanup_hidden_dep.sh
-                   ├─ walk all comments, regex-extract parent IDs, dedup
-                   ├─ for each: linear issue relation delete (best-effort)
-                   └─ linear_remove_label (once)
-  step 9     reap codex broker + remove worktree (was step 8)
+/close-issue  (current numbered steps start at 4; pre-step ritual
+               sections — Capture issue ID, Main-checkout-CWD
+               invariant, Source plugin libs, Resolve FEATURE_BRANCH,
+               Pre-flight — are unnumbered and unchanged)
+  steps 4-7   (unchanged, including step 7 = transition Linear issue to Done)
+  step 8      hidden-dep cleanup             ← NEW
+                └─ skills/close-issue/scripts/cleanup_hidden_dep.sh
+                    ├─ walk all comments, regex-extract parent IDs, dedup
+                    ├─ for each: linear issue relation delete (best-effort)
+                    └─ linear_remove_label (once)
+  step 9      reap codex broker + remove worktree (was step 8)
 ```
 
 `/close-issue`'s cleanup runs **after** the `Done` transition: a
@@ -79,7 +88,7 @@ the high-value mutation lands first. Best-effort cleanup matches how
 The choice to run the scan **after** the codex gate is deliberate.
 The scan typically only adds blockers — it does not rewrite the spec.
 Running it on already-codex-cleared content avoids re-scanning after
-substantive codex iterations and keeps finalize step 13 focused on
+substantive codex iterations and keeps finalize step 12 focused on
 Linear-side mutations.
 
 ## The reserved marker
@@ -92,7 +101,7 @@ This exact string, anywhere in any comment body of any issue, is
 owned by this feature. The single source of truth for the format is
 the header comment of `skills/sr-spec/scripts/hidden_dep_scan.sh`,
 copied as a `## Marker format` section into both
-`skills/sr-spec/SKILL.md` (step 12) and `skills/close-issue/SKILL.md`
+`skills/sr-spec/SKILL.md` (step 11) and `skills/close-issue/SKILL.md`
 (step 8) so each skill is self-contained for a reader.
 
 `/close-issue`'s cleanup will treat any line matching the regex
@@ -188,7 +197,7 @@ Failure modes worth surfacing in the helper's stderr diagnostics:
 Callers (`/close-issue`'s cleanup helper) treat non-zero as
 log-and-continue.
 
-### 3. `/sr-spec` step 12 — the scan helper
+### 3. `/sr-spec` step 11 — the scan helper
 
 New file: `skills/sr-spec/scripts/hidden_dep_scan.sh`. Pure data
 assembly, no decisions. Does not write to Linear.
@@ -245,9 +254,9 @@ Failure modes (all return non-zero, with stderr diagnostics):
 The script writes nothing to Linear. All mutations happen in skill
 prose after operator confirmation.
 
-### 4. `/sr-spec` step 12 — reasoning and mutation (skill prose)
+### 4. `/sr-spec` step 11 — reasoning and mutation (skill prose)
 
-The skill's step 12 prose drives the rest:
+The skill's step 11 prose drives the rest:
 
 1. Run the helper:
    `bash "$CLAUDE_PLUGIN_ROOT/skills/sr-spec/scripts/hidden_dep_scan.sh" "$SPEC_FILE" "${PREREQS[@]}"`.
@@ -255,8 +264,8 @@ The skill's step 12 prose drives the rest:
 
 2. **Trivial fast path.** If `peers` is empty, or if every potential
    overlap maps to a parent already in `existing_blockers`, emit one
-   line — `step 12: No hidden dependencies detected.` — and proceed
-   to step 13.
+   line — `step 11: No hidden dependencies detected.` — and proceed
+   to step 12 (finalize).
 
 3. **Structured-prompt reasoning.** Present the new spec body and
    each peer's title + description and work the six-item checklist:
@@ -322,13 +331,13 @@ Will be removed automatically on `/close-issue`.
 Each line independently parseable by the cleanup helper's regex.
 Multiple comments accumulate fine across re-spec sessions.
 
-**Critical integration with finalize step 13:** the existing
+**Critical integration with finalize step 12:** the existing
 finalize sub-step 5 verifies `ACTUAL` (post-add Linear blocker set)
-matches `EXPECTED` (the in-shell `PREREQS` array). After step 12
+matches `EXPECTED` (the in-shell `PREREQS` array). After step 11
 mutates `PREREQS`, finalize sub-step 5 must continue to use the same
 array — no re-initialization. Implementers must NOT shadow `PREREQS`
 between steps. Call this out explicitly in the SKILL.md prose at
-both step 12 and step 13.
+both step 11 and step 12.
 
 ### 5. `/close-issue` step 8 — cleanup helper
 
@@ -393,7 +402,7 @@ mutations and have already landed.
 ## Edge cases
 
 - **No Approved peers in scope.** Helper emits `peers: []`; skill
-  prose fast-paths to "No hidden dependencies detected." Step 12
+  prose fast-paths to "No hidden dependencies detected." Step 11
   completes silently.
 - **Operator declared a logical `blocked-by` at design time AND scan
   finds path overlap with that same parent.** Helper's
@@ -411,9 +420,9 @@ mutations and have already landed.
   up everything via the union over all comments.
 - **Linear API fails mid-scan.** Helper exits non-zero; skill prose
   surfaces the failure. Operator chooses: retry the scan, skip step
-  12 entirely (proceed to finalize without scan — finalize succeeds
+  11 entirely (proceed to finalize without scan — finalize succeeds
   because `PREREQS` still has design-time edges), or abort the
-  dialogue. Skipping step 12 is acceptable and supported, with a
+  dialogue. Skipping step 11 is acceptable and supported, with a
   one-line warning logged to the operator's session output. The
   `/sr-start` backstop in ENG-281 will catch missed edges later.
 - **Operator manually edits a prior hidden-dep audit comment.** The
@@ -514,19 +523,22 @@ No `blocked-by` relations to declare for this issue.
    file path and design-time PREREQS as inputs, emits the documented
    JSON bundle on stdout, exits 0 on empty peers, 1 on Linear failure,
    2 on missing spec file.
-4. `skills/sr-spec/SKILL.md` documents step 12 with the
+4. `skills/sr-spec/SKILL.md` documents step 11 with the
    structured-prompt checklist, the per-candidate operator gate, the
    mutation order (relations first, then comment + label), the
-   `PREREQS`-augmentation contract with step 13, and the comment
-   format. Step numbers in SKILL.md are renumbered (current step 11
-   stays as codex; new step 12 is the scan; finalize moves to 13).
+   `PREREQS`-augmentation contract with step 12, and the comment
+   format. Step renumbering: existing step 11 (finalize) becomes
+   step 12; existing step 10 (codex) and all earlier numbers stay
+   unchanged; informal "Spec self-review" and "User review gate"
+   sections stay informal.
 5. `skills/close-issue/scripts/cleanup_hidden_dep.sh` exists,
    implements the per-line regex parser, walks all comments, dedups
    parent IDs, removes edges and the label best-effort, exits 0
    except on wholesale comment-list failure.
-6. `skills/close-issue/SKILL.md` documents step 8 (cleanup), step 9
-   (worktree teardown — was step 8). The new step's prose includes
-   the marker format and the contract with the scan.
+6. `skills/close-issue/SKILL.md` documents step 8 (cleanup) and
+   step 9 (reap codex broker + remove worktree — was step 8). The
+   new step's prose includes the marker format and the contract
+   with the scan.
 7. `skills/sr-start/scripts/lib/preflight_labels.sh::preflight_labels_check`
    includes `CLAUDE_PLUGIN_OPTION_HIDDEN_DEP_LABEL` in `required_vars`.
 8. `skills/sr-start/SKILL.md` Prerequisites lists the new
