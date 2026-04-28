@@ -428,6 +428,21 @@ guardrail makes the per-spec checks redundant — the right path is to
 file a follow-up that moves convention enforcement to CI and then
 narrows the per-ticket criteria, not to weaken ENG-305's contract.
 
+**`SPEC_TIP` persistence is autonomous-flow-resilient, not
+catastrophic-loss-resilient.** The persisted file under the
+worktree's gitdir survives shell restart, terminal change, and
+within-session re-entry — the failure modes that occur during a
+single `/sr-implement` session. It does NOT survive worktree
+deletion, fresh-clone verification, or recovery from a checkout that
+never had the file. Those scenarios are out of the autonomous flow's
+contract: `/sr-implement` is dispatched into a per-issue worktree,
+performs both the work and the verification in the same session, and
+hands off via `/prepare-for-review` from that same worktree.
+Catastrophic loss (e.g., worktree wiped between impl and review) is
+treated as a re-dispatch case — file a follow-up if a tracked-metadata
+recovery mechanism (e.g., a `Spec-Tip:` commit trailer) becomes
+needed.
+
 **Why leave `rename-to-sensible-ralph.md` untouched.** The file is a
 frozen spec for ENG-276. Two of the renamed filenames appear in its
 "Spec filenames containing `ralph`" section, which explicitly states "the
