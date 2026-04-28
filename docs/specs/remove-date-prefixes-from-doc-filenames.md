@@ -182,12 +182,15 @@ branch:
      expected path after rename.
      `test -f docs/decisions/progress-json-event-discriminator.md`
      exits with status 0.
-   - *Positive (the orchestrator.md refs were rewritten):* the old
-     basename appears nowhere in `docs/design/orchestrator.md` and the
-     new basename appears at least once.
-     `grep -cF '2026-04-25-progress-json-event-discriminator' docs/design/orchestrator.md`
+   - *Positive (the orchestrator.md refs were rewritten to the exact
+     correct path):* the old full path is gone and the new full path
+     is present at least twice. The path must be the *full* path
+     `docs/decisions/progress-json-event-discriminator.md`, not a
+     basename-only or wrong-directory variant — basename-only checks
+     would falsely accept e.g. `docs/specs/progress-json-event-discriminator.md`.
+     `grep -cF 'docs/decisions/2026-04-25-progress-json-event-discriminator.md' docs/design/orchestrator.md`
      prints `0`.
-     `grep -cF 'progress-json-event-discriminator.md' docs/design/orchestrator.md`
+     `grep -cF 'docs/decisions/progress-json-event-discriminator.md' docs/design/orchestrator.md`
      prints a number ≥ 2 (the rewritten count of the originally-paired
      references; today that's exactly 2, and the implementer's diff
      shouldn't add or remove any so it should remain 2 — but the
@@ -227,20 +230,33 @@ branch:
    implementation work begins — i.e., the last commit on the branch
    when `/sr-implement` is dispatched.
 
-   The implementer MUST record it deterministically as the very first
-   action of the impl session, before making any other change:
+   The implementer MUST persist `SPEC_TIP` to a durable artifact
+   inside `.git/` as the very first action of the impl session,
+   before making any other change. `.git/` is excluded from every
+   pathspec and grep in this spec, so it cannot pollute the
+   verification:
 
    ```sh
-   SPEC_TIP=$(git rev-parse HEAD)
+   git rev-parse HEAD > .git/sensible-ralph-spec-tip-eng-305
    # …perform the rename + cross-ref + CLAUDE.md edits below…
    ```
 
-   Do NOT try to reconstruct `SPEC_TIP` after the fact from commit
-   metadata (subject prefixes, author, etc.) — this ticket is itself
-   a `docs/` change and a reasonable work-commit subject like
-   `docs(spec): ...` could collapse a heuristic selector to `HEAD`,
-   producing an empty diff instead of the expected 11 lines. The
-   recorded-up-front SHA is the only sound source for `SPEC_TIP`.
+   When verification runs (in the same session or a later one), read
+   it back:
+
+   ```sh
+   SPEC_TIP=$(cat .git/sensible-ralph-spec-tip-eng-305)
+   ```
+
+   If `.git/sensible-ralph-spec-tip-eng-305` is missing at
+   verification time, the implementer skipped the durable-record
+   step — that is itself a verification failure, not a recoverable
+   condition. Do NOT try to reconstruct `SPEC_TIP` after the fact
+   from commit metadata (subject prefixes, author, etc.) — this
+   ticket is itself a `docs/` change and a reasonable work-commit
+   subject like `docs(spec): ...` could collapse a heuristic selector
+   to `HEAD`, producing an empty diff instead of the expected 11
+   lines. The persisted file is the only sound source for `SPEC_TIP`.
 
    Then run, scoped to only the paths this ticket touches (so
    unrelated changes to other paths — if any — can't poison the
@@ -347,9 +363,20 @@ which command produced it.
 
 ## Prerequisites
 
-None. No `blocked-by` Linear relations needed. The work touches only
-`docs/` and `CLAUDE.md`; no callable surfaces, no other in-flight ticket
-needs to land first.
+No `blocked-by` Linear relations. The work touches only `docs/` and
+`CLAUDE.md`; no callable surfaces, no other in-flight ticket needs to
+land first.
+
+The acceptance criteria assume **branch isolation** — that the
+issue's per-issue branch contains only the spec commits + this
+ticket's work commits, with no concurrent unrelated edits to
+`docs/specs/`, `docs/decisions/`, `docs/design/orchestrator.md`, or
+`CLAUDE.md`. This is the same isolation the autonomous
+one-issue-at-a-time `/sr-start` flow already enforces, so it's not
+called out as a `blocked-by` relation. If a human operator runs this
+ticket interactively while concurrent doc work is on the same branch,
+they should land that work first (or rebase ENG-305 onto it) before
+verifying.
 
 ## Estimate
 
