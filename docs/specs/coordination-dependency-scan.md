@@ -61,15 +61,19 @@ in both skills' SKILL.md stay as they are today.
   step 11     coord-dep scan (operator-interaction-only; NO Linear writes)  ← NEW
                 ├─ skills/sr-spec/scripts/coord_dep_scan.sh   (data assembly)
                 ├─ structured-prompt reasoning (skill prose)   (judgment)
-                └─ produces in-shell `accepted_edges` array consumed by step 12
+                └─ writes <worktree>/.sensible-ralph-coord-dep.json (transport file)
   step 12     finalize (was step 11; absorbs coord-dep writes from step 11):
+                ├─ read accepted_edges from transport file
                 ├─ capture INITIAL_BLOCKERS
                 ├─ push spec description
-                ├─ if accepted_edges non-empty: post audit comment FIRST (abort on fail)
                 ├─ relation-add for ADD_LIST = (PREREQS ∪ accepted_parents) \ INITIAL_BLOCKERS
-                ├─ if accepted_edges non-empty: linear_add_label (coord-dep)
-                ├─ verify ACTUAL == INITIAL_BLOCKERS ∪ PREREQS ∪ accepted_parents
-                └─ transition Approved
+                │     (per-edge retry/skip/abort on failure; track committed_parents)
+                ├─ if committed coord-dep edges non-empty: post audit comment LAST
+                │     (with structured ```coord-dep-audit block as cleanup authority)
+                ├─ if committed coord-dep edges non-empty: linear_add_label (coord-dep)
+                ├─ verify ACTUAL == INITIAL_BLOCKERS ∪ PREREQS ∪ committed_parents
+                ├─ transition Approved
+                └─ delete transport file on success
 
 /close-issue  (current numbered steps start at 4; pre-step ritual
                sections — Capture issue ID, Main-checkout-CWD
@@ -95,52 +99,88 @@ Running it on already-codex-cleared content avoids re-scanning after
 substantive codex iterations and keeps finalize step 12 focused on
 Linear-side mutations.
 
-## The reserved marker
+## The audit-comment contract
 
-The cleanup parser is **strictly line-anchored** and requires the
-marker to appear as the leading content of a markdown list-bullet
-line:
+Each finalize that adds at least one coord-dep edge posts ONE
+consolidated audit comment with two parts: a human-readable bullet
+list and a **structured machine-readable JSON block**. Cleanup
+parses ONLY the structured block — never the bullet text or any
+other free-form comment content.
 
+Comment format:
+
+````
+**Coordination dependencies added by /sr-spec scan**
+
+- blocked-by ENG-X — both restructure `lib/scope.sh`'s `_scope_load` function
+- blocked-by ENG-Y — ENG-Y renames `foo.sh` which this spec edits inline
+
+```coord-dep-audit
+{"parents": ["ENG-X", "ENG-Y"]}
 ```
-- **coord-dep**: blocked-by ENG-NNN — <rationale>
+
+Will be removed automatically on `/close-issue`.
+````
+
+Two distinct contracts:
+
+- **Bullet lines** — human-readable rationale for operator review.
+  Consumed by humans only. Not parsed by any tool.
+- **Fenced block with the language tag `coord-dep-audit`** — the
+  cleanup-authoritative source. Cleanup uses awk/jq to extract
+  exactly these blocks and reads `parents` from each. This is the
+  ONLY way for a comment to instruct cleanup to delete relations.
+
+**Why a fenced JSON block (not free-form regex):**
+
+- The fence language tag `coord-dep-audit` is unusual enough that
+  prose accidentally typing it in a fenced block is implausible.
+- Cleanup ignores everything outside the structured block —
+  arbitrary comment content (operator notes, quoted examples,
+  even the bullet lines we ourselves write for human readability)
+  cannot become delete authority.
+- Forward-compatible: the JSON object can grow new keys (e.g., a
+  `run_id` or per-edge metadata) without breaking older cleanup
+  parsers.
+
+The cleanup extraction in `cleanup_coord_dep.sh`:
+
+```bash
+# Extract content between ```coord-dep-audit ... ``` fences across
+# all matching comment bodies. awk handles the multi-line pattern;
+# jq slurps each block and unions parents.
+parents=$(printf '%s' "$comments" | jq -r '.data.issue.comments.nodes[].body' \
+  | awk '/^```coord-dep-audit$/{flag=1; next} /^```$/{if(flag){print ""}; flag=0} flag' \
+  | jq -rs '[.[] | (.parents // [])] | flatten | unique | .[]?' 2>/dev/null \
+  | sort -u)
 ```
 
-The cleanup regex (the contract `cleanup_coord_dep.sh` enforces):
+The `awk` extracts only blocks fenced by ` ```coord-dep-audit ` and
+its matching ` ``` ` close. The `jq -rs` slurps all blocks as JSON
+documents, unions their `parents` arrays, dedups, prints one
+parent ID per line. If no blocks match or any block is malformed,
+the pipeline produces an empty `parents` (the cleanup's
+no-marker fast path then runs).
 
-```
-^- \*\*coord-dep\*\*:[[:space:]]+blocked-by[[:space:]]+ENG-[0-9]+
-```
-
-Mandatory leading `- ` (literal hyphen + space), then `**coord-dep**:`,
-then `blocked-by` then `ENG-NNN`. No optional whitespace before the
-`-`, no nested-bullet indentation, no alternate prose framing.
-
-Lines that mention the marker in any other shape — inline prose
-quoting it, regex/example tokens, indented code-fence content
-without the leading `- ` bullet — are NOT treated as removal
-targets. This is the deliberate trade-off: the format is restricted
-enough that arbitrary commentary about the feature won't accidentally
-mark a real edge for deletion.
-
-**Residual risk** (documented, not designed around): a comment that
-includes a fenced code block whose **first character on a line** is
-`-` followed by `**coord-dep**:` (e.g., a markdown-rendered example
-of an audit comment) WILL match the regex. The mitigation is
-discipline: prose explaining the marker should escape it (e.g.,
-`\\-` or use indented quoting `>`), and operator-facing docs/
-comments should avoid showing a faithful audit-line example without
-markup adjustments. A more aggressive sentinel (an opaque token
-that never appears in prose) was considered and rejected — it would
-trade away the human readability of audit comments for marginal
-robustness against an unlikely accident.
+**Residual limitation, documented:** if an operator manually
+removes a coord-dep relation and then later re-adds the same
+parent ID as a SEMANTIC `blocked-by`, cleanup will still delete
+that semantic relation when the issue closes (the JSON block
+records the parent ID, not the specific relation instance).
+Workaround: removing the marker entry from the audit comment by
+hand before closing. Provenance at the relation-instance level
+(e.g., comparing relation `createdAt` timestamps) was considered
+and rejected — Linear's API doesn't expose the data needed to
+distinguish reliably, and the scenario requires deliberate
+operator action that happens to match this pattern.
 
 The single source of truth for this format is the header comment of
-`skills/sr-spec/scripts/coord_dep_scan.sh`, copied as a `## Marker
-format` section into both `skills/sr-spec/SKILL.md` (step 11) and
-`skills/close-issue/SKILL.md` (step 8) so each skill is
-self-contained for a reader. `/sr-spec` (today) and `/sr-start`
+`skills/sr-spec/scripts/coord_dep_scan.sh`, copied as a `## Audit
+comment format` section into both `skills/sr-spec/SKILL.md`
+(step 12) and `skills/close-issue/SKILL.md` (step 8) so each skill
+is self-contained for a reader. `/sr-spec` (today) and `/sr-start`
 once ENG-281 lands both produce the same format; `/close-issue`'s
-cleanup uses the same regex regardless of which scan posted the
+cleanup parses identically regardless of which actor posted the
 comment.
 
 ## Components
@@ -284,12 +324,15 @@ prose after operator confirmation.
 
 ### 4. `/sr-spec` step 11 — reasoning, operator gate (skill prose)
 
-Step 11 is **operator-interaction-only**. It builds the in-shell
-`accepted_edges` array but performs **no Linear writes** — no
-comment, no relation-add, no label. All coord-dep mutations defer
-to step 12 (finalize) where they participate in the existing
-all-or-nothing-before-Approved sequence. This avoids residue
-leakage if finalize fails or the operator abandons after the scan.
+Step 11 is **operator-interaction-only**. It builds an
+`accepted_edges` list and persists it to a transport file at
+`<worktree>/.sensible-ralph-coord-dep.json` so step 12 can pick it
+up across the shell-process boundary. **No Linear writes** at step
+11 — no comment, no relation-add, no label. All coord-dep
+mutations defer to step 12 (finalize) where they participate in
+the existing all-or-nothing-before-Approved sequence. This avoids
+residue leakage if finalize fails or the operator abandons after
+the scan.
 
 1. **Label-existence preflight.** Verify the configured `coord-dep`
    label exists in the workspace:
@@ -343,39 +386,70 @@ leakage if finalize fails or the operator abandons after the scan.
    / `rename`), one-line rationale. Three choices:
    **accept / reject / edit-rationale**.
 
-6. **End of step 11.** Build `accepted_edges` from the accepted
-   candidates — an array of `{parent, rationale}` entries — and
-   proceed to step 12 (finalize). No Linear writes have happened.
+6. **End of step 11: persist `accepted_edges` to the transport
+   file.** Write the operator-confirmed edges to a JSON file at
+   `<worktree>/.sensible-ralph-coord-dep.json`. Step 12 reads
+   this file. The file format is a simple array of objects:
 
-   Shell-side state passed to step 12:
+   ```json
+   [
+     { "parent": "ENG-X", "rationale": "both restructure lib/scope.sh's _scope_load function" },
+     { "parent": "ENG-Y", "rationale": "ENG-Y renames foo.sh which this spec edits inline" }
+   ]
+   ```
+
+   Even when zero candidates were accepted, write an empty array
+   `[]` (not nothing) so step 12 can distinguish "step 11 ran and
+   accepted nothing" (file exists, empty array) from "step 11
+   never ran" (file absent — step 12 should treat that as the
+   no-coord-dep case but log a diagnostic if the operator
+   bypassed step 11).
+
+   Cross-process semantics: each Bash tool call in `/sr-spec`'s
+   skill prose is its own process. In-memory shell variables don't
+   survive across calls. The transport file is the *only* reliable
+   way to hand `accepted_edges` from step 11 to step 12.
+
+   Shell-side state passed to step 12 via the dialogue:
    - `PREREQS` — design-time prerequisites declared at step 6
-     (unchanged across step 11).
-   - `accepted_edges` — operator-confirmed coord-dep candidates
-     from this step 11 invocation. Each entry has `parent` (issue
-     ID) and `rationale` (one-line text). May be empty.
+     (still in the operator's dialogue context; step 12 re-derives
+     it from the conversation, same as it does today).
+   - The transport file path (deterministic — derived from the
+     worktree CWD at finalize time).
 
-**Comment format** (Approach C — one consolidated comment per
-finalize, marker repeats per line). Step 12 composes and posts
-this; step 11 just tells you what it'll look like:
-
-```
-**coord-dep** edges added by /sr-spec scan:
-
-- **coord-dep**: blocked-by ENG-X — both restructure `lib/scope.sh`'s `_scope_load` function
-- **coord-dep**: blocked-by ENG-Y — ENG-Y renames `foo.sh` which this spec edits inline
-
-Will be removed automatically on `/close-issue`.
-```
-
-Each line independently parseable by the cleanup helper's regex.
-Multiple comments accumulate fine across re-spec sessions.
+   Add `/.sensible-ralph-coord-dep.json` to the plugin's
+   `.gitignore` (alongside the other gitignored runtime files
+   listed in `docs/design/worktree-contract.md`'s "Required
+   `.gitignore` entries" section). The file is per-issue,
+   per-worktree, and ephemeral — successful finalize deletes it.
 
 **Integration with finalize step 12.** Step 11 only stages
-`accepted_edges`; step 12 absorbs the writes into its existing
-sub-step 5 ("Push spec, set blockers, verify"). Step 12's
-modified internal sequence:
+`accepted_edges` (in the transport file); step 12 absorbs the
+writes into its existing sub-step 5 ("Push spec, set blockers,
+verify"). Step 12's modified internal sequence:
 
-1. **Capture `INITIAL_BLOCKERS`** — current Linear `blocked-by`
+1. **Read `accepted_edges` from the transport file.**
+
+   ```bash
+   COORD_DEP_FILE="$WORKTREE_PATH/.sensible-ralph-coord-dep.json"
+   if [[ -f "$COORD_DEP_FILE" ]]; then
+     accepted_parents=()
+     while IFS= read -r p; do accepted_parents+=("$p"); done < <(
+       jq -r '.[].parent' "$COORD_DEP_FILE"
+     )
+   else
+     # No step-11 transport file present. Treat as no coord-dep edges.
+     # Log a diagnostic if the operator skipped step 11 deliberately.
+     accepted_parents=()
+   fi
+   ```
+
+   `accepted_parents` is the parent-ID-only projection of the
+   transport file's contents. The full `[{parent, rationale}, ...]`
+   structure is needed when composing the audit comment in
+   sub-step 6 below; keep the file path bound for that.
+
+2. **Capture `INITIAL_BLOCKERS`** — current Linear `blocked-by`
    set at start of finalize. On a re-spec path the issue may
    already have prior-session blockers; this snapshot lets the
    verify step include them in `EXPECTED`.
@@ -384,66 +458,132 @@ modified internal sequence:
    INITIAL_BLOCKERS=$(linear_get_issue_blockers "$ISSUE_ID" | jq -r '.[].id' | sort -u)
    ```
 
-2. **Push spec description** (existing).
+3. **Push spec description** (existing).
 
-3. **If `accepted_edges` non-empty: post audit comment FIRST.**
-   Compose the comment in the format above; `linear issue comment
-   add "$ISSUE_ID" --body-file <tmp>`. **If comment-post fails:
-   ABORT finalize** before any relation-add or label-add — leaves
-   the issue in `In Design`, no coord-dep residue. Operator's
-   choices: retry, abort `/sr-spec`, or manually post the comment
-   and re-run finalize. Why comment-first: `/close-issue`'s
-   cleanup is the ONLY mechanism that finds coord-dep edges. If
-   a relation-add lands but the comment doesn't, the edge leaks
-   permanently. Posting the comment first makes the audit trail
-   the load-bearing artifact.
-
-4. **Compute `ADD_LIST` and walk it.**
+4. **Compute `ADD_LIST` and walk it (relation-adds first; comment
+   posts AFTER).**
 
    ```bash
-   ADD_LIST=$(printf '%s\n' "${PREREQS[@]}" "${accepted_parents[@]+"${accepted_parents[@]}"}" \
+   ADD_LIST=$(printf '%s\n' "${PREREQS[@]+"${PREREQS[@]}"}" "${accepted_parents[@]+"${accepted_parents[@]}"}" \
      | sort -u | comm -23 - <(printf '%s\n' "$INITIAL_BLOCKERS"))
    ```
 
-   `accepted_parents` is the parent-ID-only projection of
-   `accepted_edges`. `comm -23` filters out anything already in
-   `INITIAL_BLOCKERS` so finalize doesn't attempt duplicate adds
-   (Linear's behavior on duplicate `blocked-by` adds is unreliable
-   across CLI versions — some error, some silently no-op).
+   `comm -23` filters out anything already in `INITIAL_BLOCKERS`
+   so finalize doesn't attempt duplicate adds (Linear's behavior
+   on duplicate `blocked-by` adds is unreliable across CLI
+   versions — some error, some silently no-op).
 
-   For each parent in `ADD_LIST`: `linear issue relation add
-   "$ISSUE_ID" blocked-by "$parent"`. On per-edge failure: surface
-   the error with three choices — **retry / skip-this-edge /
-   abort finalize**. Skip semantically removes the parent from the
-   operator's intent set: if the parent came from `accepted_edges`,
-   remove it from `accepted_edges` AND from the audit comment
-   (post-edit the comment, OR document that `/close-issue` cleanup
-   tolerates the over-claim via "edge absent (benign)"); if it
-   came from `PREREQS`, remove it from `PREREQS`. Abort exits
-   finalize cleanly: any edges already added remain (recoverable
-   on next finalize attempt), the audit comment is already posted,
-   the issue stays `In Design`.
+   Track which adds succeed:
 
-5. **If `accepted_edges` non-empty: add the coord-dep label** via
-   `linear_add_label "$ISSUE_ID" "$CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL"`.
-   Idempotent. On failure: log; continue. The comment is the
-   load-bearing artifact for cleanup, not the label.
+   ```bash
+   committed_parents=()
+   for parent in $ADD_LIST; do
+     if linear issue relation add "$ISSUE_ID" blocked-by "$parent"; then
+       committed_parents+=("$parent")
+     else
+       # Surface to operator: retry / skip-this-edge / abort finalize.
+     fi
+   done
+   ```
 
-6. **Verify** — compute `EXPECTED` as the union of `INITIAL_BLOCKERS`,
-   `PREREQS`, and the parent-IDs in `accepted_edges`:
+   - **retry**: re-attempt the same parent.
+   - **skip-this-edge**: REMOVE `$parent` from `accepted_parents`
+     (so the audit comment in sub-step 6 won't list it) AND from
+     `PREREQS` (if it originated there). Skip is "operator
+     changed their mind in light of failure"; nothing claims this
+     edge afterward.
+   - **abort finalize**: stop the loop with whatever's in
+     `committed_parents` so far. The audit comment has NOT been
+     posted yet (we post it AFTER this loop), so successfully-added
+     edges have NO audit trail — surface a recovery recipe (see
+     sub-step 6 abort path).
+
+   The comment-LAST ordering is deliberate. Posting the comment
+   AFTER the relation-adds means the comment can list ONLY
+   parents whose relations actually landed — eliminating the
+   "skip leaves over-claim that cleanup later treats as
+   destructive delete authority" failure mode. The trade-off: a
+   comment-post failure after relation-adds succeed leaves
+   relations without an audit trail, so `/close-issue`'s cleanup
+   will not auto-discover them. Mitigation in sub-step 6.
+
+5. **If `committed_parents` is empty AND `accepted_parents` was
+   non-empty (i.e., every accepted edge failed and was skipped or
+   the operator aborted with zero successful adds):** skip
+   sub-step 6 (no audit comment to post — there's nothing to
+   audit) and sub-step 7 (no label needed). Fall through to
+   sub-step 8 (verify).
+
+6. **If `committed_parents ∩ accepted_parents` is non-empty: post
+   the audit comment.**
+
+   Compose the comment using the format from "The audit-comment
+   contract" above. Bullet lines list every committed coord-dep
+   parent (rationales pulled from the transport file by parent
+   ID). The structured ` ```coord-dep-audit ` block lists ONLY
+   the committed coord-dep parents in `parents`.
+
+   ```bash
+   committed_coord_parents=$(comm -12 \
+     <(printf '%s\n' "${committed_parents[@]+"${committed_parents[@]}"}" | sort -u) \
+     <(printf '%s\n' "${accepted_parents[@]+"${accepted_parents[@]}"}" | sort -u))
+   # Compose body using committed_coord_parents + transport file rationales.
+   linear issue comment add "$ISSUE_ID" --body-file <tmp>
+   ```
+
+   **If comment-post fails:** the relations are already in Linear
+   without an audit trail. Surface to operator with three choices:
+   - **retry comment-post** (Linear API hiccups are usually
+     transient; retry has high success rate).
+   - **proceed-anyway**: print the comment body to the operator's
+     session log; operator can manually post via Linear UI. Do NOT
+     transition state. Issue stays `In Design`. The relations are
+     orphaned-from-cleanup until the comment lands; document this
+     in the operator-facing message and provide an exact recovery
+     recipe (re-post the comment OR `linear issue relation delete`
+     each committed parent).
+   - **rollback**: walk `committed_parents`, attempt
+     `linear issue relation delete` on each. Best-effort; surface
+     residue. After rollback, issue stays `In Design`; operator
+     can re-run `/sr-spec` (which detects In Design and resumes).
+
+7. **If `committed_parents ∩ accepted_parents` is non-empty: add
+   the coord-dep label** via `linear_add_label "$ISSUE_ID"
+   "$CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL"`. Idempotent. On
+   failure: log; continue. The comment is the load-bearing
+   artifact for cleanup, not the label.
+
+8. **Verify** — compute `EXPECTED` as the union of `INITIAL_BLOCKERS`,
+   `PREREQS`, and `committed_parents` (NOT `accepted_parents` —
+   if the operator skipped some during the relation-add loop,
+   those parents aren't in Linear and shouldn't be in EXPECTED):
 
    ```bash
    EXPECTED=$(printf '%s\n' \
      "${INITIAL_BLOCKERS[@]+"${INITIAL_BLOCKERS[@]}"}" \
      "${PREREQS[@]+"${PREREQS[@]}"}" \
-     "${accepted_parents[@]+"${accepted_parents[@]}"}" \
+     "${committed_parents[@]+"${committed_parents[@]}"}" \
      | sort -u)
    ACTUAL=$(linear_get_issue_blockers "$ISSUE_ID" | jq -r '.[].id' | sort -u)
    ```
 
    On mismatch: STOP. Do not transition state. The discrepancy
-   means a relation-add silently failed or the issue's blocker
-   set drifted mid-finalize; either is operator-investigable.
+   means a relation-add silently failed (without our error
+   detection catching it) or the issue's blocker set drifted
+   mid-finalize; either is operator-investigable.
+
+9. **On successful state transition (existing sub-step 6):
+   delete the transport file.**
+
+   ```bash
+   rm -f "$WORKTREE_PATH/.sensible-ralph-coord-dep.json"
+   ```
+
+   Per-issue ephemeral state. If finalize fails before this point,
+   the file persists — re-running `/sr-spec` (which detects In
+   Design and resumes) will pick up the same `accepted_edges` and
+   re-run the relation-adds with the duplicate-skip filter
+   (`comm -23` against the now-larger `INITIAL_BLOCKERS`).
 
 The `${arr[@]+"${arr[@]}"}` pattern expands to nothing when the
 array is empty, sidestepping bash 3.2's unbound-variable fault
@@ -451,9 +591,9 @@ under `set -u`. Same pattern `lib/linear.sh::linear_add_label`
 uses.
 
 Call this contract out explicitly in the SKILL.md prose at both
-step 11 (where `accepted_edges` is built) and step 12 (where
-`INITIAL_BLOCKERS` / `ADD_LIST` / `EXPECTED` are computed and
-the audit comment + relations + label are written).
+step 11 (where `accepted_edges` is staged into the transport
+file) and step 12 (where the file is read, relations are added,
+and the audit comment is posted last).
 
 ### 5. `/close-issue` step 8 — cleanup helper
 
@@ -466,16 +606,16 @@ Inputs:
 Behavior:
 
 ```bash
-# 1. Server-side query for comments containing the marker. linear's
-#    `issue comment list` CLI returns only the first ~50 comments
-#    with no cursor flag exposed (see skills/prepare-for-review/SKILL.md
-#    for the same constraint), so on long-lived issues older
-#    coord-dep comments would be silently invisible. Use `linear api`
-#    with a body.contains filter instead — same pattern
-#    /prepare-for-review uses for its dedup check.
+# 1. Server-side query for comments containing the structured fence
+#    language tag `coord-dep-audit`. linear's `issue comment list`
+#    CLI truncates at ~50 with no cursor support
+#    (see skills/prepare-for-review/SKILL.md), so on long-lived
+#    issues older audit comments would be silently invisible.
+#    Use `linear api` with body.contains filtered on the fence tag
+#    — same pattern /prepare-for-review uses for its dedup check.
 comments=$(linear api \
   --variable "issueId=$ISSUE_ID" \
-  --variable "marker=**coord-dep**:" <<'GRAPHQL'
+  --variable "marker=coord-dep-audit" <<'GRAPHQL'
 query($issueId: String!, $marker: String!) {
   issue(id: $issueId) {
     comments(filter: { body: { contains: $marker } }, first: 250) {
@@ -490,30 +630,38 @@ GRAPHQL
   exit 1
 }
 
-# 2. Refuse silent truncation. 250 marker-matching comments on a
-#    single issue is implausible; if it ever happens, fail loud
+# 2. Refuse silent truncation. 250 audit-block-bearing comments on
+#    a single issue is implausible; if it ever happens, fail loud
 #    rather than work from incomplete data — the same posture
 #    `linear_get_issue_blockers` and `linear_label_exists` take.
 has_next=$(printf '%s' "$comments" | jq -r '.data.issue.comments.pageInfo.hasNextPage // false')
 if [[ "$has_next" == "true" ]]; then
-  echo "cleanup_coord_dep: marker-comment query truncated for $ISSUE_ID at 250 — aborting cleanup; investigate manually" >&2
+  echo "cleanup_coord_dep: audit-comment query truncated for $ISSUE_ID at 250 — aborting cleanup; investigate manually" >&2
   exit 1
 fi
 
-# 3. Line-anchored extraction across the matching comment bodies,
-#    dedup. The sed expression enforces the contract from "The
-#    reserved marker" section: literal leading `- ` bullet, then
-#    the marker pattern. Lines that don't match this exact shape
-#    are NOT treated as removal targets, even if they contain the
-#    marker text inline. The capture group extracts ONLY the
-#    parent-ID immediately after `blocked-by`, so any incidental
-#    `ENG-NNN` references in the rationale (e.g. "overlaps with
-#    ENG-Y's restructure") are NOT mistaken for parent IDs.
+# 3. Extract parent IDs from `coord-dep-audit` fenced blocks ONLY.
+#    The audit-comment contract (see "The audit-comment contract"
+#    section) declares this fence as the cleanup-authoritative
+#    source. Free-form prose mentioning the marker — bullet text,
+#    inline references, even a backticked quote of the fence
+#    language tag in a non-fenced context — is NOT delete authority.
 #
-#    sed with `-n` + `p` outputs only matched lines; returns 0
-#    even on zero matches, so no `|| true` guard is needed.
+#    awk extracts content between ```coord-dep-audit and the
+#    matching ```. The blank-line emit on close tells jq -s where
+#    one block ends so it can slurp them as separate JSON
+#    documents. jq parses each block, unions parents, dedups.
+#
+#    Returns empty (no exit code) if no blocks found or all blocks
+#    are malformed JSON — the cleanup's no-marker fast path runs.
+#    A genuine `jq` parse error on a malformed block is suppressed
+#    via `2>/dev/null` deliberately: an old / corrupted audit
+#    comment shouldn'"'"'t block legitimate cleanup. (Operators
+#    can investigate the comment by hand if cleanup is unexpectedly
+#    inert.)
 parents=$(printf '%s' "$comments" | jq -r '.data.issue.comments.nodes[].body' \
-  | sed -nE 's/^- \*\*coord-dep\*\*:[[:space:]]+blocked-by[[:space:]]+(ENG-[0-9]+).*/\1/p' \
+  | awk '/^```coord-dep-audit$/{flag=1; next} /^```$/{if(flag){print ""}; flag=0} flag' \
+  | jq -rs '[.[] | (.parents // [])] | flatten | unique | .[]?' 2>/dev/null \
   | sort -u)
 
 # Fast path: no marker matches → no edges to remove. Still attempt
@@ -600,24 +748,27 @@ Five properties guaranteed:
   the `Done` transition the normal close flow won't run again, so
   this persistent label is the operator's only signal that
   something needs hand-cleanup.
-- **Zero-match safe under `set -euo pipefail`.** The sed extraction
-  returns 0 even on no matches (no need for `|| true`); the
-  no-marker-comments path is the common case for issues without
-  any coord-dep history and exits cleanly with the label-remove
-  attempt.
+- **Zero-match safe under `set -euo pipefail`.** The
+  `awk`/`jq -rs` extraction returns 0 even when no fenced blocks
+  match; the no-audit-block path is the common case for issues
+  without any coord-dep history and exits cleanly with the
+  label-remove attempt.
 
 **Documented edge case (not designed around):** if an operator
 manually removes a coord-dep relation, then later re-adds the same
 parent ID as a SEMANTIC `blocked-by` relation, this cleanup will
-delete the (semantic) relation when the issue closes. The marker
-comment is the only provenance signal cleanup uses, and it doesn't
-encode "when this edge was added vs. removed." Workaround for
-operators repurposing a relation: also delete the corresponding
-marker line from the audit comment by hand. Cost-of-fixing this
-algorithmically (e.g., per-edge timestamps in the marker, or
-mutating the audit comment when the relation is removed) outweighs
-the value — the scenario is rare and requires deliberate operator
-action that happens to match this specific pattern.
+delete the (semantic) relation when the issue closes. The fenced
+JSON `parents` array records IDs only — not the specific relation
+instance — so cleanup can't distinguish "the relation we added"
+from "a different relation later created with the same parent
+ID." Workaround for operators repurposing a relation: edit the
+audit comment to remove that parent from the `parents` array in
+the ` ```coord-dep-audit ` block, OR delete the comment entirely.
+Cost-of-fixing this algorithmically (e.g., embedding relation
+`createdAt` timestamps in the JSON and matching against Linear's
+relation metadata at delete time) outweighs the value — the
+scenario is rare and requires deliberate operator action that
+happens to match this specific pattern.
 
 `/close-issue`'s SKILL.md step 8 invokes the helper:
 
@@ -700,14 +851,23 @@ harness:
    unit-tests the cleanup helper. Mocks `linear api`,
    `linear_get_issue_blockers`, `linear_label_exists`,
    `linear issue relation delete`, and `linear_remove_label`.
-   Asserts:
-   - Zero matching comments → label-remove still attempted, exit 0
-     (sed extraction returns 0 on no match without needing
-     `|| true`).
-   - Multi-comment dedup works (same parent in multiple matching
-     comments collapses to one delete attempt).
-   - Lines that mention the marker outside the leading-bullet form
-     (inline prose, alternative indentation) are NOT extracted.
+   Fixtures are GraphQL responses containing comment bodies with
+   ` ```coord-dep-audit ` fenced JSON blocks. Asserts:
+   - Zero matching comments → label-remove still attempted (gated
+     on `linear_label_exists`), exit 0.
+   - Multi-comment dedup works (same parent in fenced blocks
+     across multiple matching comments collapses to one delete
+     attempt).
+   - Bullet text mentioning a parent ID is NOT extracted (only
+     the JSON block is authoritative). A comment containing
+     `- blocked-by ENG-Z — some rationale` but with NO
+     `coord-dep-audit` block (or whose block doesn't include
+     `ENG-Z` in `parents`) does NOT trigger a delete on `ENG-Z`.
+   - Backticked or inline mention of `coord-dep-audit` outside a
+     fenced block is NOT treated as authority.
+   - Malformed JSON inside a fenced block is silently skipped
+     (jq parse error is suppressed via `2>/dev/null`); cleanup
+     proceeds based on whatever well-formed blocks remain.
    - `pageInfo.hasNextPage=true` aborts loud (exit 1, label not
      removed).
    - Concurrent-UI scenario A: parent absent before delete attempt,
@@ -721,13 +881,15 @@ harness:
    - Real failure: parent still present in post-delete re-fetch →
      real failure counted, label KEPT, exit 1.
    - All deletes succeed (post-delete re-fetch confirms all
-     marker-parents absent) → label removed, exit 0.
+     audit-block parents absent) → label removed, exit 0.
    - Workspace label missing on the success path → label-remove
      skipped (logged); exit 0 because relation-deletes still
-     completed cleanly.
-   - GraphQL/`jq`-parse failure (e.g., malformed response shape)
-     propagates as a non-zero exit — must NOT be masked by
-     `|| true` guards or treated as "no edges to delete."
+     completed cleanly. Same applies to the no-fenced-block fast
+     path.
+   - GraphQL response-shape failure (e.g., missing
+     `data.issue.comments.nodes`) propagates as a non-zero exit
+     — must NOT be masked by silently treating it as "no edges
+     to delete."
 
 The reasoning step itself is **not** unit-tested — it's Claude prose
 in `skills/sr-spec/SKILL.md`, not code. The structured-prompt
@@ -790,20 +952,32 @@ No `blocked-by` relations to declare for this issue.
 4. `skills/sr-spec/SKILL.md` documents step 11 as
    **operator-interaction-only** (label-existence preflight,
    structured-prompt checklist, per-candidate operator gate
-   producing the `accepted_edges` array, comment-format reference)
-   with **no Linear writes** at step 11. Step 12 (finalize) sub-step
-   5 absorbs all coord-dep mutations in this order:
-   (a) capture `INITIAL_BLOCKERS` (current Linear blocked-by set);
-   (b) push spec description;
-   (c) **if `accepted_edges` non-empty: post the coord-dep audit
-   comment FIRST — abort finalize on comment-post failure (no
-   relation-add or label happens, no residue);**
+   producing the `accepted_edges` list, audit-comment-format
+   reference) with **no Linear writes** at step 11. Step 11 ends
+   by writing `<worktree>/.sensible-ralph-coord-dep.json` (the
+   transport file) so step 12 picks up the operator-confirmed
+   edges across the shell-process boundary. Step 12 (finalize)
+   sub-step 5 absorbs all coord-dep mutations in this order:
+   (a) read `accepted_edges` from the transport file;
+   (b) capture `INITIAL_BLOCKERS` (current Linear blocked-by set);
+   (c) push spec description;
    (d) compute `ADD_LIST = (PREREQS ∪ accepted_parents) \
-   INITIAL_BLOCKERS` and walk it with `linear issue relation add`,
-   per-edge retry/skip/abort on failure;
-   (e) if `accepted_edges` non-empty: `linear_add_label` (best-effort);
-   (f) verify `ACTUAL == INITIAL_BLOCKERS ∪ PREREQS ∪ accepted_parents`;
-   (g) transition Approved.
+   INITIAL_BLOCKERS` and walk it with `linear issue relation add`
+   (per-edge retry/skip/abort on failure; track `committed_parents`);
+   (e) **if there were any committed coord-dep parents: post the
+   audit comment LAST**, listing only `committed_parents ∩
+   accepted_parents` and including the structured
+   ` ```coord-dep-audit ` block as the cleanup-authoritative
+   source. Comment-LAST eliminates the over-claim failure mode
+   from skipped edges; the trade-off (rare comment-post failure
+   leaves relations without an audit trail) is handled by an
+   operator-facing recovery path: retry / proceed-anyway-with-
+   manual-recipe / rollback;
+   (f) if any committed coord-dep parents: `linear_add_label`
+   (best-effort);
+   (g) verify `ACTUAL == INITIAL_BLOCKERS ∪ PREREQS ∪ committed_parents`;
+   (h) transition Approved;
+   (i) on success, `rm -f` the transport file.
    Both step 11 and step 12 prose explicitly call out the
    defer-writes-to-finalize contract (writes do NOT happen at
    step 11) so the `In Design` issue is residue-free until finalize
@@ -811,18 +985,25 @@ No `blocked-by` relations to declare for this issue.
    (finalize) becomes step 12; existing step 10 (codex) and all
    earlier numbers stay unchanged; informal "Spec self-review" and
    "User review gate" sections stay informal.
+
+   The plugin's `.gitignore` (the canonical list per
+   `docs/design/worktree-contract.md`'s "Required `.gitignore`
+   entries") gains `/.sensible-ralph-coord-dep.json`. Update
+   `worktree-contract.md`'s table to include the new entry.
 5. `skills/close-issue/scripts/cleanup_coord_dep.sh` exists and
    implements the cleanup contract:
-   - Queries marker-matching comments via `linear api` with a
-     `body.contains` filter (NOT via `linear issue comment list`,
-     which truncates at ~50 with no cursor support).
+   - Queries audit-block-bearing comments via `linear api` with a
+     `body.contains` filter on the fence language tag
+     `coord-dep-audit` (NOT via `linear issue comment list`, which
+     truncates at ~50 with no cursor support).
    - Refuses silent truncation when `pageInfo.hasNextPage=true`
      (exit 1, label retained).
-   - Extracts parent IDs via `sed -n ... p` with the line-anchored
-     leading-bullet regex (see "The reserved marker" section).
-     `sed` returns 0 on zero matches — no `|| true` guard, so a
-     genuine `jq`/parser failure still propagates under
-     `set -euo pipefail`.
+   - Extracts parent IDs ONLY from ` ```coord-dep-audit ` fenced
+     JSON blocks via `awk`+`jq -rs` (NOT from free-form bullet
+     text, prose mentions, or any non-fenced content). The
+     structured block is the cleanup-authoritative source per the
+     "audit-comment contract"; bullet text is human-readable but
+     NOT delete authority.
    - Attempts `linear issue relation delete` on every extracted
      parent (best effort), then **re-fetches** blockers and
      classifies failure from the post-delete state — NOT from a
@@ -831,7 +1012,8 @@ No `blocked-by` relations to declare for this issue.
      cleanup as failure. Implementers MUST NOT reintroduce the
      pre-fetch-snapshot pattern.
    - Verifies workspace label exists (via `linear_label_exists`)
-     before attempting `linear_remove_label`; skips just the
+     before attempting `linear_remove_label` on BOTH the
+     no-marker fast path AND the success path; skips just the
      label-remove call if missing, while still doing relation
      deletes.
    - Removes the `coord-dep` label only when no marker-parent
