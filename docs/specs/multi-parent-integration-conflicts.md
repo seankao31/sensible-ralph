@@ -401,8 +401,13 @@ SHA" section. Documents:
   (one entry per line: 40-char hex SHA optionally followed by a
   display ref name; first whitespace-separated token is the SHA),
   original parent order, lifecycle (helper-owned write/delete,
-  never mutated by orchestrator or session, cleaned up on every
-  successful run including zero-parent invocations).
+  never mutated by orchestrator or session, cleaned up at the end
+  of a successful merge-loop drain). Zero-parent helper
+  invocations are NOT a generic cleanup mechanism: marker-absent
+  zero-parent runs are a no-op success; marker-present zero-parent
+  runs refuse and preserve the marker (so a stale marker from a
+  prior failed dispatch surfaces as `setup_failed` rather than
+  being silently obliterated).
 - The SHA-pinning rationale: protects retries against parent-branch
   advancement so the agent's resolution work and `base_sha`'s
   "before the agent contributed" boundary remain stable.
@@ -587,8 +592,14 @@ purely doc-enforced.
    record `setup_failed` for the marker case).
 5. The dispatched session's `/sr-implement` Step 2 implements the
    recovery flow described in the "Session-side drain" section:
-   - Marker present → enter drain loop (with marker-content
-     validation: at least one parseable 40-char SHA in column 1).
+   - Marker present → validate FAIL-CLOSED. Every non-empty line
+     in the marker must match `^[0-9a-f]{40}( .*)?$`. If any
+     non-empty line fails this regex, OR the marker contains only
+     whitespace/empty content, red-flag (do NOT invoke the helper
+     even with the parseable subset — partial invocation would
+     mutate the branch before failing on the corrupt line). Only
+     when every non-empty line passes does the session enter the
+     drain loop.
    - Marker absent + MERGE_HEAD set OR `git diff --name-only
      --diff-filter=U` non-empty → red-flag (post Linear comment,
      exit clean — do not invoke `/prepare-for-review`). This
@@ -596,11 +607,11 @@ purely doc-enforced.
      unowned merge state.
    - Marker absent + clean tree → skip to Step 3.
 
-   Drain loop body (only entered when marker is present and
-   non-empty): resolve unmerged files → finish any in-progress
-   merge via `git rev-parse -q --verify MERGE_HEAD` +
-   `git commit --no-edit` → re-invoke `worktree_merge_parents` with
-   marker SHAs → loop until marker is gone.
+   Drain loop body (only entered when marker is present and every
+   non-empty line is well-formed): resolve unmerged files → finish
+   any in-progress merge via `git rev-parse -q --verify MERGE_HEAD`
+   + `git commit --no-edit` → re-invoke `worktree_merge_parents`
+   with marker SHAs → loop until marker is gone.
 
 5b. The plugin repo's `.gitignore` includes a new line
     `/.sensible-ralph-pending-merges` alongside the existing
