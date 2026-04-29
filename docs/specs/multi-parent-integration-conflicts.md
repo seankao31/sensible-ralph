@@ -487,6 +487,40 @@ honored.
 
 11b. `worktree_merge_parents: helper accepts a 40-char hex SHA as a parent arg`. Same shape as (11a) for the existing-worktree case. Required because the helpers have duplicated bodies.
 
+### Single-parent marker coverage (new under this spec)
+
+The single-parent conflict path now writes the marker too (the
+asymmetric early-return is removed, see "Helper changes"). Existing
+single-parent tests in `lib/test/worktree.bats` retain their original
+assertions (status 0, conflicts in tree) and pass without
+modification, but they do not cover the marker write. Add:
+
+14. `worktree_merge_parents: single-parent conflict writes
+    pending-merges marker with one SHA line`. Setup: create a
+    parent that conflicts with the worktree's HEAD on a file. Run
+    helper with one parent. Assert: status 0, conflict markers in
+    tree (existing assertion class), `.sensible-ralph-pending-merges`
+    exists, marker has exactly one line, marker line matches
+    `^[0-9a-f]{40}( .*)?$`, the SHA on that line equals
+    `git rev-parse <parent>` at the time of the call.
+
+15. `worktree_create_with_integration: single-parent conflict
+    writes pending-merges marker with one SHA line`. Same shape
+    as (14) for the create path. (Note: today the orchestrator
+    only routes single-parent through `worktree_merge_parents`'s
+    reuse path; the create-path INTEGRATION branch is multi-parent
+    only. This test still covers the helper contract for
+    parent_count=1, even if the orchestrator doesn't exercise it
+    today.)
+
+16. (orchestrator.bats) `reuse path single-parent conflict writes
+    pending-merges marker, dispatch succeeds`. Mirror of the
+    existing test at orchestrator.bats:1274 but additionally
+    asserts the marker file exists with one SHA line, alongside
+    the existing MERGING-state and base_sha-pre-merge assertions.
+    This locks in the single-parent rollout contract at
+    integration level.
+
 Total deltas in `lib/test/worktree.bats`: 2 flipped, 11 added.
 Plus 2 added in `skills/sr-start/scripts/test/orchestrator.bats`
 (see "Orchestrator integration tests" below). Existing single-parent
@@ -665,22 +699,33 @@ purely doc-enforced.
    marker side specifically — no existing single-parent test is
    deleted or has its assertions weakened.
 
-7b. **Rollout precondition.** Before applying this change to a
-    repo that has ENG-279's per-issue worktrees in flight, the
-    operator MUST verify no worktree is currently in MERGING/UU
-    state without a marker. Any such legacy worktree (a
-    pre-change single-parent conflict that was left for the
-    session to resolve and never drained) would be misclassified
-    as unowned state by the new Step 2 gate after rollout. For
-    each such worktree: either (a) finish the merge manually
-    (`git commit --no-edit` on the resolved files), or (b)
-    `git worktree remove --force` and let the next dispatch
-    recreate from scratch. The implementer should run
-    `git worktree list` against each repo this plugin manages and
-    inspect any non-clean worktree before merging this change.
-    The plugin's own dogfood repo is the primary case; operators
-    of other consumers should be advised via the issue's
-    completion comment.
+7b. **Rollout precondition (concrete audit procedure).** Before
+    applying this change, the operator MUST audit every managed
+    worktree for legacy in-flight unresolved-merge state. Run the
+    following per-repo audit script (or its functional equivalent):
+
+    ```bash
+    for wt in $(git worktree list --porcelain | awk '/^worktree / { print $2 }'); do
+      merging=$(git -C "$wt" rev-parse -q --verify MERGE_HEAD 2>/dev/null && echo 1)
+      unmerged=$(git -C "$wt" diff --name-only --diff-filter=U 2>/dev/null)
+      marker_present=$([ -f "$wt/.sensible-ralph-pending-merges" ] && echo 1)
+      if { [ "$merging" = 1 ] || [ -n "$unmerged" ]; } && [ -z "$marker_present" ]; then
+        printf 'LEGACY-MERGE-NEEDS-MIGRATION: %s\n' "$wt"
+      fi
+    done
+    ```
+
+    Any worktree printed by the script is a legacy in-flight
+    single-parent conflict that the new Step 2 gate would
+    misclassify as unowned state. For each: either (a) finish the
+    merge manually (`git commit --no-edit` on the resolved files),
+    or (b) `git worktree remove --force` and let the next dispatch
+    recreate from scratch. Re-run the audit until no worktrees
+    are flagged. Only then is it safe to merge this change.
+
+    The plugin's own dogfood repo is the primary case (Sean's
+    setup). Operators of other consumers should run this audit
+    against every repo where they invoke `/sr-start`.
 8. `skills/sr-spec/SKILL.md` includes the multi-parent prerequisite
    caveat paragraph in its prerequisites discussion area.
 9. `docs/design/worktree-contract.md` includes a new "Pending parent
