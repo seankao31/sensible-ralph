@@ -47,8 +47,10 @@ or complete a partially-staged merge), then re-invokes
 idempotent — it skips parents that are already ancestors of HEAD
 (already merged) and attempts only the remaining ones — so re-runs
 drain the queue. The marker is deleted by the helper once all parents
-are ancestors of HEAD or the helper is invoked with a zero-parent
-list (cleanup-only invocation).
+are ancestors of HEAD (clean drain). Zero-parent invocations refuse
+(return 1) when the marker is present, so a stale marker from a prior
+failed dispatch surfaces as an orchestrator `setup_failed` rather
+than being silently obliterated.
 
 This matches the single-parent contract on the conflict-leaves-in-place
 axis. The marker file generalizes it across `parent_count`. SHA pinning
@@ -69,12 +71,13 @@ retry window.
   display ref is informational.
 - **Lifecycle:**
   - Written by the helper on conflict — overwriting any prior marker.
-  - Deleted by the helper unconditionally on every successful run
-    that exits the merge loop without a conflict — including
-    zero-parent invocations (cleanup-only) and runs where every
-    parent is already an ancestor (no-op completion). The helper
-    does not assume a marker existed at start; `rm -f` is safe in
-    all cases.
+  - Deleted by the helper at the end of a successful merge loop
+    (every parent merged or skipped via ancestor check). `rm -f`
+    is safe whether the marker existed at start or not.
+  - Zero-parent invocations are NOT a cleanup mechanism: if the
+    marker exists when the helper is called with zero parents, the
+    helper refuses (return 1) — see "Helper changes" for rationale.
+    Marker-absent zero-parent runs are a no-op success.
   - Never mutated by the orchestrator or the dispatched session
     directly.
 - **Content invariant:** the marker always lists the **full original
@@ -166,20 +169,31 @@ fi
 
 This closes two failure modes simultaneously:
 
-- **Stale marker survives a dispatch with empty `merge_parents`.**
-  The orchestrator legitimately calls the helper with no parents
-  when an issue's `dag_base.sh` returns the trunk branch. With this
-  guard, marker-absent zero-parent runs still fall through to the
-  post-loop cleanup (no harm); marker-present zero-parent runs
-  refuse, surfacing the inconsistency rather than silently
-  resolving it.
-
 - **Empty/corrupt marker drives session-side drain to silent
   drop.** If the session reads a malformed marker, extracts no
   SHAs, and invokes `worktree_merge_parents "$PWD"` with no args,
   the helper refuses (return 1). The session then red-flags via
   the Step 5 escape hatch instead of silently claiming "all
-  parents drained."
+  parents drained." Session-side strict marker validation runs
+  BEFORE the helper call (see "Session-side drain"), so this
+  guard is defense in depth, not the primary check.
+
+- **Orchestrator dispatch with stale marker is surfaced, not
+  silenced.** When the orchestrator dispatches an issue whose
+  `dag_base.sh` returns the trunk (no parents), it still calls
+  `worktree_merge_parents` with zero parents. If a marker survives
+  from a prior failed dispatch (e.g., session crashed before
+  draining), the helper refuses → orchestrator records
+  `setup_failed` → operator sees the stale-state signal and can
+  triage. This is a deliberate trade: silent cleanup of a stale
+  marker would hide a real prior-failure state where the worktree
+  HEAD doesn't match what `dag_base.sh` thinks the merge base is
+  now. The `setup_failed` outcome surfaces the discrepancy.
+
+Marker-absent zero-parent runs (the common case: orchestrator
+dispatches a clean issue, no marker because no prior conflict) fall
+through normally — the `for`-loop iterates zero times, the post-loop
+cleanup `rm -f`s nothing, helper returns 0.
 
 `worktree_create_with_integration` does not have a zero-parent fast
 path today and never gets called with `parent_count==0` from the
@@ -276,15 +290,19 @@ Cases:
 
 - **Marker present:** enter the drain loop. Marker presence proves
   the merge state belongs to this feature. Before calling the
-  helper, validate the marker contains at least one parseable SHA
-  (40-char hex match in column 1 of any line). If the marker is
-  empty, truncated, or otherwise yields no SHAs, treat as a red
-  flag — calling the helper with zero parent args would be
-  interpreted as cleanup-only and silently delete the marker
-  without draining. The helper itself MUST also refuse zero-arg
-  invocations when the marker is present (defense in depth — see
-  "Helper changes" above). Run the loop below until the marker is
-  gone.
+  helper, validate the marker is **fully well-formed**: every
+  non-empty line must match `^[0-9a-f]{40}( .*)?$` (40-char SHA
+  optionally followed by a space and a display ref). If ANY
+  non-empty line fails this check, red-flag — do NOT invoke the
+  helper, even with the parseable subset, because partial
+  invocation would mutate the branch (merging the valid SHAs)
+  before failing on the corrupt one and leave the worktree in a
+  worse state than where it started. The helper itself ALSO
+  refuses zero-arg invocations when the marker is present
+  (defense in depth — see "Helper changes" above), but
+  fail-closed validation in the session is the primary guard
+  because it triggers BEFORE any merge side effects. Run the loop
+  below until the marker is gone.
 
 ### Drain loop
 
@@ -445,7 +463,7 @@ honored.
 
 ### New tests for crash-recovery and pinning
 
-9. `worktree_merge_parents: zero-parent invocation cleans up stale marker`. Setup: write a fake marker file at `<wt>/.sensible-ralph-pending-merges` with arbitrary SHA content. Invoke `worktree_merge_parents "$wt_path"` (no parent args). Assert: status 0, marker file gone. Verifies the orphaned-marker hole is closed.
+9. `worktree_merge_parents: zero-parent invocation with no marker is a no-op success`. Setup: ensure `<wt>/.sensible-ralph-pending-merges` does NOT exist. Invoke `worktree_merge_parents "$wt_path"` (no parent args). Assert: status 0, no marker file created, no commits added. (Note: the marker-present case is covered by test 12 below, which asserts the helper REFUSES that combination — see the marker-aware zero-parent guard in the "Helper changes" section. The two tests together fully specify the zero-parent contract.)
 
 10a. `worktree_create_with_integration: SHA-pinned retry merges the original commit even after the named ref advances`. Setup: two parent refs A0 and B at distinct SHAs; A0 conflicts with main on a file. Run helper with [A0, B] → marker has 2 SHA lines, conflict in tree. Advance the local A0 ref to a new SHA A1 (`git commit --amend` or `--reset` on A0's branch tip). Manually resolve A0's conflict + commit. Re-invoke the helper with the marker's SHAs (which are A0's *original* SHA, plus B). Assert: status 0, marker gone, merged content matches A0's *original* SHA, NOT A1. Confirms SHA pinning prevents drift on the create path.
 
@@ -512,6 +530,24 @@ purely doc-enforced.
   dispatch decision (skills/sr-start/scripts/test/orchestrator.bats);
   the session-side loop's correctness follows from helper
   idempotence + the documented MERGE_HEAD/UU detection.
+
+  **Acknowledged tension:** The drain state machine
+  (marker detection, unowned-state rejection, MERGE_HEAD
+  completion, marker parsing, helper reinvocation ordering) is
+  prose-enforced in `/sr-implement` Step 2. A small mistake there
+  changes ship behavior. Extracting the drain loop to an
+  executable helper (e.g., `lib/worktree-drain.sh`) would make
+  it directly testable and is the cleaner long-term shape. We
+  leave it as skill-doc for this issue because (a) the
+  multi-parent caveat in `sr-spec` already warns the operator
+  away from the pattern as best-effort, (b) the session-side
+  steps are short and the failure modes (red-flag vs. wrong
+  auto-commit) are observable on first occurrence rather than
+  silent, (c) extracting the loop is significant scope creep
+  beyond ENG-282's stated goal of removing the multi-parent
+  asymmetry. If the prose-only approach proves error-prone in
+  practice, file a follow-up issue to extract the drain helper
+  and add executable coverage.
 - No bats coverage for the unowned-state red flag (marker absent +
   MERGING/UU). This is a session-side hard stop documented in
   `/sr-implement` Step 2; the helper itself never enters this path
