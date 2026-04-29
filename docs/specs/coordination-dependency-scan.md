@@ -497,16 +497,27 @@ verify"). Step 12's modified internal sequence:
 
    ```bash
    COORD_DEP_FILE="$WORKTREE_PATH/.sensible-ralph-coord-dep.json"
+   accepted_parents=()
    if [[ -f "$COORD_DEP_FILE" ]]; then
-     accepted_parents=()
-     while IFS= read -r p; do accepted_parents+=("$p"); done < <(
-       jq -r '.[].parent' "$COORD_DEP_FILE"
-     )
-   else
-     # No step-11 transport file present. Treat as no coord-dep edges.
-     # Log a diagnostic if the operator skipped step 11 deliberately.
-     accepted_parents=()
+     # Validate file shape BEFORE consuming. A truncated /
+     # hand-edited / corrupted file must abort finalize, not
+     # silently approve the issue with no coord-dep audit. `jq -e`
+     # exits non-zero on parse failure; we capture both the parsed
+     # output and the exit status before assigning to the array.
+     if ! parsed_parents=$(jq -e -r '.[].parent' "$COORD_DEP_FILE" 2>&1); then
+       echo "step 12: $COORD_DEP_FILE is malformed JSON or unexpected shape — aborting finalize." >&2
+       echo "  Inspect or delete the file by hand before re-running /sr-spec." >&2
+       echo "  jq output: $parsed_parents" >&2
+       exit 1
+     fi
+     while IFS= read -r p; do
+       [[ -n "$p" ]] && accepted_parents+=("$p")
+     done <<< "$parsed_parents"
    fi
+   # If $COORD_DEP_FILE was absent, accepted_parents stays empty
+   # — that's the "no step-11 dialogue ran" or "operator skipped
+   # the scan" case, which is fine; finalize proceeds without
+   # coord-dep writes.
    ```
 
    `accepted_parents` is the parent-ID-only projection of the
@@ -552,11 +563,18 @@ verify"). Step 12's modified internal sequence:
    ```
 
    - **retry**: re-attempt the same parent.
-   - **skip-this-edge**: REMOVE `$parent` from `accepted_parents`
-     (so the audit comment in sub-step 6 won't list it) AND from
-     `PREREQS` (if it originated there). Skip is "operator
-     changed their mind in light of failure"; nothing claims this
-     edge afterward.
+   - **skip-this-edge**: ONLY available when the failing parent
+     originated from `accepted_parents` (a coord-dep candidate).
+     Removes the parent from `accepted_parents` so the audit
+     comment in sub-step 6 won't list it. Semantically: "operator
+     changed their mind about this coord-dep edge in light of
+     failure." If the failing parent originated from `PREREQS` (a
+     design-time semantic prerequisite from step 6), **skip is
+     NOT offered** — silently dropping a semantic prereq would
+     let the issue reach Approved without its required dependency
+     edge, breaking `/sr-start`'s pickup rule downstream. For
+     PREREQS failures, the operator's only choices are retry or
+     abort.
    - **abort finalize**: stop the loop with whatever's in
      `committed_parents` so far. The audit comment has NOT been
      posted yet (we post it AFTER this loop), so successfully-added
