@@ -1,0 +1,6 @@
+{"type":"user","message":{"role":"user","content":"start"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Reading the PRD."},{"type":"tool_use","id":"toolu_01","name":"Bash","input":{"command":"linear issue view ENG-294 --json"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01","content":"<PRD>"}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Looking up the using-superpowers skill."},{"type":"tool_use","id":"toolu_02","name":"Skill","input":{"skill":"using-superpowers"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_02","content":"<skill body>"}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Doc sweep is complete; no other surfaces need updating."}]}}

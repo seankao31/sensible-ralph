@@ -41,14 +41,17 @@ The orchestrator never invents work. Its inputs are a fixed ordered queue of iss
 │      │     2>&1 | tee <stdout_log_filename>                     │
 │      │                                                          │
 │      ├─ linear_get_issue_state (post-dispatch)                  │
-│      └─ classify outcome:                                       │
-│           exit 0 + state fetch failed   → unknown_post_state    │
-│           exit 0 + state == REVIEW      → in_review             │
-│           exit 0 + state != REVIEW      → exit_clean_no_review  │
-│                                            (label, taint)       │
-│           exit != 0                     → failed (label, taint) │
-│                                                                 │
-│      └─ append progress.json {event:"end", outcome, …}          │
+│      ├─ classify outcome:                                       │
+│      │    exit 0 + state fetch failed   → unknown_post_state    │
+│      │    exit 0 + state == REVIEW      → in_review             │
+│      │    exit 0 + state != REVIEW      → exit_clean_no_review  │
+│      │                                     (label, taint)       │
+│      │    exit != 0                     → failed (label, taint) │
+│      │                                                          │
+│      ├─ diagnose_session.sh (ENG-308) for failed,               │
+│      │     exit_clean_no_review, unknown_post_state             │
+│      │     → composes one-line hint                             │
+│      └─ append progress.json {event:"end", outcome, …, hint?}   │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -122,10 +125,11 @@ The invocation:
 ```bash
 (
   cd "$path"
-  claude -p \
+  CLAUDE_CONFIG_DIR="$config_dir" claude -p \
     --permission-mode auto \
     --model "$CLAUDE_PLUGIN_OPTION_MODEL" \
     --name "$issue_id: $title" \
+    --session-id "$session_id" \
     "$prompt" \
     2>&1 | tee "$path/$CLAUDE_PLUGIN_OPTION_STDOUT_LOG_FILENAME"
 )
@@ -137,8 +141,19 @@ A few details that matter:
 - **Foreground, sequential.** Parallel dispatch within a DAG layer is an explicit non-goal; the loop processes issues one at a time.
 - **Full session log captured.** The `tee` writes the entire `claude -p` stream to `<worktree>/<stdout_log_filename>` for later inspection. `PIPESTATUS[0]` preserves claude's exit code through the tee pipe.
 - **Session name `<ISSUE_ID>: <title>`** — used by `claude --resume` so the operator can drop back into any dispatched session interactively.
+- **`--session-id <uuid>`** — the orchestrator pre-generates a v4 UUID per dispatch and passes it explicitly so the JSONL transcript path is known up-front. The same UUID is persisted into `progress.json` (`session_id` and `transcript_path` fields) so `/sr-status` can surface the transcript pointer on non-success rows. `CLAUDE_CONFIG_DIR` is forwarded so the JSONL writes land where the orchestrator recorded — independent of caller-side misconfiguration. See ENG-308 / `docs/decisions/2026-04-28-session-diagnostics-A-C-E.md`.
 
 The `progress.json` `event: "start"` record is written immediately before the subshell so `/sr-status` can render an in-flight Running row mid-run.
+
+### Session diagnostics on non-success outcomes
+
+After classification, for `failed`, `exit_clean_no_review`, and `unknown_post_state` outcomes, the orchestrator invokes `scripts/diagnose_session.sh` (bounded to 5 s via `timeout`/`gtimeout`) to compose a one-line `hint` from three heuristics:
+
+- **H1** — no implementation commits past `.sensible-ralph-base-sha`.
+- **H2** — uncommitted edits left in the worktree (orchestrator-owned files like `ralph-output.log` and `.sensible-ralph-base-sha` are filtered out).
+- **H3** — the JSONL transcript ends with a `Skill` tool_use followed by a text-only assistant turn (the [claude-code#17351](https://github.com/anthropics/claude-code/issues/17351) context-loss shape). Suppressed for `unknown_post_state`.
+
+Heuristics fail silent: missing/malformed JSONL, an unreadable base-sha, or a hung subprocess all produce no hint rather than wrong hints. The hint goes into the end record's `hint` field, which `/sr-status` renders as an indented sub-block under the failing Done row alongside the persisted `worktree_log_path` (`transcript:`) and `transcript_path` (`session:`).
 
 ## Outcome classification
 
@@ -179,6 +194,8 @@ Each record carries:
 - **`exit_code`, `duration_seconds`** — dispatched-outcome `end` records only. `duration_seconds` is keyed off the `claude -p` invocation start, not function entry, so it measures the session itself rather than setup overhead.
 - **`failed_step`** — `setup_failed` end records only.
 - **`residue_path`, `residue_branch`** — `local_residue` end records only.
+- **`session_id`, `transcript_path`, `worktree_log_path`** (ENG-308) — start records and dispatched-outcome end records (`in_review`, `exit_clean_no_review`, `failed`, `unknown_post_state`). `session_id` is a lowercase v4 UUID the orchestrator pre-generated and passed to `claude -p --session-id`. `transcript_path` is `<config_dir>/projects/<slug>/<session_id>.jsonl` (slug = absolute worktree path with `/` → `-`); `<config_dir>` honors `CLAUDE_CONFIG_DIR` when set to an absolute path, falls back to `$HOME/.claude` otherwise (with stderr warning for empty/relative values). Stored as absolute paths and never reconstructed at render time.
+- **`hint`** (ENG-308) — end records on `exit_clean_no_review`, `failed`, `unknown_post_state` only, and only when at least one diagnose heuristic fired. Field is omitted entirely when no heuristic matched (so `jq -r '.hint // ""'` cleanly yields empty for the no-hint case).
 - **(none beyond core)** — `skipped` records carry only `issue`, `outcome`, `event`, `timestamp`, `run_id`.
 
 The schema is additive: old consumers reading only `outcome` continue to work because `start` records have no `outcome` field and naturally filter out. See `docs/decisions/2026-04-25-progress-json-event-discriminator.md` for the alternatives considered.

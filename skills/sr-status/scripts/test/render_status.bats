@@ -276,3 +276,152 @@ write_queue() {
   [[ "$output" == *"=== Running (0) ==="* ]]
   [[ "$output" == *"=== Queued (0) ==="* ]]
 }
+
+# ---------------------------------------------------------------------------
+# ENG-308 session-diagnostics sub-block. Driven by field presence on the end
+# record; the only outcome-named rule is the in_review whole-sub-block
+# override.
+# ---------------------------------------------------------------------------
+
+@test "ENG-308 failed row with hint+transcript+session: full diagnostic sub-block renders" {
+  local run_id="2026-04-22T18:30:00Z"
+  write_progress '[
+    {"event":"end","issue":"ENG-294","outcome":"exit_clean_no_review","branch":"eng-294","base":"main","exit_code":0,"duration_seconds":840,"timestamp":"2026-04-22T18:30:00Z","run_id":"'"$run_id"'","session_id":"abc-123","transcript_path":"/Users/x/.claude/projects/-foo/abc-123.jsonl","worktree_log_path":"/Users/x/repo/.worktrees/eng-294/ralph-output.log","hint":"no implementation commits; context-loss after Skill (using-superpowers) (claude-code#17351)"}
+  ]'
+
+  run_render
+  [ "$status" -eq 0 ]
+  # Hint line, leading with the U+21B3 arrow.
+  [[ "$output" == *$'\xe2\x86\xb3'" no implementation commits; context-loss after Skill (using-superpowers) (claude-code#17351)"* ]]
+  # transcript: line points at the persisted worktree_log_path verbatim.
+  [[ "$output" == *"transcript: /Users/x/repo/.worktrees/eng-294/ralph-output.log"* ]]
+  # session: line points at the JSONL transcript_path.
+  [[ "$output" == *"session: /Users/x/.claude/projects/-foo/abc-123.jsonl"* ]]
+}
+
+@test "ENG-308 in_review row with diagnostic fields present: sub-block fully suppressed" {
+  local run_id="2026-04-22T18:30:00Z"
+  # in_review records DO carry the new fields per the schema, but the
+  # whole-sub-block override fires for in_review rows.
+  write_progress '[
+    {"event":"end","issue":"ENG-200","outcome":"in_review","branch":"eng-200","base":"main","exit_code":0,"duration_seconds":600,"timestamp":"2026-04-22T18:30:00Z","run_id":"'"$run_id"'","session_id":"abc-200","transcript_path":"/Users/x/.claude/projects/-foo/abc-200.jsonl","worktree_log_path":"/Users/x/repo/.worktrees/eng-200/ralph-output.log"}
+  ]'
+
+  run_render
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"in_review"* ]]
+  # No sub-block lines.
+  [[ "$output" != *$'\xe2\x86\xb3'* ]]
+  [[ "$output" != *"transcript: "* ]]
+  [[ "$output" != *"session: "* ]]
+}
+
+@test "ENG-308 record without new fields (back-compat): row renders one-line, no sub-block" {
+  local run_id="2026-04-22T18:30:00Z"
+  # No session_id, transcript_path, worktree_log_path, hint — legacy shape.
+  write_progress '[
+    {"event":"end","issue":"ENG-150","outcome":"failed","branch":"eng-150","base":"main","exit_code":7,"duration_seconds":120,"timestamp":"2026-04-22T18:30:00Z","run_id":"'"$run_id"'"}
+  ]'
+
+  run_render
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"failed (exit 7)"* ]]
+  [[ "$output" != *$'\xe2\x86\xb3'* ]]
+  [[ "$output" != *"transcript: "* ]]
+  [[ "$output" != *"session: "* ]]
+}
+
+@test "ENG-308 record with hint only (no path fields): only the hint line renders" {
+  local run_id="2026-04-22T18:30:00Z"
+  write_progress '[
+    {"event":"end","issue":"ENG-160","outcome":"failed","branch":"eng-160","base":"main","exit_code":1,"duration_seconds":300,"timestamp":"2026-04-22T18:30:00Z","run_id":"'"$run_id"'","hint":"no implementation commits"}
+  ]'
+
+  run_render
+  [ "$status" -eq 0 ]
+  [[ "$output" == *$'\xe2\x86\xb3'" no implementation commits"* ]]
+  # No path lines because the path fields are absent.
+  [[ "$output" != *"transcript: "* ]]
+  [[ "$output" != *"session: "* ]]
+}
+
+@test "ENG-308 record with worktree_log_path only (no hint): only the transcript line renders" {
+  local run_id="2026-04-22T18:30:00Z"
+  write_progress '[
+    {"event":"end","issue":"ENG-170","outcome":"failed","branch":"eng-170","base":"main","exit_code":1,"duration_seconds":300,"timestamp":"2026-04-22T18:30:00Z","run_id":"'"$run_id"'","worktree_log_path":"/some/wt/ralph-output.log"}
+  ]'
+
+  run_render
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"transcript: /some/wt/ralph-output.log"* ]]
+  [[ "$output" != *$'\xe2\x86\xb3'* ]]
+  [[ "$output" != *"session: "* ]]
+}
+
+@test "ENG-308 setup_failed row with no diagnostic fields: stays one-line" {
+  local run_id="2026-04-22T18:30:00Z"
+  write_progress '[
+    {"event":"end","issue":"ENG-180","outcome":"setup_failed","failed_step":"linear_set_state","timestamp":"2026-04-22T18:30:00Z","run_id":"'"$run_id"'"}
+  ]'
+
+  run_render
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"setup_failed (linear_set_state)"* ]]
+  [[ "$output" != *$'\xe2\x86\xb3'* ]]
+  [[ "$output" != *"transcript: "* ]]
+  [[ "$output" != *"session: "* ]]
+}
+
+@test "ENG-308 transcript: line uses persisted worktree_log_path verbatim regardless of live config" {
+  local run_id="2026-04-22T18:30:00Z"
+  # Persisted path uses the OLD configured filename.
+  write_progress '[
+    {"event":"end","issue":"ENG-190","outcome":"failed","branch":"eng-190","base":"main","exit_code":1,"duration_seconds":300,"timestamp":"2026-04-22T18:30:00Z","run_id":"'"$run_id"'","worktree_log_path":"/Users/x/repo/.worktrees/eng-190/old-name.log"}
+  ]'
+
+  # Reconfigure the live env vars to a new filename — the renderer must
+  # NOT use them for the transcript: line; the persisted path is verbatim.
+  CLAUDE_PLUGIN_OPTION_STDOUT_LOG_FILENAME="new-name.log" run_render
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"transcript: /Users/x/repo/.worktrees/eng-190/old-name.log"* ]]
+  [[ "$output" != *"new-name.log"* ]]
+}
+
+@test "ENG-308 unknown_post_state row with full diagnostic fields: sub-block renders the same as failed" {
+  local run_id="2026-04-22T18:30:00Z"
+  write_progress '[
+    {"event":"end","issue":"ENG-201","outcome":"unknown_post_state","branch":"eng-201","base":"main","exit_code":0,"duration_seconds":120,"timestamp":"2026-04-22T18:30:00Z","run_id":"'"$run_id"'","session_id":"u-201","transcript_path":"/Users/x/.claude/projects/-foo/u-201.jsonl","worktree_log_path":"/Users/x/repo/.worktrees/eng-201/ralph-output.log","hint":"uncommitted edits left in worktree"}
+  ]'
+
+  run_render
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"unknown_post_state"* ]]
+  [[ "$output" == *$'\xe2\x86\xb3'" uncommitted edits left in worktree"* ]]
+  [[ "$output" == *"transcript: /Users/x/repo/.worktrees/eng-201/ralph-output.log"* ]]
+  [[ "$output" == *"session: /Users/x/.claude/projects/-foo/u-201.jsonl"* ]]
+}
+
+@test "ENG-308 Running tip uses persisted worktree_log_path from start record" {
+  local now_iso; now_iso="$(date -u -v -2M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '2 minutes ago' +%Y-%m-%dT%H:%M:%SZ)"
+  write_progress '[
+    {"event":"start","issue":"ENG-205","branch":"eng-205-foo","base":"main","timestamp":"'"$now_iso"'","run_id":"'"$now_iso"'","session_id":"r-205","transcript_path":"/Users/x/.claude/projects/-bar/r-205.jsonl","worktree_log_path":"/persisted/worktree/path/dispatch-time.log"}
+  ]'
+
+  run_render
+  [ "$status" -eq 0 ]
+  # Tip uses the persisted path verbatim, not a live-config reconstruction.
+  [[ "$output" == *"Tip: tail '/persisted/worktree/path/dispatch-time.log'"* ]]
+}
+
+@test "ENG-308 Running tip falls back to live-config reconstruction when start record lacks worktree_log_path" {
+  local now_iso; now_iso="$(date -u -v -2M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '2 minutes ago' +%Y-%m-%dT%H:%M:%SZ)"
+  # Legacy start record (pre-ENG-308): no worktree_log_path field.
+  write_progress '[
+    {"event":"start","issue":"ENG-206","branch":"eng-206-bar","base":"main","timestamp":"'"$now_iso"'","run_id":"'"$now_iso"'"}
+  ]'
+
+  run_render
+  [ "$status" -eq 0 ]
+  # Falls back to repo_root + WORKTREE_BASE + branch + STDOUT_LOG_FILENAME.
+  [[ "$output" == *"Tip: tail '$REPO_DIR/.worktrees/eng-206-bar/ralph-output.log'"* ]]
+}

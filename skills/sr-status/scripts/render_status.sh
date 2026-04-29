@@ -175,6 +175,30 @@ else
     outcome_str="$(_format_outcome "$outcome" "$exit_code" "$failed_step")"
     duration_str="$(_format_duration "$duration")"
     printf '  %-8s %-25s %s\n' "$issue" "$outcome_str" "$duration_str"
+
+    # ENG-308: diagnostic sub-block on non-success rows. Three lines, each
+    # gated on the presence and non-emptiness of one specific record field —
+    # no per-outcome reasoning. The single outcome-named rule is the
+    # whole-sub-block override for in_review: scannability for green
+    # outcomes wins over having diagnostic plumbing on success rows.
+    if [[ "$outcome" == "in_review" ]]; then
+      continue
+    fi
+    hint="$(printf '%s' "$rec" | jq -r '.hint // ""')"
+    transcript_path="$(printf '%s' "$rec" | jq -r '.transcript_path // ""')"
+    worktree_log_path="$(printf '%s' "$rec" | jq -r '.worktree_log_path // ""')"
+    if [[ -n "$hint" ]]; then
+      # ↳ is U+21B3, encoded as the UTF-8 byte sequence \xe2\x86\xb3 so the
+      # renderer doesn't depend on the source file's encoding being preserved
+      # through editing tools.
+      printf '    \xe2\x86\xb3 %s\n' "$hint"
+    fi
+    if [[ -n "$worktree_log_path" ]]; then
+      printf '      transcript: %s\n' "$worktree_log_path"
+    fi
+    if [[ -n "$transcript_path" ]]; then
+      printf '      session: %s\n' "$transcript_path"
+    fi
   done
 fi
 echo
@@ -210,22 +234,28 @@ echo
 # Footer
 echo "Run started: $latest_run_id"
 
-# Tip line — only when Running is non-empty. Uses both configured paths so
-# the suggestion stays accurate when the operator overrides defaults.
-# Branch comes from the start record (not a lowercased-issue-ID assumption)
-# so the path stays correct even when the branch name deviates from the
-# expected <issue-id>-<slug> pattern.
+# Tip line — only when Running is non-empty. Prefers the dispatch-time
+# worktree_log_path persisted into the start record (ENG-308) so the tip
+# remains accurate after CLAUDE_PLUGIN_OPTION_STDOUT_LOG_FILENAME or
+# CLAUDE_PLUGIN_OPTION_WORKTREE_BASE is reconfigured mid-run. Falls back to
+# live-config reconstruction for legacy start records that predate this
+# change.
 if [[ "${#running_issues[@]}" -ge 1 ]]; then
   first_running="${running_issues[0]}"
-  first_branch="$(printf '%s' "$start_records" | jq -r --arg i "$first_running" '.[] | select(.issue == $i) | .branch')"
-  # Anchor to repo_root and normalize WORKTREE_BASE the same way
-  # worktree_path_for_issue does (strip leading/trailing slashes), so the tip
-  # matches the actual worktree path even when WORKTREE_BASE is configured as
-  # `/.worktrees/` (a documented-supported value — see worktree.bats).
+  first_record="$(printf '%s' "$start_records" | jq -c --arg i "$first_running" '.[] | select(.issue == $i)')"
+  tip_path="$(printf '%s' "$first_record" | jq -r '.worktree_log_path // ""')"
+  if [[ -z "$tip_path" ]]; then
+    first_branch="$(printf '%s' "$first_record" | jq -r '.branch')"
+    # Anchor to repo_root and normalize WORKTREE_BASE the same way
+    # worktree_path_for_issue does (strip leading/trailing slashes), so the
+    # tip matches the actual worktree path even when WORKTREE_BASE is
+    # configured as `/.worktrees/` (a documented-supported value — see
+    # worktree.bats).
+    wt_base="${CLAUDE_PLUGIN_OPTION_WORKTREE_BASE#/}"
+    wt_base="${wt_base%/}"
+    tip_path="$repo_root/$wt_base/$first_branch/$CLAUDE_PLUGIN_OPTION_STDOUT_LOG_FILENAME"
+  fi
   # Single-quote the full path so operators can copy-paste even when any
   # component contains spaces.
-  wt_base="${CLAUDE_PLUGIN_OPTION_WORKTREE_BASE#/}"
-  wt_base="${wt_base%/}"
-  printf "Tip: tail '%s/%s/%s/%s' to see live session output.\n" \
-    "$repo_root" "$wt_base" "$first_branch" "$CLAUDE_PLUGIN_OPTION_STDOUT_LOG_FILENAME"
+  printf "Tip: tail '%s' to see live session output.\n" "$tip_path"
 fi
