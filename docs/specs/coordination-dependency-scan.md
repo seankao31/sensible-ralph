@@ -327,9 +327,10 @@ The skill's step 11 prose drives the rest:
    `accepted_edges`:
 
    - `linear issue relation add "$ISSUE_ID" blocked-by "$parent"`.
-   - On success: append `$parent` to in-shell `PREREQS` (so finalize
-     sub-step 5's verification covers the union of design-time +
-     scan-time edges) and append to local `committed_edges`.
+   - On success: append `$parent` to a NEW in-shell array
+     `SCAN_ADDED_EDGES` (kept SEPARATE from `PREREQS`; see the
+     finalize-integration callout below) and append `{parent,
+     rationale}` to local `committed_edges`.
    - On failure: log a clear warning naming `$parent` and continue.
      Do NOT prompt for retry/abort here — the audit trail is
      already posted, so missed adds are recoverable at close time
@@ -355,13 +356,45 @@ Will be removed automatically on `/close-issue`.
 Each line independently parseable by the cleanup helper's regex.
 Multiple comments accumulate fine across re-spec sessions.
 
-**Critical integration with finalize step 12:** the existing
-finalize sub-step 5 verifies `ACTUAL` (post-add Linear blocker set)
-matches `EXPECTED` (the in-shell `PREREQS` array). After step 11
-mutates `PREREQS`, finalize sub-step 5 must continue to use the same
-array — no re-initialization. Implementers must NOT shadow `PREREQS`
-between steps. Call this out explicitly in the SKILL.md prose at
-both step 11 and step 12.
+**Critical integration with finalize step 12.** Two arrays must
+stay separate end-to-end:
+
+- **`PREREQS`** — design-time prerequisites (set by the operator at
+  step 6 of the dialogue). Finalize sub-step 5's add-loop iterates
+  this array and calls `linear issue relation add` for each.
+  Step 11 must NOT mutate this array.
+- **`SCAN_ADDED_EDGES`** — parents the step-11 scan accepted AND
+  successfully added at step 11. Finalize sub-step 5 does NOT
+  iterate this array for relation-adds (the relations are already
+  in Linear); it only contributes to verification.
+
+Finalize sub-step 5's existing verification logic — currently
+`EXPECTED=$(printf '%s\n' "${PREREQS[@]}" | sort -u)` — must be
+modified to compute `EXPECTED` over the **union** of `PREREQS` and
+`SCAN_ADDED_EDGES`:
+
+```bash
+EXPECTED=$(printf '%s\n' "${PREREQS[@]}" "${SCAN_ADDED_EDGES[@]+"${SCAN_ADDED_EDGES[@]}"}" | sort -u)
+```
+
+The `${arr[@]+"${arr[@]}"}` pattern expands to nothing when the
+array is empty, sidestepping bash 3.2's unbound-variable fault
+under `set -u`. (Same pattern `lib/linear.sh::linear_add_label`
+uses.)
+
+Why this separation matters: if step 11 appended to `PREREQS`,
+finalize's add-loop would attempt to re-add scan-discovered edges
+that are already in Linear. Linear's CLI behavior on duplicate
+relation-add is unreliable to depend on (some versions error,
+some no-op), and even silent no-op masks a real contract muddle.
+Keeping the arrays separate makes the responsibility crisp:
+PREREQS owns "needs to be added at finalize," `SCAN_ADDED_EDGES`
+owns "already added at step 11," and `EXPECTED` is just the union
+for verification. Implementers MUST NOT collapse the two arrays.
+
+Call this contract out explicitly in the SKILL.md prose at both
+step 11 (where `SCAN_ADDED_EDGES` is populated) and step 12
+(where `EXPECTED` is computed over the union).
 
 ### 5. `/close-issue` step 8 — cleanup helper
 
@@ -648,12 +681,16 @@ No `blocked-by` relations to declare for this issue.
    mutation order (**audit comment posted FIRST; abort step 11
    entirely if comment-post fails — no relations are added on that
    path; only after comment-post succeeds, walk accepted candidates
-   and add relations; finally add the label**), the
-   `PREREQS`-augmentation contract with step 12, and the comment
-   format. Step renumbering: existing step 11 (finalize) becomes
-   step 12; existing step 10 (codex) and all earlier numbers stay
-   unchanged; informal "Spec self-review" and "User review gate"
-   sections stay informal.
+   and add relations; finally add the label**), the **`PREREQS`
+   vs. `SCAN_ADDED_EDGES` separation contract** with step 12 (step
+   11 populates `SCAN_ADDED_EDGES` only — never mutates `PREREQS`;
+   step 12's add-loop iterates only `PREREQS` while its verify
+   compares ACTUAL to the union `PREREQS ∪ SCAN_ADDED_EDGES`), and
+   the comment format. Step 12 (finalize) sub-step 5 is updated so
+   `EXPECTED` is computed over that union. Step renumbering:
+   existing step 11 (finalize) becomes step 12; existing step 10
+   (codex) and all earlier numbers stay unchanged; informal "Spec
+   self-review" and "User review gate" sections stay informal.
 5. `skills/close-issue/scripts/cleanup_coord_dep.sh` exists, queries
    marker-matching comments via `linear api` with a `body.contains`
    filter (NOT via `linear issue comment list`, which truncates at
