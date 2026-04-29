@@ -290,16 +290,25 @@ Cases:
 
 - **Marker present:** enter the drain loop. Marker presence proves
   the merge state belongs to this feature. Before calling the
-  helper, validate the marker is **fully well-formed**: every
-  non-empty line must match `^[0-9a-f]{40}( .*)?$` (40-char SHA
-  optionally followed by a space and a display ref). If ANY
-  non-empty line fails this check, red-flag — do NOT invoke the
-  helper, even with the parseable subset, because partial
-  invocation would mutate the branch (merging the valid SHAs)
-  before failing on the corrupt one and leave the worktree in a
-  worse state than where it started. The helper itself ALSO
-  refuses zero-arg invocations when the marker is present
-  (defense in depth — see "Helper changes" above), but
+  helper — and BEFORE any conflict resolution / commit, since
+  those mutate the branch — validate the marker is **fully
+  well-formed**:
+  1. Every line (including would-be blank/whitespace-only lines)
+     must match `^[0-9a-f]{40}( .*)?$` (40-char SHA optionally
+     followed by a space and a display ref). Blank or
+     whitespace-only lines fail this regex by construction;
+     reject the marker if any line fails.
+  2. Every SHA in column 1 must be reachable in this repo via
+     `git cat-file -e <sha>^{commit}`. A syntactically valid
+     but unreachable SHA (parent ref deleted+gc'd, repository
+     repack lost the object) fails this check.
+
+  If validation fails on any line, red-flag — do NOT invoke the
+  helper, do NOT resolve conflicts, do NOT commit. Any of those
+  would mutate the branch before discovering the corruption and
+  leave the worktree in a worse state than where it started. The
+  helper itself ALSO refuses zero-arg invocations when the marker
+  is present (defense in depth — see "Helper changes" above), but
   fail-closed validation in the session is the primary guard
   because it triggers BEFORE any merge side effects. Run the loop
   below until the marker is gone.
@@ -592,14 +601,19 @@ purely doc-enforced.
    record `setup_failed` for the marker case).
 5. The dispatched session's `/sr-implement` Step 2 implements the
    recovery flow described in the "Session-side drain" section:
-   - Marker present → validate FAIL-CLOSED. Every non-empty line
-     in the marker must match `^[0-9a-f]{40}( .*)?$`. If any
-     non-empty line fails this regex, OR the marker contains only
-     whitespace/empty content, red-flag (do NOT invoke the helper
-     even with the parseable subset — partial invocation would
-     mutate the branch before failing on the corrupt line). Only
-     when every non-empty line passes does the session enter the
-     drain loop.
+   - Marker present → validate FAIL-CLOSED, BEFORE any conflict
+     resolution or commit:
+     (a) Every line of the marker must match
+         `^[0-9a-f]{40}( .*)?$` (blank/whitespace-only lines fail
+         this by construction, so they reject the marker rather
+         than being silently skipped during awk extraction);
+     (b) Every SHA must be reachable via
+         `git cat-file -e <sha>^{commit}` so an unreachable-SHA
+         marker is rejected before any merge.
+     If validation fails on any line, red-flag (do NOT invoke
+     the helper, do NOT resolve, do NOT commit). Only when every
+     line passes both checks does the session enter the drain
+     loop.
    - Marker absent + MERGE_HEAD set OR `git diff --name-only
      --diff-filter=U` non-empty → red-flag (post Linear comment,
      exit clean — do not invoke `/prepare-for-review`). This
