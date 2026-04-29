@@ -24,7 +24,7 @@ The morning Linear board the operator should see after a `/sr-start` run:
 - **In Review** — overnight successes; review and merge with `/close-issue`.
 - **Approved + `ralph-failed`** — overnight failures awaiting triage; per-issue decide retry / cancel / debug.
 - **Approved (no label)** — fresh `/sr-spec`-produced issues + retries the operator cleared. Ready for next dispatch.
-- **In Progress** — should be empty post-run. Non-empty = orchestrator crash mid-run or a session that exited without classifying.
+- **In Progress** — should be empty post-run on the happy path. Non-empty post-run = orchestrator crash mid-run, a session that exited without classifying, OR a degraded recovery path where the orchestrator could not confirm the `ralph-failed` label landed (see Partial-write outcomes below). Today the system surfaces none of these via `/sr-start`, preflight, or `/sr-status` — operator board inspection is the recovery signal. System-side surfacing of stuck `In Progress` is out of scope here (ENG-254 crash-detection territory).
 
 Retry workflow on a `ralph-failed` issue: **one operator action — remove the label**. The label removal is the human triage signal ("I read the log; the failure is worth retrying"). Auto-retry without that signal would hide real problems and burn cycles on broken work; the manual touchpoint is intentional.
 
@@ -38,51 +38,94 @@ Downstream specs that depend on this restored model:
 
 ## Fix shape
 
-At each of the two dispatched-outcome failure branches in `_dispatch_issue` (`orchestrator.sh:580` for `exit_clean_no_review`, `:585` for `failed`), replace the existing best-effort label-add with a label-first, gated-revert pair. Inline at both call sites — no helper extraction.
+At each of the two dispatched-outcome failure branches in `_dispatch_issue` (`orchestrator.sh:580` for `exit_clean_no_review`, `:585` for `failed`), replace the existing best-effort label-add with a label-first, **verify-after-add**, gated-revert pair. The verification step is load-bearing: `linear_add_label` returning success only proves the CLI update call succeeded, not that the label is actually applied. Linear's label-by-name resolution silently no-ops when the label name is missing from the workspace (documented at `lib/linear.sh:316-322`); preflight checks for label existence before the run, but the label can be deleted between preflight and a failed-dispatch label-add. Without verification, the gate would let the revert run on an unverified label-add and the issue would silently rejoin the queue as `Approved` unlabeled — exactly the invariant the spec is asserting.
+
+A small orchestrator-local helper encapsulates the add-then-verify pattern; both call sites use it:
 
 ```bash
-if linear_add_label "$issue_id" "$CLAUDE_PLUGIN_OPTION_FAILED_LABEL"; then
+# Apply the failed label and verify it actually landed on the issue.
+# Returns 0 only when the label is observed on the issue post-add.
+# Linear silently no-ops --label updates that reference a workspace
+# label name that doesn't exist; we cannot trust linear_add_label's
+# exit code as proof of post-write state.
+_apply_failed_label_verified() {
+  local issue_id="$1"
+  linear_add_label "$issue_id" "$CLAUDE_PLUGIN_OPTION_FAILED_LABEL" || return 1
+  local labels
+  labels="$(linear_get_issue_labels "$issue_id" 2>/dev/null)" || return 1
+  printf '%s\n' "$labels" | grep -qFx "$CLAUDE_PLUGIN_OPTION_FAILED_LABEL"
+}
+```
+
+The `failed` and `exit_clean_no_review` branches replace their existing single-line label-add with:
+
+```bash
+if _apply_failed_label_verified "$issue_id"; then
   linear_set_state "$issue_id" "$CLAUDE_PLUGIN_OPTION_APPROVED_STATE" || \
     printf 'orchestrator: failed to revert %s to %s (continuing)\n' \
       "$issue_id" "$CLAUDE_PLUGIN_OPTION_APPROVED_STATE" >&2
 else
-  printf 'orchestrator: failed to add %s label to %s; leaving state In Progress so the failure stays visible (continuing)\n' \
+  printf 'orchestrator: could not confirm %s on %s after label-add (CLI failure or silent no-op); leaving state In Progress (continuing)\n' \
     "$CLAUDE_PLUGIN_OPTION_FAILED_LABEL" "$issue_id" >&2
 fi
 _taint_descendants "$issue_id"
 ```
 
+`linear_get_issue_labels` is a new peer of `linear_get_issue_state` / `linear_get_issue_branch` in `lib/linear.sh`. It returns one label name per line on stdout; non-zero on `linear issue view` failure. Implementation pattern matches the existing helpers (single `linear issue view --json --no-comments` + jq extraction).
+
 Notes:
 
-- **Label-first, gated-revert.** The state revert runs only when the label add succeeded. This guarantees the invariant *"an Approved-state issue always carries the `ralph-failed` marker after a failure"* — a failed ticket can never be silently buried among unlabeled Approved tickets.
-- **Both calls remain best-effort.** The orchestrator continues regardless of label or revert success; warnings go to stderr matching the existing pattern at the same call sites.
+- **Verify-after-add gates the revert.** The state revert runs only when the failed label is *observed* on the issue, not just when `linear_add_label` returns success. The invariant the spec asserts — *"an Approved-state issue always carries the `ralph-failed` marker after a failure"* — is now grounded in observed state, not in a CLI return code that can return success on a silent no-op.
+- **Both calls remain best-effort.** The orchestrator continues regardless of label-add, verify, or revert success; warnings go to stderr matching the existing pattern at the same call sites.
 - **Taint runs unconditionally.** Failure of this issue means descendants are tainted regardless of how the Linear writes resolved.
+- **Single helper, both call sites.** The two dispatched-outcome branches inline the same `if _apply_failed_label_verified … fi` block. The helper lives in `orchestrator.sh` (not `lib/linear.sh`) because the verify-after-add policy is orchestrator-specific, not a general Linear-library primitive.
 
 ### Partial-write outcomes
 
-| Label | Revert | Resulting state | Operator visibility |
-|---|---|---|---|
-| ✓ | ✓ | `Approved + ralph-failed` (happy path) | Visible; one-action retry (remove label) |
-| ✓ | ✗ | `In Progress + ralph-failed` | Visible; manual two-step recovery (today's recipe) |
-| ✗ | (skipped) | `In Progress` (no label) | Visible as anomaly: post-run `In Progress` should be empty |
+| Label add | Verify | Revert | Resulting state | Operator visibility |
+|---|---|---|---|---|
+| ✓ | ✓ | ✓ | `Approved + ralph-failed` (happy path) | Visible; one-action retry (remove label) |
+| ✓ | ✓ | ✗ | `In Progress + ralph-failed` | Visible; manual two-step recovery (today's recipe), one degraded transient-Linear-API blip |
+| ✓ | ✗ | (gated out) | `In Progress` (no label) — silent no-op on a missing workspace label | Operator board inspection: post-run `In Progress` should be empty; system surfacing of stuck `In Progress` is out of scope (ENG-254) |
+| ✗ | (n/a) | (gated out) | `In Progress` (no label) — `linear_add_label` returned non-zero | Same as above: operator board inspection |
 
-There is no scenario that produces `Approved` (no label) on a failed issue. Silent rejoin is structurally prevented.
+There is no scenario that produces `Approved` (no label) on a failed issue. The two `In Progress` (no label) rows above are degraded recovery paths that depend on operator board inspection — the spec does NOT claim system-level surfacing for them.
 
 ## Out of scope
 
-- **`setup_failed`** (`_record_setup_failure` at `orchestrator.sh:223-238`) does NOT need a state revert. Every setup-failed path fires before the `linear_set_state ... In Progress` call at line 482 — including the `linear_set_state` failure itself at line 490, where state was never written. The existing best-effort `linear_add_label` call in `_record_setup_failure` is unchanged.
+- **`setup_failed`** (`_record_setup_failure` at `orchestrator.sh:223-238`) does NOT need a state revert. Every setup-failed path fires before the `linear_set_state ... In Progress` call at line 482 — including the `linear_set_state` failure itself at line 490, where state was never written. State stays `Approved`; only the label is applied.
+  - **Known related vulnerability (out of scope).** `_record_setup_failure`'s label-add has the same Linear silent-no-op exposure as the dispatched-outcome paths. If the workspace label is missing when setup fails, the issue ends up `Approved` without the marker, silently rejoining the next pickup queue. Fixing that is a separate ticket — file as a follow-up issue (`Apply verify-after-add to setup_failed label`). Within ENG-322 we only fix the dispatched-outcome paths because the state revert is the load-bearing change here; the verify-after-add is a side benefit, not the primary scope.
 - **`local_residue`** never mutates Linear; nothing to revert.
 - **`unknown_post_state`** (`exit 0` + transient state-fetch failure) deliberately leaves Linear untouched. The orchestrator cannot disambiguate a real `In Review` success from a session that stopped short. A best-effort revert here would risk overwriting correct work. Operator inspects the issue manually (existing behavior preserved).
-- **Helper extraction.** Two-line duplication across two adjacent branches of the same `if/elif/else` is below the threshold where a shared helper is justified; the helper would just wrap two best-effort calls under a name. Inline keeps the asymmetry with `_record_setup_failure` (which deliberately does NOT revert) visible at the call sites.
+- **System-side surfacing of stuck `In Progress`.** The verify-fail and label-fail recovery paths leave the issue `In Progress` with no marker. Operator board inspection is the recovery signal today. Building a system-side surfacing path (preflight detection, `/sr-status` flag, automatic comment) is out of scope here — file as a follow-up tied to ENG-254 (crash detection) since the same path-survey would catch both classes.
 
 ## Implementation surface
 
 ### Code
 
-`skills/sr-start/scripts/orchestrator.sh`, two adjacent branches inside the post-dispatch outcome `if/elif/else` in `_dispatch_issue`:
+**`lib/linear.sh`** — add one new peer helper, `linear_get_issue_labels`:
 
-- **`exit_clean_no_review` branch** (current lines 580-582 — the `linear_add_label ... || printf ...` pair followed by `_taint_descendants`): replace the two-line label-add with the label-first/gated-revert block above. `_taint_descendants "$issue_id"` stays as the last statement of the branch.
-- **`failed` branch** (current lines 585-587 — same pair): same replacement.
+```bash
+# Get the list of label names currently applied to an issue.
+# Outputs one label name per line on stdout.
+# Returns non-zero if the linear issue view call fails.
+linear_get_issue_labels() {
+  local issue_id="$1"
+  local view_json
+  view_json="$(linear issue view "$issue_id" --json --no-comments)" \
+    || { printf 'linear_get_issue_labels: failed to view %s\n' "$issue_id" >&2; return 1; }
+  printf '%s' "$view_json" | jq -r '(.labels.nodes // []) | .[].name'
+}
+```
+
+Update the comment block at the top of `lib/linear.sh` (lines 11-22) to include `linear_get_issue_labels` in the function index.
+
+**`skills/sr-start/scripts/orchestrator.sh`** — two changes inside `_dispatch_issue`:
+
+1. Add the `_apply_failed_label_verified` helper from "Fix shape" above. Place it adjacent to the other dispatched-outcome helpers (above `_dispatch_issue` is fine, alongside `_record_setup_failure` and `_record_local_residue` near the top of the helper section, around lines 220-300).
+2. Replace the existing label-add at the two failure branches:
+   - **`exit_clean_no_review` branch** (current lines 580-582 — the `linear_add_label ... || printf ...` pair followed by `_taint_descendants`): replace the two-line label-add with the `if _apply_failed_label_verified … fi` block from "Fix shape". `_taint_descendants "$issue_id"` stays as the last statement of the branch.
+   - **`failed` branch** (current lines 585-587 — same pair): same replacement.
 
 The two call sites are textually identical and should remain so after the change — copy the same block to both branches. No other call sites change. `linear_set_state` and `linear_add_label` (`lib/linear.sh:264-301`) are unchanged.
 
@@ -90,12 +133,19 @@ The two call sites are textually identical and should remain so after the change
 
 Because the `exit_clean_no_review` and `failed` branches inline textually-identical blocks, partial-write coverage targets the `failed` branch only — the implementer should resist any temptation to diverge the two call sites.
 
-- **Existing Test 3** (`hard failure: exit non-zero adds ralph-failed label, outcome=failed with exit_code`, line 352): add a membership assertion that `set_state ENG-20 Approved` appears in `STUB_LINEAR_CALLS_FILE` (in addition to the existing `set_state ENG-20 In Progress` and `add_label ENG-20 ralph-failed` membership checks).
-- **Existing Test 4** (`soft failure: exit 0 without state transition adds ralph-failed, outcome=exit_clean_no_review`, line 374): same membership addition for `ENG-30`.
-- **New test: revert fails on label success.** Run against the hard-failure branch (`STUB_CLAUDE_EXIT != 0`). Stub `linear_set_state` so the post-dispatch revert call fails while the dispatch-time `In Progress` transition succeeds — i.e. fail the second `set_state` invocation, not the first. Assert: `add_label ENG-X ralph-failed` is in the call log, `set_state ENG-X Approved` was attempted (in the call log), the `'orchestrator: failed to revert ... (continuing)'` stderr warning appears in `$output`, and the progress.json end-record `outcome` is still `failed`.
-- **New test: label-fail gates revert.** Run against the hard-failure branch. Stub `linear_add_label` to fail. Assert: `set_state ENG-X Approved` does NOT appear in the call log (the gate kept the revert from running), the `'orchestrator: failed to add ralph-failed label to ENG-X; leaving state In Progress so the failure stays visible (continuing)'` stderr warning appears, and the progress.json end-record `outcome` is still `failed`.
+**Stub extensions required** (modify the `LINEARSH` heredoc at `orchestrator.bats:76-173`):
 
-The existing test stubs for `linear_set_state` and `linear_add_label` (`orchestrator.bats:114-135`) already support failure-injection via per-call counters or env flags; extend the stubs minimally if needed to distinguish the dispatch-time `set_state` call (must succeed) from the post-dispatch revert call (must fail) in the revert-fails tests.
+1. **Add a `linear_get_issue_labels` stub.** Reads `STUB_LABELS_<KEY>` (newline-separated label names) and writes them to stdout. Default empty (no labels). Records the call to `STUB_LINEAR_CALLS_FILE` as `get_labels <issue_id>`. Failure flag: `STUB_GET_LABELS_FAIL_<KEY>` (returns non-zero with stderr).
+2. **Extend `linear_set_state` stub** to support fail-on-revert-only. Add a second flag `STUB_SET_STATE_FAIL_ON_REVERT_<KEY>`: when set, the stub returns non-zero ONLY when `$2 == "$CLAUDE_PLUGIN_OPTION_APPROVED_STATE"` (i.e., the post-dispatch revert call). Existing `STUB_SET_STATE_FAIL_<KEY>` semantics (fail ALL calls) remain unchanged.
+3. **The `linear_add_label` stub does NOT need to track applied labels.** Silent-no-op is simulated by leaving the stub's existing success/failure logic alone (no `STUB_ADD_LABEL_FAIL_<KEY>` set → returns 0) AND independently leaving `STUB_LABELS_<KEY>` empty so the `linear_get_issue_labels` stub returns no labels. The two stubs are deliberately decoupled — tests express the silent-no-op scenario by setting label-add success and `get_labels` empty.
+
+With those stubs in place, the test cases:
+
+- **Existing Test 3** (`hard failure: exit non-zero adds ralph-failed label, outcome=failed with exit_code`, line 352): set `STUB_LABELS_ENG_20="ralph-failed"` so the post-add verify sees the label. Add three new membership assertions on `STUB_LINEAR_CALLS_FILE`: `add_label ENG-20 ralph-failed`, `get_labels ENG-20`, `set_state ENG-20 Approved`. Existing assertions retained.
+- **Existing Test 4** (`soft failure: exit 0 without state transition adds ralph-failed, outcome=exit_clean_no_review`, line 374): same additions for `ENG-30`.
+- **New test: revert fails after verified label-add.** Run against the hard-failure branch (`STUB_CLAUDE_EXIT != 0`). Set `STUB_LABELS_ENG_X="ralph-failed"` (verify will see it). Set `STUB_SET_STATE_FAIL_ON_REVERT_ENG_X=1` (the new flag) so only the revert call fails; the dispatch-time `In Progress` transition still succeeds. Assert: `add_label`, `get_labels`, and `set_state ENG-X Approved` all appear in the call log; the `'orchestrator: failed to revert ... (continuing)'` stderr warning appears; progress.json end-record `outcome` is `failed`.
+- **New test: label-add hard-fails, gate trips.** Run against the hard-failure branch. Set `STUB_ADD_LABEL_FAIL_ENG_X=1`. Assert: `add_label ENG-X ralph-failed` appears in the call log; `get_labels ENG-X` does NOT (helper short-circuits on label-add failure); `set_state ENG-X Approved` does NOT (gated out); the `'could not confirm ... after label-add'` stderr warning appears; progress.json end-record `outcome` is `failed`.
+- **New test: label silently no-ops, gate trips.** Run against the hard-failure branch. Do NOT set `STUB_ADD_LABEL_FAIL_ENG_X` (label-add returns 0). Do NOT set `STUB_LABELS_ENG_X` (default empty — verify won't find the label). Assert: `add_label ENG-X ralph-failed` and `get_labels ENG-X` BOTH appear in the call log (the verify path runs); `set_state ENG-X Approved` does NOT appear (gated out); the `'could not confirm ... after label-add'` stderr warning appears; progress.json end-record `outcome` is `failed`.
 
 ### Documentation (same commit as the code change)
 
@@ -120,13 +170,14 @@ All four docs below carry the broken "remove the failed label and re-queue" reci
 
 1. After a `failed` or `exit_clean_no_review` outcome on the happy path, the issue's Linear state is `Approved` and it carries the `ralph-failed` label.
 2. After the operator removes the `ralph-failed` label, the next `/sr-start` queues the issue without any other operator action — `linear_list_approved_issues` returns it, the preflight chain check passes, the orchestrator dispatches it.
-3. Partial-write paths (label-add fails; or label-add succeeds and revert fails) leave the issue in a visible state — never silently rejoining the dispatch queue. Specifically, no failure path produces an `Approved`-state issue without the `ralph-failed` label.
-4. All existing `orchestrator.bats` tests pass. New assertions in Tests 3 and 4 assert the post-dispatch `set_state ... Approved` call appears in the call log. Two new tests cover the partial-write paths (`revert fails on label success`, `label-fail gates revert`).
+3. Partial-write paths leave the issue in a state that never silently rejoins the dispatch queue. Specifically: **no failure path produces an `Approved`-state issue without the `ralph-failed` label.** This includes the Linear silent-no-op case (label name missing from workspace, `linear_add_label` returns 0 but the label isn't applied) — the verify-after-add gate keeps the revert from running.
+4. All existing `orchestrator.bats` tests pass. New assertions in Tests 3 and 4 assert `add_label`, `get_labels`, and `set_state ... Approved` all appear in the call log. Three new tests cover the partial-write paths (`revert fails after verified label-add`, `label-add hard-fails, gate trips`, `label silently no-ops, gate trips`).
 5. The four documentation surfaces above are updated in the same commit as the code change. The phrase "remove the failed label and re-queue" no longer appears in the repo's live docs.
 
 ## Notes for the autonomous implementer
 
-- The TDD workflow: start with the failing assertions in Tests 3 and 4 (assert the new revert call), then write the orchestrator change. Add the three new tests after the orchestrator code is in place (the failure-injection paths require the new code to even be reachable).
-- `linear_set_state` returns non-zero on `linear issue update --state` failure (`lib/linear.sh:264-269`). The bats stub at `orchestrator.bats:114` currently fails ALL calls for an issue when `STUB_SET_STATE_FAIL_<KEY>` is set; the `revert fails on label success` test needs to fail only the post-dispatch revert call (target state `Approved`) while letting the dispatch-time `In Progress` transition succeed. The minimal stub extension is to add a second env flag like `STUB_SET_STATE_FAIL_ON_REVERT_<KEY>` that triggers only when `$2 == "$CLAUDE_PLUGIN_OPTION_APPROVED_STATE"`. This keeps the existing `STUB_SET_STATE_FAIL_*` semantics intact for other tests.
-- Keep the stderr warning text close to the existing pattern at the same call sites (`'orchestrator: failed to add %s label to %s (continuing)\n'`). The new lines should read naturally alongside the unchanged neighbors.
-- Match `lib/linear.sh:227` (`_record_setup_failure`'s label-add) — that call site stays best-effort label-add only and explicitly does NOT revert state, because setup_failed paths never reached the `In Progress` transition. The asymmetry between the dispatched-outcome branches (revert) and the setup-failed branches (no revert) is intentional and worth preserving visibly in the code.
+- **TDD ordering:** start by adding `linear_get_issue_labels` to `lib/linear.sh` and a corresponding stub in `orchestrator.bats` (with a `lib/linear.bats` test for the production helper, mirroring existing patterns there). Then update existing Tests 3 and 4 with the new membership assertions — they will fail because the orchestrator doesn't yet call `_apply_failed_label_verified` or revert state. Then implement `_apply_failed_label_verified` and the call-site replacement in `orchestrator.sh`. Then add the three new partial-write tests (each requires the new code to be reachable). Finally update the docs.
+- **Verification grep:** `grep -qFx` (fixed-string, exact-line match) is the right shape for checking the failed label appears as a complete label name in the newline-separated output of `linear_get_issue_labels`. Substring match (`grep -qF`) would false-positive on a label name that contains the failed label as a prefix.
+- **Stub extensions are additive.** Existing `STUB_SET_STATE_FAIL_<KEY>` and `STUB_ADD_LABEL_FAIL_<KEY>` semantics are unchanged; new flags `STUB_SET_STATE_FAIL_ON_REVERT_<KEY>`, `STUB_LABELS_<KEY>`, and `STUB_GET_LABELS_FAIL_<KEY>` are pure additions. No existing test should need to change beyond the membership-assertion additions in Tests 3 and 4.
+- **stderr warning text:** keep the new warnings close to the existing pattern (`'orchestrator: failed to add %s label to %s (continuing)\n'`). The two new variants are `'orchestrator: failed to revert %s to %s (continuing)\n'` (revert path) and `'orchestrator: could not confirm %s on %s after label-add (CLI failure or silent no-op); leaving state In Progress (continuing)\n'` (verify-or-add-failure path). The third variant collapses two underlying causes (CLI failure, silent no-op) into one operator-facing message because the recovery action is identical.
+- **Match `lib/linear.sh:227`** (`_record_setup_failure`'s label-add) — that call site stays best-effort label-add only and explicitly does NOT revert state, because setup_failed paths never reached the `In Progress` transition. The same silent-no-op vulnerability exists there, but is out of scope for ENG-322 (file as a follow-up issue per Out of scope above).
