@@ -40,20 +40,36 @@ Downstream specs that depend on this restored model:
 
 At each of the two dispatched-outcome failure branches in `_dispatch_issue` (`orchestrator.sh:580` for `exit_clean_no_review`, `:585` for `failed`), replace the existing best-effort label-add with a label-first, **verify-after-add**, gated-revert pair. The verification step is load-bearing: `linear_add_label` returning success only proves the CLI update call succeeded, not that the label is actually applied. Linear's label-by-name resolution silently no-ops when the label name is missing from the workspace (documented at `lib/linear.sh:316-322`); preflight checks for label existence before the run, but the label can be deleted between preflight and a failed-dispatch label-add. Without verification, the gate would let the revert run on an unverified label-add and the issue would silently rejoin the queue as `Approved` unlabeled — exactly the invariant the spec is asserting.
 
-A small orchestrator-local helper encapsulates the add-then-verify pattern; both call sites use it:
+A small orchestrator-local helper encapsulates the add-then-verify pattern; both call sites use it. The helper logs the specific failure reason internally so the caller only needs success/failure semantics:
 
 ```bash
 # Apply the failed label and verify it actually landed on the issue.
 # Returns 0 only when the label is observed on the issue post-add.
+# On failure, logs the specific reason (CLI failure / read failure /
+# silent no-op) to stderr — three distinct mechanisms with three
+# distinct terminal Linear states; see Partial-write outcomes below.
 # Linear silently no-ops --label updates that reference a workspace
 # label name that doesn't exist; we cannot trust linear_add_label's
 # exit code as proof of post-write state.
 _apply_failed_label_verified() {
   local issue_id="$1"
-  linear_add_label "$issue_id" "$CLAUDE_PLUGIN_OPTION_FAILED_LABEL" || return 1
+  if ! linear_add_label "$issue_id" "$CLAUDE_PLUGIN_OPTION_FAILED_LABEL"; then
+    printf 'orchestrator: failed to add %s label to %s; leaving state In Progress (continuing)\n' \
+      "$CLAUDE_PLUGIN_OPTION_FAILED_LABEL" "$issue_id" >&2
+    return 1
+  fi
   local labels
-  labels="$(linear_get_issue_labels "$issue_id" 2>/dev/null)" || return 1
-  printf '%s\n' "$labels" | grep -qFx "$CLAUDE_PLUGIN_OPTION_FAILED_LABEL"
+  if ! labels="$(linear_get_issue_labels "$issue_id" 2>/dev/null)"; then
+    printf 'orchestrator: linear_get_issue_labels failed for %s after label-add; label MAY be on the issue (operator: check Linear and follow the labeled-In-Progress recovery recipe in linear-lifecycle.md); leaving state In Progress (continuing)\n' \
+      "$issue_id" >&2
+    return 1
+  fi
+  if printf '%s\n' "$labels" | grep -qFx "$CLAUDE_PLUGIN_OPTION_FAILED_LABEL"; then
+    return 0
+  fi
+  printf 'orchestrator: %s did not land on %s after label-add (silent no-op — workspace label may be missing); leaving state In Progress (continuing)\n' \
+    "$CLAUDE_PLUGIN_OPTION_FAILED_LABEL" "$issue_id" >&2
+  return 1
 }
 ```
 
@@ -64,9 +80,6 @@ if _apply_failed_label_verified "$issue_id"; then
   linear_set_state "$issue_id" "$CLAUDE_PLUGIN_OPTION_APPROVED_STATE" || \
     printf 'orchestrator: failed to revert %s to %s (continuing)\n' \
       "$issue_id" "$CLAUDE_PLUGIN_OPTION_APPROVED_STATE" >&2
-else
-  printf 'orchestrator: could not confirm %s on %s after label-add (CLI failure or silent no-op); leaving state In Progress (continuing)\n' \
-    "$CLAUDE_PLUGIN_OPTION_FAILED_LABEL" "$issue_id" >&2
 fi
 _taint_descendants "$issue_id"
 ```
@@ -89,14 +102,17 @@ A post-revert re-verification (re-fetch state + labels, surface mismatch as a de
 
 ### Partial-write outcomes
 
-| Label add | Verify | Revert | Resulting state | Operator visibility |
-|---|---|---|---|---|
-| ✓ | ✓ | ✓ | `Approved + ralph-failed` (happy path) | Visible; one-action retry (remove label) |
-| ✓ | ✓ | ✗ | `In Progress + ralph-failed` | Visible; manual two-step recovery (today's recipe), one degraded transient-Linear-API blip |
-| ✓ | ✗ | (gated out) | `In Progress` (no label) — silent no-op on a missing workspace label | Operator board inspection: post-run `In Progress` should be empty; system surfacing of stuck `In Progress` is out of scope (ENG-254) |
-| ✗ | (n/a) | (gated out) | `In Progress` (no label) — `linear_add_label` returned non-zero | Same as above: operator board inspection |
+The four `_apply_failed_label_verified` outcomes (label-add, verify-read, label-observed) cross with the two revert outcomes (success, failure) to produce five distinct terminal states. The verify-read step has three sub-outcomes (read succeeds + label observed; read succeeds + label absent; read fails) that collapse into "verify ✓" or "verify ✗" for the gate, but the resulting Linear state differs.
 
-**Within the dispatched-outcome paths and absent concurrent unintended label mutation** (see Concurrency assumption above), no scenario produces `Approved` (no label) on a failed issue. The two `In Progress` (no label) rows above are degraded recovery paths that depend on operator board inspection — the spec does NOT claim system-level surfacing for them. The `setup_failed` paths are explicitly out of scope and retain today's behavior; see Out of scope.
+| `_apply_failed_label_verified` outcome | Revert | Resulting Linear state | Operator visibility |
+|---|---|---|---|
+| Label add ✓, read ✓, label observed (= helper returns 0) | ✓ | `Approved + ralph-failed` (happy path) | Visible; one-action retry (remove label) — acceptance 2a |
+| Label add ✓, read ✓, label observed (= helper returns 0) | ✗ | `In Progress + ralph-failed` (revert API blip) | Visible; manual two-step recovery (remove label + flip state) — acceptance 2b |
+| Label add ✓, read ✗ (= helper returns 1, *labels-state-unknown* path) | (gated out) | `In Progress + ralph-failed` (most likely — label IS on the issue, just couldn't confirm) OR `In Progress` no label (very unlikely simultaneous failures) | Same as above: criterion 2b recipe handles both (label removal is a no-op if not labeled). Stderr names the read-failure cause. |
+| Label add ✓, read ✓, label NOT observed (= helper returns 1, silent no-op path) | (gated out) | `In Progress` (no label) — workspace label name missing | Operator board inspection — acceptance 2c (out of scope) |
+| Label add ✗ (= helper returns 1, add-failed path) | (gated out) | `In Progress` (no label) — `linear_add_label` returned non-zero | Same as above: acceptance 2c |
+
+**Within the dispatched-outcome paths and absent concurrent unintended label mutation** (see Concurrency assumption above), no scenario produces `Approved` (no label) on a failed issue. The "labeled-but-unverified" outcome (row 3) is functionally indistinguishable from the revert-failed outcome (row 2) for operator recovery purposes — the criterion 2b recipe ("remove label if present; flip state if In Progress") handles both. The two `In Progress` (no label) rows (4 and 5) are degraded recovery paths that depend on operator board inspection — the spec does NOT claim system-level surfacing for them. The `setup_failed` paths are explicitly out of scope and retain today's behavior; see Out of scope.
 
 ## Out of scope
 
@@ -153,7 +169,8 @@ With those stubs in place, the test cases:
 - **Existing Test 4** (`soft failure: exit 0 without state transition adds ralph-failed, outcome=exit_clean_no_review`, line 374): same additions for `ENG-30`.
 - **New test: revert fails after verified label-add.** Run against the hard-failure branch (`STUB_CLAUDE_EXIT != 0`). Set `STUB_LABELS_ENG_X="ralph-failed"` (verify will see it). Set `STUB_SET_STATE_FAIL_ON_REVERT_ENG_X=1` (the new flag) so only the revert call fails; the dispatch-time `In Progress` transition still succeeds. Assert: `add_label`, `get_labels`, and `set_state ENG-X Approved` all appear in the call log; the `'orchestrator: failed to revert ... (continuing)'` stderr warning appears; progress.json end-record `outcome` is `failed`.
 - **New test: label-add hard-fails, gate trips.** Run against the hard-failure branch. Set `STUB_ADD_LABEL_FAIL_ENG_X=1`. Assert: `add_label ENG-X ralph-failed` appears in the call log; `get_labels ENG-X` does NOT (helper short-circuits on label-add failure); `set_state ENG-X Approved` does NOT (gated out); the `'could not confirm ... after label-add'` stderr warning appears; progress.json end-record `outcome` is `failed`.
-- **New test: label silently no-ops, gate trips.** Run against the hard-failure branch. Do NOT set `STUB_ADD_LABEL_FAIL_ENG_X` (label-add returns 0). Do NOT set `STUB_LABELS_ENG_X` (default empty — verify won't find the label). Assert: `add_label ENG-X ralph-failed` and `get_labels ENG-X` BOTH appear in the call log (the verify path runs); `set_state ENG-X Approved` does NOT appear (gated out); the `'could not confirm ... after label-add'` stderr warning appears; progress.json end-record `outcome` is `failed`.
+- **New test: label silently no-ops, gate trips.** Run against the hard-failure branch. Do NOT set `STUB_ADD_LABEL_FAIL_ENG_X` (label-add returns 0). Do NOT set `STUB_LABELS_ENG_X` (default empty — verify won't find the label). Assert: `add_label ENG-X ralph-failed` and `get_labels ENG-X` BOTH appear in the call log (the verify path runs); `set_state ENG-X Approved` does NOT appear (gated out); the `'<label> did not land on ... after label-add (silent no-op'` stderr warning appears; progress.json end-record `outcome` is `failed`.
+- **New test: verify-read fails after successful label-add, gate trips.** Run against the hard-failure branch. Do NOT set `STUB_ADD_LABEL_FAIL_ENG_X` (label-add returns 0). Set `STUB_GET_LABELS_FAIL_ENG_X=1` (the new flag from stub extension #1) so the post-add `linear_get_issue_labels` call returns non-zero. Assert: `add_label ENG-X ralph-failed` and `get_labels ENG-X` BOTH appear in the call log; `set_state ENG-X Approved` does NOT appear (gated out by helper return 1); the `'linear_get_issue_labels failed for ... after label-add'` stderr warning appears; progress.json end-record `outcome` is `failed`. (This case represents partial-write row 3 — labeled-but-unverified — and exercises the criterion 2b recovery path's second underlying cause.)
 
 ### Documentation (same commit as the code change)
 
@@ -189,13 +206,13 @@ The acceptance criteria below distinguish the happy path from the two classes of
 
 2a. **Happy-path retry.** After the operator removes the `ralph-failed` label from a happy-path-terminal issue, the next `/sr-start` queues the issue without any other operator action — `linear_list_approved_issues` returns it, the preflight chain check passes, the orchestrator dispatches it.
 
-2b. **Degraded retry — revert failed (`In Progress + ralph-failed`).** After a degraded outcome where label-add and verify succeed but the revert API call fails, the operator removes the `ralph-failed` label AND flips state to `Approved` per the recipe in `docs/design/linear-lifecycle.md`; the next `/sr-start` then queues the issue without any other operator action.
+2b. **Degraded retry — labeled `In Progress` (revert failed OR verify-read failed after successful label-add).** After a degraded outcome where the label is on (or likely on) the issue but state is `In Progress`, the operator removes the `ralph-failed` label AND flips state to `Approved` per the recipe in `docs/design/linear-lifecycle.md`; the next `/sr-start` then queues the issue without any other operator action. Two underlying causes collapse into this same recovery: (i) revert API call failed after a verified label-add (`'failed to revert ... (continuing)'` warning); (ii) `linear_get_issue_labels` failed after a successful label-add, leaving the label state unverified-but-likely-present (`'linear_get_issue_labels failed for ... after label-add'` warning). The recipe's "remove label if present; flip state" wording handles both, since label removal is a no-op when the label isn't on the issue.
 
 2c. **Known limitation — unlabeled `In Progress` (out of scope).** Two degraded outcomes leave the issue `In Progress` with NO `ralph-failed` label: label-add hard-fails (returns non-zero), and label-add silently no-ops on a missing workspace label and verify correctly rejects (label not observed). These outcomes are visible at run-time via the `'could not confirm ... after label-add'` stderr warning, but are NOT surfaced post-run by `/sr-start`, preflight, or `/sr-status`. Operator recovery requires manual board inspection. ENG-322 does NOT close this gap — the system-side surfacing path is filed as a follow-up issue tied to ENG-254 (crash detection); the operator-facing recovery doc for this class lands in the follow-up alongside the surfacing mechanism. Documenting the recovery here without surfacing would ask operators to scan `progress.json` after every run for a rare anomaly, which is not a workflow ENG-322 is positioned to ship.
 
 3. **Bounded silent-rejoin invariant.** **For the dispatched-outcome failure paths only** (`failed`, `exit_clean_no_review`), **assuming no concurrent unintended label mutation between verify and revert** (Fix shape > Concurrency assumption), AND **assuming Linear read-after-write consistency for sequential same-session API calls** (Fix shape > Linear consistency assumption), no partial-write outcome produces an `Approved`-state issue without the `ralph-failed` label. The `setup_failed` path retains today's best-effort label-add behavior (out of scope per follow-up). The unlabeled `In Progress` degraded outcomes (criterion 2c) do not violate this invariant because state is not `Approved`.
 
-4. All existing `orchestrator.bats` tests pass. New assertions in Tests 3 and 4 assert `add_label`, `get_labels`, and `set_state ... Approved` all appear in the call log. Three new tests cover the partial-write paths (`revert fails after verified label-add`, `label-add hard-fails, gate trips`, `label silently no-ops, gate trips`).
+4. All existing `orchestrator.bats` tests pass. New assertions in Tests 3 and 4 assert `add_label`, `get_labels`, and `set_state ... Approved` all appear in the call log. Four new tests cover the partial-write paths (`revert fails after verified label-add`, `label-add hard-fails, gate trips`, `label silently no-ops, gate trips`, `verify-read fails after successful label-add, gate trips`).
 
 5. The four documentation surfaces above are updated in the same commit as the code change. The phrase "remove the failed label and re-queue" no longer appears in the repo's live docs. The new docs cover criterion 2a (happy-path retry — label-only) and criterion 2b (degraded retry — revert-failed → label removal + manual state flip), so an operator following the docs cannot be stranded on either of those paths. The criterion 2c paths (unlabeled `In Progress`) are NOT covered by the new docs; their operator recovery flow lands in the system-side surfacing follow-up. The spec's `Out of scope` section explicitly names this gap so reviewers do not infer from doc completeness that all degraded paths are covered.
 
