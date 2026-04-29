@@ -31,7 +31,7 @@ Every ralph task goes through this process. A one-function utility, a config twe
 You MUST create a task for each of these items and complete them in order:
 
 1. **Re-entrancy preflight** — if called with an issue-id argument, set `ISSUE_ID=<arg>` and run the state-and-residue matrix below to decide whether to refuse, transition, or resume. Otherwise leave `ISSUE_ID` unset; it will be created in step 6.5.
-2. **Explore project context** — check files, docs, recent commits. If `ISSUE_ID` is set, the existing description is part of this context.
+2. **Explore project context** — check files, docs, recent commits. If `ISSUE_ID` is set, the existing description and existing `blocked-by` relations are part of this context; soft-warn on any blockers whose specs aren't yet frozen.
 3. **Offer visual companion** (if topic will involve visual questions) — its own message, no clarifying question alongside. See the Visual Companion section.
 4. **Ask clarifying questions** — one at a time, understand purpose/constraints/success criteria.
 5. **Propose 2-3 approaches** — with trade-offs and your recommendation.
@@ -167,6 +167,7 @@ fi
 **Understanding the idea:**
 
 - If `ISSUE_ID` is set, start by reading its current description — that's the user's framing before the dialogue refines it. The transition (if any) was performed by the preflight in step 1.
+- If `ISSUE_ID` is set, also fetch the issue's existing `blocked-by` relations via `linear_get_issue_blockers "$ISSUE_ID"` and check each blocker's current state (`linear issue view <ID> --json | jq -r '.state.name'`). **Soft-warn** on any blocker whose state is not one of `$CLAUDE_PLUGIN_OPTION_APPROVED_STATE`, `$CLAUDE_PLUGIN_OPTION_IN_PROGRESS_STATE`, `$CLAUDE_PLUGIN_OPTION_REVIEW_STATE`, or `$CLAUDE_PLUGIN_OPTION_DONE_STATE` — that parent's spec isn't frozen, so designing this child against it risks rework if the parent's surface shifts. List each un-frozen blocker (ID + current state) to the user and ask whether to proceed anyway or pause to spec the parent first. Advisory, not a gate; proceed if the user confirms. Without-arg invocations have no pre-existing blockers — skip this check.
 - Check out the current project state (files, docs, recent commits).
 - Before asking detailed questions, assess scope: if the request describes multiple independent subsystems (e.g., "build a platform with chat, file storage, billing, and analytics"), flag this immediately. Don't spend questions refining details of a project that needs to be decomposed first.
 - If the project is too large for a single spec, help the user decompose into sub-projects: what are the independent pieces, how do they relate, what order should they be built? Each sub-project gets its own spec → its own sr-spec invocation. Prerequisite relationships become `blocked-by` edges in step 11.
