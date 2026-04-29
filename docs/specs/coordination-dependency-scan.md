@@ -550,3 +550,16 @@ No `blocked-by` relations to declare for this issue.
 11. After `/sr-spec` runs the scan and accepts edges on a test issue,
     a subsequent `/close-issue` correctly removes all the marked
     edges and the label.
+12. **One-off, post-`/close-issue`:** rename ENG-280's own Linear
+    title from "Add hidden-dependency scan to /sr-spec to detect
+    file overlap with existing approved specs" to "Add coord-dep
+    scan to /sr-spec to detect file overlap with existing approved
+    specs" via `linear issue update ENG-280 --title "..."`. This
+    one-off step lands AFTER the worktree teardown in `/close-issue`
+    step 9 — at that point Linear's auto-recomputed `.branchName`
+    no longer matters because the branch+worktree are already gone.
+    NOT a feature added to `/close-issue`'s automation; just a
+    closing-checklist item specific to this issue. The same
+    treatment applies to ENG-281 once that issue closes (its title
+    is also "Add hidden-dependency backstop scan ..."), but ENG-280
+    only owns the rename of its own title.
