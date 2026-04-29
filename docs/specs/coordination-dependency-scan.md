@@ -551,11 +551,20 @@ harness:
 
 2. **`skills/sr-spec/scripts/test/coord_dep_scan.bats`** —
    unit-tests the data-assembly helper. Mocks `linear` CLI for
-   issue-list and issue-view; asserts: empty peer list emits valid
-   JSON with `peers: []`, peer descriptions are passed through
-   verbatim, `existing_blockers` excludes peers already declared
-   (and the union with design-time PREREQS), self-exclusion (current
-   `$ISSUE_ID` not in peer list), bad spec-file path returns exit 2.
+   issue-list and issue-view; asserts:
+   - Empty peer list emits valid JSON with `peers: []`.
+   - Peer descriptions are passed through verbatim into the
+     `peers[].description` field.
+   - `existing_blockers` is the **union** of Linear's current
+     `blocked-by` set (from `linear_get_issue_blockers`) and the
+     design-time PREREQS passed as positional args, deduplicated
+     and sorted. (It's a parent-ID list, NOT a filtered peer list:
+     all Approved peers still appear in `peers[]` regardless; the
+     reasoning step uses `existing_blockers` to skip candidates
+     post-extraction.)
+   - Self-exclusion: when Linear's peer list happens to include the
+     current `$ISSUE_ID`, it is filtered out of `peers[]`.
+   - Bad spec-file path returns exit 2.
 
 3. **`skills/close-issue/scripts/test/cleanup_coord_dep.bats`** —
    unit-tests the cleanup helper. Mocks `linear api`,
@@ -636,7 +645,10 @@ No `blocked-by` relations to declare for this issue.
    2 on missing spec file.
 4. `skills/sr-spec/SKILL.md` documents step 11 with the
    structured-prompt checklist, the per-candidate operator gate, the
-   mutation order (relations first, then comment + label), the
+   mutation order (**audit comment posted FIRST; abort step 11
+   entirely if comment-post fails — no relations are added on that
+   path; only after comment-post succeeds, walk accepted candidates
+   and add relations; finally add the label**), the
    `PREREQS`-augmentation contract with step 12, and the comment
    format. Step renumbering: existing step 11 (finalize) becomes
    step 12; existing step 10 (codex) and all earlier numbers stay
