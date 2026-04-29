@@ -149,12 +149,43 @@ read.
 
 The zero-parent fast path in `worktree_merge_parents`
 (`if [ "$parent_count" -eq 0 ]; then return 0; fi`, currently around
-line 117) is **removed**. With it gone, the for-loop iterates zero
-times when called with no parents, falls through to the post-loop
-cleanup, and `rm -f`s any orphaned marker. This guarantees that an
-orchestrator dispatch with empty `merge_parents` cleans up after a
-prior run's stale marker — closing the orphaned-marker hole that
-otherwise survives across dispatches.
+line 117) is **replaced** with a marker-aware guard:
+
+```
+if [ "$parent_count" -eq 0 ]:
+  if [ -f "$path/.sensible-ralph-pending-merges" ]:
+    # Marker exists but caller passed no parents — refuse. Calling the
+    # post-loop rm -f path here would silently drop the pending list.
+    printf 'worktree_merge_parents: refusing zero-parent invocation while marker exists at %s\n' "$path/.sensible-ralph-pending-merges" >&2
+    return 1
+  fi
+  # Marker absent: safe cleanup-only invocation. Fall through to the
+  # for-loop (zero iterations) and post-loop rm -f (no-op).
+fi
+```
+
+This closes two failure modes simultaneously:
+
+- **Stale marker survives a dispatch with empty `merge_parents`.**
+  The orchestrator legitimately calls the helper with no parents
+  when an issue's `dag_base.sh` returns the trunk branch. With this
+  guard, marker-absent zero-parent runs still fall through to the
+  post-loop cleanup (no harm); marker-present zero-parent runs
+  refuse, surfacing the inconsistency rather than silently
+  resolving it.
+
+- **Empty/corrupt marker drives session-side drain to silent
+  drop.** If the session reads a malformed marker, extracts no
+  SHAs, and invokes `worktree_merge_parents "$PWD"` with no args,
+  the helper refuses (return 1). The session then red-flags via
+  the Step 5 escape hatch instead of silently claiming "all
+  parents drained."
+
+`worktree_create_with_integration` does not have a zero-parent fast
+path today and never gets called with `parent_count==0` from the
+orchestrator (the create path branches on `INTEGRATION` which
+implies multi-parent). No change to that helper for the zero-parent
+case.
 
 `worktree_create_with_integration` additionally needs the
 `merge-base --is-ancestor` skip added (it currently lacks one;
@@ -215,28 +246,45 @@ content:
 ```markdown
 ## Step 2: Drain pending parent merges
 
-The marker file is the authority for entering recovery. Two checks
-gate the flow:
+The marker file is the authority for entering the drain loop. Three
+checks gate the flow:
 
     [ -f .sensible-ralph-pending-merges ] && echo MARKER
     git rev-parse -q --verify MERGE_HEAD && echo MERGING
+    git diff --name-only --diff-filter=U                   # unresolved index entries
 
-Three cases:
+Cases:
 
-- **Marker absent, MERGE_HEAD absent:** no drain work. Skip to Step 3.
+- **Marker absent, no MERGING, no UU/AA:** no drain work. Skip to
+  Step 3.
 
-- **Marker absent, MERGE_HEAD present:** the worktree is mid-merge
-  but the state was NOT created by this feature (the helper would
-  have written a marker alongside the merge). Do NOT auto-commit —
-  this is unowned state. Treat as a red flag per Step 5: post a
-  Linear comment ("worktree is mid-merge but `.sensible-ralph-pending-merges`
-  is absent; this state was not produced by the orchestrator's
+- **Marker absent, but MERGING set OR UU/AA present:** the worktree
+  is in an unresolved merge state but the state was NOT created by
+  this feature (the helper would have written a marker alongside
+  the merge). Do NOT auto-commit — this is unowned state. Treat as
+  a red flag per Step 5: post a Linear comment ("worktree has
+  unresolved merge state but `.sensible-ralph-pending-merges` is
+  absent; this state was not produced by the orchestrator's
   parent-merge helpers and cannot be safely auto-resolved"), exit
   clean. Do NOT invoke `/prepare-for-review`.
 
+  The UU/AA check is required because `git checkout --merge`,
+  `git stash apply` with conflicts, and a few other operations can
+  leave UU markers in the index without setting MERGE_HEAD. Catching
+  both detectors prevents an unowned partial-merge state from
+  silently slipping through to Step 3.
+
 - **Marker present:** enter the drain loop. Marker presence proves
-  the merge state belongs to this feature. Run the loop below until
-  the marker is gone.
+  the merge state belongs to this feature. Before calling the
+  helper, validate the marker contains at least one parseable SHA
+  (40-char hex match in column 1 of any line). If the marker is
+  empty, truncated, or otherwise yields no SHAs, treat as a red
+  flag — calling the helper with zero parent args would be
+  interpreted as cleanup-only and silently delete the marker
+  without draining. The helper itself MUST also refuse zero-arg
+  invocations when the marker is present (defense in depth — see
+  "Helper changes" above). Run the loop below until the marker is
+  gone.
 
 ### Drain loop
 
@@ -407,31 +455,67 @@ honored.
 
 11b. `worktree_merge_parents: helper accepts a 40-char hex SHA as a parent arg`. Same shape as (11a) for the existing-worktree case. Required because the helpers have duplicated bodies.
 
-Total deltas: 2 flipped, 11 added. Existing single-parent tests are
-not modified. Tests 10a/10b and 11a/11b are duplicated across helpers
-because `lib/worktree.sh` keeps the resolution and merge-loop
-implementations separate (not factored into a shared subroutine);
-covering both helpers prevents the create path from drifting from
-the merge-parents path under future refactors.
+Total deltas in `lib/test/worktree.bats`: 2 flipped, 11 added.
+Plus 2 added in `skills/sr-start/scripts/test/orchestrator.bats`
+(see "Orchestrator integration tests" below). Existing single-parent
+tests are not modified. Tests 10a/10b and 11a/11b are duplicated
+across helpers because `lib/worktree.sh` keeps the resolution and
+merge-loop implementations separate (not factored into a shared
+subroutine); covering both helpers prevents the create path from
+drifting from the merge-parents path under future refactors.
 
-### Tests deliberately not added
+Add a 12th lib/test/worktree.bats test:
 
-- No bats coverage for the orchestrator's stderr notice line. There is
-  no existing harness for `_dispatch_issue` integration tests; adding
-  one for a single log line is disproportionate.
-- No bats coverage for `/sr-implement` Step 2's drain loop. It is a
-  skill-doc instruction, not a script. Bats covers the helper
-  contract; the loop's correctness follows from helper idempotence
-  plus the documented MERGE_HEAD-detection step.
-- No bats coverage for the MERGING-state restart guard. It is a
-  session-side detection step (`git rev-parse -q --verify MERGE_HEAD`);
-  the helper's behavior when called WITH MERGE_HEAD set is implicitly
-  covered by test 11's documented contract that the session must
-  finish the merge first.
+12. `worktree_merge_parents: refuses zero-parent invocation when
+    marker exists`. Setup: write a fake marker with arbitrary
+    content. Invoke helper with no parent args. Assert: status 1,
+    stderr matches "refusing zero-parent invocation while marker
+    exists", marker file UNCHANGED. Confirms the marker-protection
+    guard.
+
+## Orchestrator integration tests (`skills/sr-start/scripts/test/orchestrator.bats`)
+
+The existing harness (1582 lines) already covers single-parent
+MERGING-state reuse-path dispatch (`@test "reuse path single-parent
+conflict: MERGING state, base-sha = pre-merge spec HEAD,
+dispatched"`, around line 1274) and INTEGRATION-helper post-add
+non-conflict failure (around line 1022). Add parallel coverage for
+the new multi-parent-conflict-leaves-marker contract:
+
+12. `reuse path multi-parent conflict: MERGING state, marker file
+    written, base-sha = pre-merge spec HEAD, dispatched`. Mirrors
+    the existing single-parent test at line 1274 but with two
+    conflicting parents. Asserts: dispatch succeeded (no
+    `setup_failed` outcome), `.sensible-ralph-pending-merges`
+    contains 2 SHA lines matching the parent SHAs, MERGE_HEAD set,
+    `.sensible-ralph-base-sha` = pre-merge spec HEAD.
+
+13. `create path INTEGRATION multi-parent conflict: marker written,
+    dispatched`. Mirrors the existing test at line 1022 but for the
+    conflict-leaves case (instead of the non-conflict-failure
+    case). Asserts dispatch succeeded with marker file and MERGING
+    state.
+
+These two tests cover the orchestrator-side semantic change directly
+(the dispatch-vs-setup_failed branching), so the contract isn't
+purely doc-enforced.
+
+### Helper-level tests deliberately not added
+
+- No bats coverage for the orchestrator's stderr notice line. The
+  notice is a single log line; the dispatch outcome (dispatched vs
+  setup_failed) is what matters and is covered by tests 12-13
+  above.
+- No bats coverage for `/sr-implement` Step 2's drain loop. It is
+  a skill-doc instruction, not a script. Bats covers the helper
+  contract (lib/test/worktree.bats) and the orchestrator-side
+  dispatch decision (skills/sr-start/scripts/test/orchestrator.bats);
+  the session-side loop's correctness follows from helper
+  idempotence + the documented MERGE_HEAD/UU detection.
 - No bats coverage for the unowned-state red flag (marker absent +
-  MERGE_HEAD present). This is a session-side hard stop documented
-  in `/sr-implement` Step 2; the helper itself never enters this
-  path because the helper is the only writer of the marker.
+  MERGING/UU). This is a session-side hard stop documented in
+  `/sr-implement` Step 2; the helper itself never enters this path
+  because the helper is the only writer of the marker.
 
 ## Acceptance criteria
 
@@ -442,8 +526,12 @@ the merge-parents path under future refactors.
    SHAs (one per line, original order).
 2. `lib/worktree.sh::worktree_merge_parents` matches (1) on the same
    axes for the existing-worktree case. Additionally, its zero-parent
-   fast path is removed: a zero-parent invocation falls through to
-   the post-loop cleanup, removing any orphaned marker.
+   handling is replaced by a marker-aware guard:
+   - Marker absent + zero parents → cleanup-only (no-op return 0,
+     post-loop `rm -f` runs).
+   - Marker present + zero parents → refuse (return 1, error to
+     stderr, marker untouched). Prevents silent drop on a corrupt
+     or empty marker.
 3. Both helpers' resolution loops accept either an unprefixed ref
    name (resolved internally to `refs/heads/<arg>` first, then
    falling back to `refs/remotes/origin/<arg>`) or a 40-char hex
@@ -463,14 +551,20 @@ the merge-parents path under future refactors.
    record `setup_failed` for the marker case).
 5. The dispatched session's `/sr-implement` Step 2 implements the
    recovery flow described in the "Session-side drain" section:
-   marker presence is the sole authority for entering the drain
-   loop. If the marker is absent and MERGE_HEAD is set, the session
-   red-flags (post Linear comment, exit clean — do not invoke
-   `/prepare-for-review`). If the marker is present, the drain loop
-   runs: resolve unmerged files → finish any in-progress merge
-   via `git rev-parse -q --verify MERGE_HEAD` + `git commit --no-edit`
-   → re-invoke `worktree_merge_parents` with marker SHAs → loop
-   until marker is gone.
+   - Marker present → enter drain loop (with marker-content
+     validation: at least one parseable 40-char SHA in column 1).
+   - Marker absent + MERGE_HEAD set OR `git diff --name-only
+     --diff-filter=U` non-empty → red-flag (post Linear comment,
+     exit clean — do not invoke `/prepare-for-review`). This
+     catches both MERGE_HEAD-based and stash/checkout-based
+     unowned merge state.
+   - Marker absent + clean tree → skip to Step 3.
+
+   Drain loop body (only entered when marker is present and
+   non-empty): resolve unmerged files → finish any in-progress
+   merge via `git rev-parse -q --verify MERGE_HEAD` +
+   `git commit --no-edit` → re-invoke `worktree_merge_parents` with
+   marker SHAs → loop until marker is gone.
 
 5b. The plugin repo's `.gitignore` includes a new line
     `/.sensible-ralph-pending-merges` alongside the existing
@@ -485,10 +579,18 @@ the merge-parents path under future refactors.
    SHAs, (c) re-running the helper after manual conflict resolution
    drains remaining parents idempotently, (d) re-runs that hit
    another conflict re-write the marker correctly, (e)
-   `worktree_merge_parents` zero-parent invocation cleans up a
-   stale marker, (f) SHA-pinned retry merges the original commit
-   even after the named ref advances, (g) the helper accepts a
+   `worktree_merge_parents` zero-parent invocation with NO marker
+   cleans up (no-op success), (f) `worktree_merge_parents`
+   zero-parent invocation WITH marker refuses (return 1, marker
+   untouched), (g) SHA-pinned retry merges the original commit
+   even after the named ref advances, (h) the helper accepts a
    40-char hex SHA as a parent arg.
+
+6b. `skills/sr-start/scripts/test/orchestrator.bats` covers, via the
+    existing dispatch harness: (a) reuse-path multi-parent conflict
+    leaves marker file and MERGING state, dispatches successfully
+    (no `setup_failed`); (b) create-path INTEGRATION multi-parent
+    conflict same outcome.
 7. Existing single-parent merge behavior and existing single-parent
    bats coverage are unchanged.
 8. `skills/sr-spec/SKILL.md` includes the multi-parent prerequisite
