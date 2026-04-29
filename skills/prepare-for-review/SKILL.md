@@ -2,7 +2,7 @@
 name: prepare-for-review
 description: Use when implementation is complete and tests pass, before handing off for human review. Runs doc/decision updates, codex review (all in one pass), posts a Linear comment with a review summary and QA plan, and moves the issue to In Review. Useful at the tail of autonomous sensible-ralph sessions AND interactive "I just finished this feature" handoffs.
 model: sonnet
-allowed-tools: Skill, Bash, Read, Glob, Grep, Write, Edit
+allowed-tools: Skill, Bash, Read, Glob, Grep, Write, Edit, TodoWrite
 ---
 
 # Prepare for Review
@@ -15,6 +15,47 @@ Hand-off checklist for "implementation is done, tests pass, now it needs human r
 - **At the end of an interactive implementation session** — when the user finishes a feature and wants the handoff polish done consistently.
 
 Do NOT use this skill to cover up an incomplete implementation. If tests fail or the work isn't done, fix that first.
+
+## Terminal action contract
+
+This contract addresses one specific failure mode: emitting a
+markdown summary as the session's final output **instead of**
+performing one of the legal terminal actions below. It does NOT
+redefine the skill's failure-handling policy. Hard infrastructure
+failures (unreachable Linear CLI, dirty working tree, trunk-base
+detection failure, post-comment state-transition failure, etc.)
+exit the skill per the existing preflight and Red Flags handlers,
+with whatever exit code those handlers specify (currently `exit
+1` in several places).
+
+**The legal final actions of this skill are:**
+
+1. **Success path, state change required** — Step 7's `linear issue update --state "$CLAUDE_PLUGIN_OPTION_REVIEW_STATE"` write transitioning the issue to In Review.
+2. **Success path, idempotent rerun** — Step 7's idempotency branch when the issue is already in `$CLAUDE_PLUGIN_OPTION_REVIEW_STATE` (skip the write to avoid Linear activity-feed noise on retry, then exit). No Linear state write occurs in this case, but the SHA-based dedup in Step 6 has already done its job.
+3. **Objective precondition stop that blocks Step 6 or Step 7** — exit per the existing preflight or Red Flags handlers. The complete list of cases this bucket covers, all enumerated in the existing skill body:
+   - Unreachable Linear CLI (idempotency check or Step 6 / Step 7 calls).
+   - Unexpected Linear state at the idempotency check (`Any other state — stop and surface to the reviewer`).
+   - Dirty working tree at the pre-flight check.
+   - Trunk-base detection failure (`Cannot determine trunk` exit 1 path).
+   - Post-comment state-transition failure (line 232–237 in the current skill body).
+   - Tests failing — do NOT run this skill at all (the skill itself rejects this case before any step runs; included here for completeness so the agent has no doubt that "tests failed → exit per the existing handler" is legal).
+   Exit code per those handlers, typically `exit 1`. **Soft content-level cases do NOT belong in this bucket:** codex-review actionable findings must be fixed and re-run per Step 5; codex-review ambiguous findings and substantial PRD deviations must still produce the Step 6 handoff comment so the reviewer sees them; an "In Review" preflight state proceeds with idempotent rerun (legal final action 2). The carve-out is for objective preconditions that block the comment-or-transition path itself, not for content-level review states.
+
+**The illegal final action is: writing a markdown summary**
+("Implementation complete", "All steps done", etc.) **as the
+session's last output without one of the above actions having
+fired.** Sessions that end with a summary and no terminal
+tool/skill call are misclassified by the orchestrator as
+`exit_clean_no_review` — the issue is labeled `ralph-failed`
+and DAG descendants are tainted.
+
+The same rule applies between sub-skill returns inside this skill:
+when a sub-skill (Steps 1, 2, 3, or 5's `update-stale-docs`,
+`capture-decisions`, `prune-completed-docs`,
+`codex-review-gate`) reports completion, the next action MUST be
+the next checklist item, NOT a summary of what the sub-skill just
+did. The sub-skill's "complete" message is NOT this skill's
+terminal signal.
 
 ## Companion skills
 
@@ -105,6 +146,22 @@ The base SHA is used in Steps 1, 5, and 6. Compute it once now so all steps stay
    ```
 
    **⚠ Stop if this might be a stacked branch.** For stacked branches (branching from a feature branch, not the trunk), `git merge-base HEAD <trunk>` includes parent-branch commits and scopes the doc sweep and review incorrectly. Provide `BASE_SHA` explicitly — the commit just before your first commit on this branch: `git rev-parse <your-first-commit>^`.
+
+## Checklist
+
+You MUST create a task for each of these items and complete them in order:
+
+1. **Determine the Linear issue ID** — assign `$ISSUE_ID` from the orchestrator-injected env or the branch name.
+2. **Idempotency check** — read current Linear state; branch on `$CLAUDE_PLUGIN_OPTION_REVIEW_STATE` (skip Step 7), `$CLAUDE_PLUGIN_OPTION_IN_PROGRESS_STATE` (proceed full sequence), or any other state (stop and surface to reviewer).
+3. **Verify clean working tree** — `git status --short` must be empty before any step runs.
+4. **Compute base SHA** — read `.sensible-ralph-base-sha` or detect trunk via `git merge-base HEAD <trunk>`.
+5. **Update stale docs** — invoke the `update-stale-docs` skill with `--base "$BASE_SHA"`.
+6. **Capture decisions** — invoke the `capture-decisions` skill.
+7. **Prune completed docs** — invoke the `prune-completed-docs` skill.
+8. **Commit doc/decisions changes** — stage and commit any new files or edits from items 5–7.
+9. **Codex review gate** — invoke `codex-review-gate` with `--base "$BASE_SHA"`; address actionable findings inline, capture ambiguous ones for item 10's handoff comment.
+10. **Post Linear handoff comment** — write Review Summary + QA Test Plan to a tempfile and post via `linear issue comment add`.
+11. **Transition Linear issue to In Review** — `linear issue update "$ISSUE_ID" --state "$CLAUDE_PLUGIN_OPTION_REVIEW_STATE"` (skip if already in that state).
 
 ## The Sequence (run in order)
 
@@ -223,6 +280,8 @@ Verify the exact CLI syntax against `linear issue comment add --help` at invocat
 **If the `linear` CLI fails:** Surface the error and stop — this skill cannot complete the handoff without Linear.
 
 ### Step 7: Transition Linear issue to In Review
+
+**This is the skill's terminal step.** Complete the existing state-read-then-conditional-write sequence below without emitting a markdown summary first. The legitimate terminal output is either the `linear issue update --state "$CLAUDE_PLUGIN_OPTION_REVIEW_STATE"` write or the no-op exit when the state read shows the issue is already in `$CLAUDE_PLUGIN_OPTION_REVIEW_STATE`. A summary message between the state-read and the conditional write — or after either of them — is NOT a legal terminal action. See the Terminal action contract at the top of this skill.
 
 Check current state, skip the write if it's already In Review (avoids activity-feed noise on retry), otherwise transition:
 
