@@ -58,14 +58,18 @@ in both skills' SKILL.md stay as they are today.
            "Spec self-review" and "User review gate" sections
            between 7 and 10 — those informal sections stay informal)
   step 1-10   (unchanged, including step 10 = codex review gate)
-  step 11     coord-dep scan         ← NEW
+  step 11     coord-dep scan (operator-interaction-only; NO Linear writes)  ← NEW
                 ├─ skills/sr-spec/scripts/coord_dep_scan.sh   (data assembly)
                 ├─ structured-prompt reasoning (skill prose)   (judgment)
-                └─ on accepted findings: linear issue relation add
-                                         linear_add_label (once)
-                                         linear issue comment add (one comment per scan run)
-  step 12     finalize (description push, blocker verify, transition Approved;
-              was step 11)
+                └─ produces in-shell `accepted_edges` array consumed by step 12
+  step 12     finalize (was step 11; absorbs coord-dep writes from step 11):
+                ├─ capture INITIAL_BLOCKERS
+                ├─ push spec description
+                ├─ if accepted_edges non-empty: post audit comment FIRST (abort on fail)
+                ├─ relation-add for ADD_LIST = (PREREQS ∪ accepted_parents) \ INITIAL_BLOCKERS
+                ├─ if accepted_edges non-empty: linear_add_label (coord-dep)
+                ├─ verify ACTUAL == INITIAL_BLOCKERS ∪ PREREQS ∪ accepted_parents
+                └─ transition Approved
 
 /close-issue  (current numbered steps start at 4; pre-step ritual
                sections — Capture issue ID, Main-checkout-CWD
@@ -278,12 +282,17 @@ Failure modes (all return non-zero, with stderr diagnostics):
 The script writes nothing to Linear. All mutations happen in skill
 prose after operator confirmation.
 
-### 4. `/sr-spec` step 11 — reasoning and mutation (skill prose)
+### 4. `/sr-spec` step 11 — reasoning, operator gate (skill prose)
 
-The skill's step 11 prose drives the rest:
+Step 11 is **operator-interaction-only**. It builds the in-shell
+`accepted_edges` array but performs **no Linear writes** — no
+comment, no relation-add, no label. All coord-dep mutations defer
+to step 12 (finalize) where they participate in the existing
+all-or-nothing-before-Approved sequence. This avoids residue
+leakage if finalize fails or the operator abandons after the scan.
 
-1. **Label-existence preflight.** Before any mutation, verify that
-   the configured `coord-dep` label exists in the workspace:
+1. **Label-existence preflight.** Verify the configured `coord-dep`
+   label exists in the workspace:
 
    ```bash
    linear_label_exists "$CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL" || {
@@ -296,9 +305,9 @@ The skill's step 11 prose drives the rest:
    preflight) because `linear issue update --label` silently no-ops
    on an unknown label name. Without the duplicated check, an
    operator who upgrades the plugin and runs `/sr-spec` before any
-   `/sr-start` would write coord-dep edges and audit comments
-   without ever landing the visible label, leaving no operator
-   signal if `/close-issue`'s cleanup later partially fails.
+   `/sr-start` would have step 12 try to apply a label that no-ops
+   silently — leaving no operator signal if `/close-issue`'s
+   cleanup later partially fails.
 
 2. Run the helper:
    `bash "$CLAUDE_PLUGIN_ROOT/skills/sr-spec/scripts/coord_dep_scan.sh" "$SPEC_FILE" "${PREREQS[@]}"`.
@@ -306,8 +315,8 @@ The skill's step 11 prose drives the rest:
 
 3. **Trivial fast path.** If `peers` is empty, or if every potential
    overlap maps to a parent already in `existing_blockers`, emit one
-   line — `step 11: No coordination dependencies detected.` — and proceed
-   to step 12 (finalize).
+   line — `step 11: No coordination dependencies detected.` —
+   leave `accepted_edges` empty, and proceed to step 12 (finalize).
 
 4. **Structured-prompt reasoning.** Present the new spec body and
    each peer's title + description and work the six-item checklist:
@@ -334,79 +343,20 @@ The skill's step 11 prose drives the rest:
    / `rename`), one-line rationale. Three choices:
    **accept / reject / edit-rationale**.
 
-6. **If accepted candidates is empty:** skip the rest of step 11
-   and proceed to step 12 (finalize). No comment, no label, no
-   relations to add.
+6. **End of step 11.** Build `accepted_edges` from the accepted
+   candidates — an array of `{parent, rationale}` entries — and
+   proceed to step 12 (finalize). No Linear writes have happened.
 
-7. **Post the audit comment FIRST, BEFORE any relation-adds.**
+   Shell-side state passed to step 12:
+   - `PREREQS` — design-time prerequisites declared at step 6
+     (unchanged across step 11).
+   - `accepted_edges` — operator-confirmed coord-dep candidates
+     from this step 11 invocation. Each entry has `parent` (issue
+     ID) and `rationale` (one-line text). May be empty.
 
-   - Build `accepted_edges` from the accepted candidates (each is
-     `{parent, rationale}`).
-   - Compose one consolidated comment in the format below, listing
-     every entry in `accepted_edges`.
-   - `linear issue comment add "$ISSUE_ID" --body-file <tmp>`.
-   - **If comment-post fails: ABORT step 11.** Print the comment body
-     inline so the operator can manually post if they want, but do
-     NOT proceed to relation-add. The operator's choices: retry the
-     comment-post, abort the scan entirely (no edges added, no
-     leakage), or proceed-anyway (operator manually posts the
-     comment, then re-runs step 11 starting at sub-step 7 above).
-   - If comment-post succeeds: continue to sub-step 8 (relation-adds).
-
-   Why comment-first: `/close-issue`'s cleanup is the ONLY mechanism
-   that finds and removes coord-dep edges. If a relation-add lands
-   but the comment doesn't, `/close-issue` has no source of truth to
-   discover the edge, and it leaks into the relation graph
-   permanently. Posting the comment first makes the audit trail the
-   load-bearing artifact: if it doesn't land, no edges land either.
-   Inversely, if a later relation-add fails, the comment may
-   overstate — `/close-issue`'s cleanup tolerates that gracefully
-   (it walks marker comments, attempts delete, and treats genuine
-   "edge absent" as benign).
-
-8. **After successful comment-post, walk accepted candidates and
-   add relations.** For each `{parent, rationale}` in
-   `accepted_edges`:
-
-   - `linear issue relation add "$ISSUE_ID" blocked-by "$parent"`.
-   - On success: append `$parent` to a NEW in-shell array
-     `SCAN_ADDED_EDGES` (kept SEPARATE from `PREREQS`; see the
-     finalize-integration callout below) and append `{parent,
-     rationale}` to local `committed_edges`.
-   - On failure: surface the error to the operator with three
-     choices — **retry / skip-this-edge / abort step 11**.
-     - **retry**: re-attempt `linear issue relation add` for the
-       same parent.
-     - **skip-this-edge**: REMOVE `$parent` from `accepted_edges`
-       entirely. Semantically: the operator is changing their mind
-       and rejecting the edge in light of the failure. The audit
-       comment will over-claim (it lists this edge under the
-       `**coord-dep**` heading), but `/close-issue`'s cleanup
-       tolerates that gracefully via the "edge absent (benign)"
-       partition (described in Section 5 below).
-     - **abort step 11**: stop the loop with no further mutations.
-       `/sr-spec` exits step 11 in a partial state. The operator's
-       responsibility to either re-run `/sr-spec` (which detects
-       In Design and resumes; the next scan re-proposes the
-       partially-added edges since they're not yet in
-       Linear-blocked-by) or to manually clean up.
-
-   **Invariant after sub-step 8 completes:** `accepted_edges ==
-   committed_edges` (modulo any edge the operator chose to skip,
-   which is removed from BOTH arrays). This invariant is what makes
-   finalize sub-step 5's verification correct. The skill prose at
-   step 11 MUST NOT silently swallow relation-add failures — doing
-   so would let an Approved issue land with operator-confirmed
-   coord-dep edges missing from Linear, breaking the sequencing
-   guarantee this feature is supposed to provide.
-
-9. **Add the label.** `linear_add_label "$ISSUE_ID" "$CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL"`.
-   Idempotent — labels are additive in `lib/linear.sh::linear_add_label`.
-   On failure: log; continue. The comment is the load-bearing
-   artifact, not the label.
-
-**Comment format** (Approach C — one consolidated comment per scan
-run, marker repeats per line):
+**Comment format** (Approach C — one consolidated comment per
+finalize, marker repeats per line). Step 12 composes and posts
+this; step 11 just tells you what it'll look like:
 
 ```
 **coord-dep** edges added by /sr-spec scan:
@@ -420,45 +370,90 @@ Will be removed automatically on `/close-issue`.
 Each line independently parseable by the cleanup helper's regex.
 Multiple comments accumulate fine across re-spec sessions.
 
-**Critical integration with finalize step 12.** Two arrays must
-stay separate end-to-end:
+**Integration with finalize step 12.** Step 11 only stages
+`accepted_edges`; step 12 absorbs the writes into its existing
+sub-step 5 ("Push spec, set blockers, verify"). Step 12's
+modified internal sequence:
 
-- **`PREREQS`** — design-time prerequisites (set by the operator at
-  step 6 of the dialogue). Finalize sub-step 5's add-loop iterates
-  this array and calls `linear issue relation add` for each.
-  Step 11 must NOT mutate this array.
-- **`SCAN_ADDED_EDGES`** — parents the step-11 scan accepted AND
-  successfully added at step 11. Finalize sub-step 5 does NOT
-  iterate this array for relation-adds (the relations are already
-  in Linear); it only contributes to verification.
+1. **Capture `INITIAL_BLOCKERS`** — current Linear `blocked-by`
+   set at start of finalize. On a re-spec path the issue may
+   already have prior-session blockers; this snapshot lets the
+   verify step include them in `EXPECTED`.
 
-Finalize sub-step 5's existing verification logic — currently
-`EXPECTED=$(printf '%s\n' "${PREREQS[@]}" | sort -u)` — must be
-modified to compute `EXPECTED` over the **union** of `PREREQS` and
-`SCAN_ADDED_EDGES`:
+   ```bash
+   INITIAL_BLOCKERS=$(linear_get_issue_blockers "$ISSUE_ID" | jq -r '.[].id' | sort -u)
+   ```
 
-```bash
-EXPECTED=$(printf '%s\n' "${PREREQS[@]}" "${SCAN_ADDED_EDGES[@]+"${SCAN_ADDED_EDGES[@]}"}" | sort -u)
-```
+2. **Push spec description** (existing).
+
+3. **If `accepted_edges` non-empty: post audit comment FIRST.**
+   Compose the comment in the format above; `linear issue comment
+   add "$ISSUE_ID" --body-file <tmp>`. **If comment-post fails:
+   ABORT finalize** before any relation-add or label-add — leaves
+   the issue in `In Design`, no coord-dep residue. Operator's
+   choices: retry, abort `/sr-spec`, or manually post the comment
+   and re-run finalize. Why comment-first: `/close-issue`'s
+   cleanup is the ONLY mechanism that finds coord-dep edges. If
+   a relation-add lands but the comment doesn't, the edge leaks
+   permanently. Posting the comment first makes the audit trail
+   the load-bearing artifact.
+
+4. **Compute `ADD_LIST` and walk it.**
+
+   ```bash
+   ADD_LIST=$(printf '%s\n' "${PREREQS[@]}" "${accepted_parents[@]+"${accepted_parents[@]}"}" \
+     | sort -u | comm -23 - <(printf '%s\n' "$INITIAL_BLOCKERS"))
+   ```
+
+   `accepted_parents` is the parent-ID-only projection of
+   `accepted_edges`. `comm -23` filters out anything already in
+   `INITIAL_BLOCKERS` so finalize doesn't attempt duplicate adds
+   (Linear's behavior on duplicate `blocked-by` adds is unreliable
+   across CLI versions — some error, some silently no-op).
+
+   For each parent in `ADD_LIST`: `linear issue relation add
+   "$ISSUE_ID" blocked-by "$parent"`. On per-edge failure: surface
+   the error with three choices — **retry / skip-this-edge /
+   abort finalize**. Skip semantically removes the parent from the
+   operator's intent set: if the parent came from `accepted_edges`,
+   remove it from `accepted_edges` AND from the audit comment
+   (post-edit the comment, OR document that `/close-issue` cleanup
+   tolerates the over-claim via "edge absent (benign)"); if it
+   came from `PREREQS`, remove it from `PREREQS`. Abort exits
+   finalize cleanly: any edges already added remain (recoverable
+   on next finalize attempt), the audit comment is already posted,
+   the issue stays `In Design`.
+
+5. **If `accepted_edges` non-empty: add the coord-dep label** via
+   `linear_add_label "$ISSUE_ID" "$CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL"`.
+   Idempotent. On failure: log; continue. The comment is the
+   load-bearing artifact for cleanup, not the label.
+
+6. **Verify** — compute `EXPECTED` as the union of `INITIAL_BLOCKERS`,
+   `PREREQS`, and the parent-IDs in `accepted_edges`:
+
+   ```bash
+   EXPECTED=$(printf '%s\n' \
+     "${INITIAL_BLOCKERS[@]+"${INITIAL_BLOCKERS[@]}"}" \
+     "${PREREQS[@]+"${PREREQS[@]}"}" \
+     "${accepted_parents[@]+"${accepted_parents[@]}"}" \
+     | sort -u)
+   ACTUAL=$(linear_get_issue_blockers "$ISSUE_ID" | jq -r '.[].id' | sort -u)
+   ```
+
+   On mismatch: STOP. Do not transition state. The discrepancy
+   means a relation-add silently failed or the issue's blocker
+   set drifted mid-finalize; either is operator-investigable.
 
 The `${arr[@]+"${arr[@]}"}` pattern expands to nothing when the
 array is empty, sidestepping bash 3.2's unbound-variable fault
-under `set -u`. (Same pattern `lib/linear.sh::linear_add_label`
-uses.)
-
-Why this separation matters: if step 11 appended to `PREREQS`,
-finalize's add-loop would attempt to re-add scan-discovered edges
-that are already in Linear. Linear's CLI behavior on duplicate
-relation-add is unreliable to depend on (some versions error,
-some no-op), and even silent no-op masks a real contract muddle.
-Keeping the arrays separate makes the responsibility crisp:
-PREREQS owns "needs to be added at finalize," `SCAN_ADDED_EDGES`
-owns "already added at step 11," and `EXPECTED` is just the union
-for verification. Implementers MUST NOT collapse the two arrays.
+under `set -u`. Same pattern `lib/linear.sh::linear_add_label`
+uses.
 
 Call this contract out explicitly in the SKILL.md prose at both
-step 11 (where `SCAN_ADDED_EDGES` is populated) and step 12
-(where `EXPECTED` is computed over the union).
+step 11 (where `accepted_edges` is built) and step 12 (where
+`INITIAL_BLOCKERS` / `ADD_LIST` / `EXPECTED` are computed and
+the audit comment + relations + label are written).
 
 ### 5. `/close-issue` step 8 — cleanup helper
 
@@ -522,10 +517,13 @@ parents=$(printf '%s' "$comments" | jq -r '.data.issue.comments.nodes[].body' \
   | sort -u)
 
 # Fast path: no marker matches → no edges to remove. Still attempt
-# label-remove (idempotent) and exit 0.
+# label-remove (idempotent), gated on linear_label_exists so a
+# missing-workspace-label scenario takes the same skip-just-the-
+# label-call posture as the success path below.
 if [[ -z "$parents" ]]; then
-  linear_remove_label "$ISSUE_ID" "$CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL" \
-    || echo "cleanup_coord_dep: label removal failed (no edges to delete) — continuing" >&2
+  linear_label_exists "$CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL" 2>/dev/null && \
+    linear_remove_label "$ISSUE_ID" "$CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL" \
+      || echo "cleanup_coord_dep: label removal skipped or failed (no edges to delete) — continuing" >&2
   exit 0
 fi
 
@@ -789,21 +787,30 @@ No `blocked-by` relations to declare for this issue.
    file path and design-time PREREQS as inputs, emits the documented
    JSON bundle on stdout, exits 0 on empty peers, 1 on Linear failure,
    2 on missing spec file.
-4. `skills/sr-spec/SKILL.md` documents step 11 with the
-   structured-prompt checklist, the per-candidate operator gate, the
-   mutation order (**audit comment posted FIRST; abort step 11
-   entirely if comment-post fails — no relations are added on that
-   path; only after comment-post succeeds, walk accepted candidates
-   and add relations; finally add the label**), the **`PREREQS`
-   vs. `SCAN_ADDED_EDGES` separation contract** with step 12 (step
-   11 populates `SCAN_ADDED_EDGES` only — never mutates `PREREQS`;
-   step 12's add-loop iterates only `PREREQS` while its verify
-   compares ACTUAL to the union `PREREQS ∪ SCAN_ADDED_EDGES`), and
-   the comment format. Step 12 (finalize) sub-step 5 is updated so
-   `EXPECTED` is computed over that union. Step renumbering:
-   existing step 11 (finalize) becomes step 12; existing step 10
-   (codex) and all earlier numbers stay unchanged; informal "Spec
-   self-review" and "User review gate" sections stay informal.
+4. `skills/sr-spec/SKILL.md` documents step 11 as
+   **operator-interaction-only** (label-existence preflight,
+   structured-prompt checklist, per-candidate operator gate
+   producing the `accepted_edges` array, comment-format reference)
+   with **no Linear writes** at step 11. Step 12 (finalize) sub-step
+   5 absorbs all coord-dep mutations in this order:
+   (a) capture `INITIAL_BLOCKERS` (current Linear blocked-by set);
+   (b) push spec description;
+   (c) **if `accepted_edges` non-empty: post the coord-dep audit
+   comment FIRST — abort finalize on comment-post failure (no
+   relation-add or label happens, no residue);**
+   (d) compute `ADD_LIST = (PREREQS ∪ accepted_parents) \
+   INITIAL_BLOCKERS` and walk it with `linear issue relation add`,
+   per-edge retry/skip/abort on failure;
+   (e) if `accepted_edges` non-empty: `linear_add_label` (best-effort);
+   (f) verify `ACTUAL == INITIAL_BLOCKERS ∪ PREREQS ∪ accepted_parents`;
+   (g) transition Approved.
+   Both step 11 and step 12 prose explicitly call out the
+   defer-writes-to-finalize contract (writes do NOT happen at
+   step 11) so the `In Design` issue is residue-free until finalize
+   succeeds atomically. Step renumbering: existing step 11
+   (finalize) becomes step 12; existing step 10 (codex) and all
+   earlier numbers stay unchanged; informal "Spec self-review" and
+   "User review gate" sections stay informal.
 5. `skills/close-issue/scripts/cleanup_coord_dep.sh` exists and
    implements the cleanup contract:
    - Queries marker-matching comments via `linear api` with a
