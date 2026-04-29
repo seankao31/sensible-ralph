@@ -143,24 +143,22 @@ Two distinct contracts:
   `run_id` or per-edge metadata) without breaking older cleanup
   parsers.
 
-The cleanup extraction in `cleanup_coord_dep.sh`:
+The cleanup extraction in `cleanup_coord_dep.sh` parses each
+fenced block INDEPENDENTLY (see Section 5 below for the full
+snippet). The pseudo-code shape:
 
-```bash
-# Extract content between ```coord-dep-audit ... ``` fences across
-# all matching comment bodies. awk handles the multi-line pattern;
-# jq slurps each block and unions parents.
-parents=$(printf '%s' "$comments" | jq -r '.data.issue.comments.nodes[].body' \
-  | awk '/^```coord-dep-audit$/{flag=1; next} /^```$/{if(flag){print ""}; flag=0} flag' \
-  | jq -rs '[.[] | (.parents // [])] | flatten | unique | .[]?' 2>/dev/null \
-  | sort -u)
-```
+1. `awk` extracts each ` ```coord-dep-audit ` block to its own
+   temp file.
+2. For each temp file, run `jq -r '.parents[]?'` independently
+   with `2>/dev/null` to suppress per-file parse failures.
+3. Aggregate via `sort -u`.
 
-The `awk` extracts only blocks fenced by ` ```coord-dep-audit ` and
-its matching ` ``` ` close. The `jq -rs` slurps all blocks as JSON
-documents, unions their `parents` arrays, dedups, prints one
-parent ID per line. If no blocks match or any block is malformed,
-the pipeline produces an empty `parents` (the cleanup's
-no-marker fast path then runs).
+Per-block independence is load-bearing: a malformed block (e.g.,
+an audit comment that an operator hand-edited and broke the JSON)
+must NOT suppress valid `parents` arrays from other well-formed
+blocks. A single `jq -s` over the concatenated blocks would reject
+the entire stream on the first parse error; that approach is
+explicitly avoided.
 
 **Residual limitation, documented:** if an operator manually
 removes a coord-dep relation and then later re-adds the same
@@ -334,7 +332,24 @@ the existing all-or-nothing-before-Approved sequence. This avoids
 residue leakage if finalize fails or the operator abandons after
 the scan.
 
-1. **Label-existence preflight.** Verify the configured `coord-dep`
+1. **Clear any stale transport file.** Delete
+   `<worktree>/.sensible-ralph-coord-dep.json` if it exists from a
+   prior run. A stale file from an aborted earlier `/sr-spec`
+   invocation must NOT replay into this run's finalize: the spec
+   may have changed, the operator may have changed their mind,
+   and consuming an old file would push outdated `blocked-by`
+   edges + audit comments into Linear.
+
+   ```bash
+   rm -f "$WORKTREE_PATH/.sensible-ralph-coord-dep.json"
+   ```
+
+   Each `/sr-spec` invocation owns the contents of the transport
+   file end-to-end (clear at step 11 start; write at step 11 end;
+   delete at step 12 success). The file should never be read by
+   step 12 unless this same `/sr-spec` invocation just wrote it.
+
+2. **Label-existence preflight.** Verify the configured `coord-dep`
    label exists in the workspace:
 
    ```bash
@@ -352,16 +367,17 @@ the scan.
    silently — leaving no operator signal if `/close-issue`'s
    cleanup later partially fails.
 
-2. Run the helper:
+3. Run the helper:
    `bash "$CLAUDE_PLUGIN_ROOT/skills/sr-spec/scripts/coord_dep_scan.sh" "$SPEC_FILE" "${PREREQS[@]}"`.
    Capture the JSON bundle.
 
-3. **Trivial fast path.** If `peers` is empty, or if every potential
-   overlap maps to a parent already in `existing_blockers`, emit one
-   line — `step 11: No coordination dependencies detected.` —
-   leave `accepted_edges` empty, and proceed to step 12 (finalize).
+4. **Trivial fast path.** If `peers` is empty, or if every potential
+   overlap maps to a parent already in `existing_blockers`, write
+   an empty array `[]` to the transport file (sub-step 7), emit
+   one line — `step 11: No coordination dependencies detected.` —
+   and proceed to step 12 (finalize).
 
-4. **Structured-prompt reasoning.** Present the new spec body and
+5. **Structured-prompt reasoning.** Present the new spec body and
    each peer's title + description and work the six-item checklist:
 
    1. For the new spec, list **path-level surface**: files mentioned
@@ -381,12 +397,12 @@ the scan.
    the case where the operator added a relation manually mid-dialogue
    between the helper run and this step).
 
-5. **Per-candidate operator gate.** For each surviving candidate,
+6. **Per-candidate operator gate.** For each surviving candidate,
    show: parent ID + title, category (`path-collide` / `identifier`
    / `rename`), one-line rationale. Three choices:
    **accept / reject / edit-rationale**.
 
-6. **End of step 11: persist `accepted_edges` to the transport
+7. **End of step 11: persist `accepted_edges` to the transport
    file.** Write the operator-confirmed edges to a JSON file at
    `<worktree>/.sensible-ralph-coord-dep.json`. Step 12 reads
    this file. The file format is a simple array of objects:
@@ -647,22 +663,37 @@ fi
 #    inline references, even a backticked quote of the fence
 #    language tag in a non-fenced context — is NOT delete authority.
 #
-#    awk extracts content between ```coord-dep-audit and the
-#    matching ```. The blank-line emit on close tells jq -s where
-#    one block ends so it can slurp them as separate JSON
-#    documents. jq parses each block, unions parents, dedups.
+#    Each block is parsed INDEPENDENTLY: a malformed JSON in one
+#    block must not suppress valid `parents` arrays from other
+#    blocks. (A single `jq -s` over the concatenated blocks would
+#    reject the entire stream on the first parse error; that path
+#    is explicitly avoided.)
 #
-#    Returns empty (no exit code) if no blocks found or all blocks
-#    are malformed JSON — the cleanup's no-marker fast path runs.
-#    A genuine `jq` parse error on a malformed block is suppressed
-#    via `2>/dev/null` deliberately: an old / corrupted audit
-#    comment shouldn'"'"'t block legitimate cleanup. (Operators
-#    can investigate the comment by hand if cleanup is unexpectedly
-#    inert.)
-parents=$(printf '%s' "$comments" | jq -r '.data.issue.comments.nodes[].body' \
-  | awk '/^```coord-dep-audit$/{flag=1; next} /^```$/{if(flag){print ""}; flag=0} flag' \
-  | jq -rs '[.[] | (.parents // [])] | flatten | unique | .[]?' 2>/dev/null \
-  | sort -u)
+#    Implementation: awk extracts each block to its own temp file,
+#    then jq is called per file with `2>/dev/null` to suppress
+#    parse errors. Per-file empty/malformed → no parents from that
+#    block; valid blocks contribute their `parents` to the
+#    aggregated set.
+parents=$(
+  tmpdir=$(mktemp -d)
+  trap 'rm -rf "$tmpdir"' EXIT
+
+  # Extract each fenced block to its own file. The awk script
+  # numbers blocks sequentially so each gets a distinct path.
+  printf '%s' "$comments" | jq -r '.data.issue.comments.nodes[].body' \
+    | awk -v dir="$tmpdir" '
+        /^```coord-dep-audit$/{n++; out=sprintf("%s/block-%05d.json", dir, n); flag=1; next}
+        /^```$/{flag=0; next}
+        flag{print > out}
+      '
+
+  # Parse each block independently. Per-file jq failures are
+  # silenced and skipped; valid blocks contribute their parents.
+  for f in "$tmpdir"/block-*.json; do
+    [[ -f "$f" ]] || continue
+    jq -r '.parents[]?' "$f" 2>/dev/null || true
+  done | sort -u
+)
 
 # Fast path: no marker matches → no edges to remove. Still attempt
 # label-remove (idempotent), gated on linear_label_exists so a
