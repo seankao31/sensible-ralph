@@ -75,10 +75,17 @@ _taint_descendants "$issue_id"
 
 Notes:
 
-- **Verify-after-add gates the revert.** The state revert runs only when the failed label is *observed* on the issue, not just when `linear_add_label` returns success. The invariant the spec asserts — *"an Approved-state issue always carries the `ralph-failed` marker after a failure"* — is now grounded in observed state, not in a CLI return code that can return success on a silent no-op.
+- **Verify-after-add gates the revert.** The state revert runs only when the failed label is *observed* on the issue, not just when `linear_add_label` returns success. This makes the gate robust against the documented Linear silent-no-op (missing workspace label name → CLI returns 0 without applying anything).
 - **Both calls remain best-effort.** The orchestrator continues regardless of label-add, verify, or revert success; warnings go to stderr matching the existing pattern at the same call sites.
 - **Taint runs unconditionally.** Failure of this issue means descendants are tainted regardless of how the Linear writes resolved.
 - **Single helper, both call sites.** The two dispatched-outcome branches inline the same `if _apply_failed_label_verified … fi` block. The helper lives in `orchestrator.sh` (not `lib/linear.sh`) because the verify-after-add policy is orchestrator-specific, not a general Linear-library primitive.
+- **Concurrency assumption (load-bearing).** The sequence `add_label → get_labels → set_state Approved` is THREE separate Linear API calls. There is no compare-and-set, no transaction, no atomic combined update. The spec's claim that no **dispatched-outcome** failure path leaves the issue `Approved` without `ralph-failed` is conditioned on **no concurrent unintended label mutation between the `get_labels` verify call and the `set_state` revert call** (a window of one Linear API round-trip — typically tens to low-hundreds of milliseconds). The supported and unsupported cases:
+  - *Same-repo concurrent `/sr-start` runs:* unsupported by design (`docs/usage.md`); not a failure case this fix is responsible for.
+  - *Human removing the label in Linear UI mid-window:* a human removing the label in that exact millisecond is removing it because they want the issue re-queued. The race converges to operator-intended state (`Approved` no label = "re-pick on next run"). Not a silent-rejoin in the bug-shape sense — the operator's intent IS rejoin.
+  - *Other automated processes mutating Linear labels:* out of scope for ralph; not a supported environment.
+  - *Stale-positive read from Linear's read replicas:* possible in principle; same convergence argument as the human-UI case (the only realistic upstream reason for the label to be absent is operator triage).
+
+A post-revert re-verification (re-fetch state + labels, surface mismatch as a degraded outcome, possibly re-apply the label) is deliberately NOT in scope: it shifts the race window rather than closes it, and adds complexity for a scenario whose realistic resolutions are already operator-intended.
 
 ### Partial-write outcomes
 
@@ -89,7 +96,7 @@ Notes:
 | ✓ | ✗ | (gated out) | `In Progress` (no label) — silent no-op on a missing workspace label | Operator board inspection: post-run `In Progress` should be empty; system surfacing of stuck `In Progress` is out of scope (ENG-254) |
 | ✗ | (n/a) | (gated out) | `In Progress` (no label) — `linear_add_label` returned non-zero | Same as above: operator board inspection |
 
-There is no scenario that produces `Approved` (no label) on a failed issue. The two `In Progress` (no label) rows above are degraded recovery paths that depend on operator board inspection — the spec does NOT claim system-level surfacing for them.
+**Within the dispatched-outcome paths and absent concurrent unintended label mutation** (see Concurrency assumption above), no scenario produces `Approved` (no label) on a failed issue. The two `In Progress` (no label) rows above are degraded recovery paths that depend on operator board inspection — the spec does NOT claim system-level surfacing for them. The `setup_failed` paths are explicitly out of scope and retain today's behavior; see Out of scope.
 
 ## Out of scope
 
@@ -98,6 +105,7 @@ There is no scenario that produces `Approved` (no label) on a failed issue. The 
 - **`local_residue`** never mutates Linear; nothing to revert.
 - **`unknown_post_state`** (`exit 0` + transient state-fetch failure) deliberately leaves Linear untouched. The orchestrator cannot disambiguate a real `In Review` success from a session that stopped short. A best-effort revert here would risk overwriting correct work. Operator inspects the issue manually (existing behavior preserved).
 - **System-side surfacing of stuck `In Progress`.** The verify-fail and label-fail recovery paths leave the issue `In Progress` with no marker. Operator board inspection is the recovery signal today. Building a system-side surfacing path (preflight detection, `/sr-status` flag, automatic comment) is out of scope here — file as a follow-up tied to ENG-254 (crash detection) since the same path-survey would catch both classes.
+- **Atomicity / post-revert re-verification.** The `add_label → get_labels → set_state` sequence is non-atomic; concurrent unintended label mutation between verify and revert can produce `Approved` without label. Realistic upstream causes converge to operator-intended state (see Fix shape > Concurrency assumption); other concurrent mutators are unsupported scenarios. A post-revert re-verification step (re-fetch and re-apply on mismatch) shifts the window without closing it, adds non-trivial complexity, and is not in scope here. If realistic incidents surface, file a follow-up that designs around Linear's actual concurrency primitives.
 
 ## Implementation surface
 
@@ -170,7 +178,7 @@ All four docs below carry the broken "remove the failed label and re-queue" reci
 
 1. After a `failed` or `exit_clean_no_review` outcome on the happy path, the issue's Linear state is `Approved` and it carries the `ralph-failed` label.
 2. After the operator removes the `ralph-failed` label, the next `/sr-start` queues the issue without any other operator action — `linear_list_approved_issues` returns it, the preflight chain check passes, the orchestrator dispatches it.
-3. Partial-write paths leave the issue in a state that never silently rejoins the dispatch queue. Specifically: **no failure path produces an `Approved`-state issue without the `ralph-failed` label.** This includes the Linear silent-no-op case (label name missing from workspace, `linear_add_label` returns 0 but the label isn't applied) — the verify-after-add gate keeps the revert from running.
+3. **For the dispatched-outcome failure paths only** (`failed`, `exit_clean_no_review`), and **assuming no concurrent unintended label mutation between verify and revert** (see Fix shape > Concurrency assumption), no partial-write outcome produces an `Approved`-state issue without the `ralph-failed` label. This includes the Linear silent-no-op case (label name missing from workspace, `linear_add_label` returns 0 but the label isn't applied) — the verify-after-add gate keeps the revert from running. The `setup_failed` path is explicitly out of scope and retains its existing best-effort label-add behavior with the same silent-no-op vulnerability filed as a follow-up.
 4. All existing `orchestrator.bats` tests pass. New assertions in Tests 3 and 4 assert `add_label`, `get_labels`, and `set_state ... Approved` all appear in the call log. Three new tests cover the partial-write paths (`revert fails after verified label-add`, `label-add hard-fails, gate trips`, `label silently no-ops, gate trips`).
 5. The four documentation surfaces above are updated in the same commit as the code change. The phrase "remove the failed label and re-queue" no longer appears in the repo's live docs.
 
