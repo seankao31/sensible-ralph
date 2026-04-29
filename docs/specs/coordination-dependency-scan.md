@@ -93,27 +93,51 @@ Linear-side mutations.
 
 ## The reserved marker
 
-```
-**coord-dep**: blocked-by ENG-NNN
-```
-
-This exact string, anywhere in any comment body of any issue, is
-owned by this feature. The single source of truth for the format is
-the header comment of `skills/sr-spec/scripts/coord_dep_scan.sh`,
-copied as a `## Marker format` section into both
-`skills/sr-spec/SKILL.md` (step 11) and `skills/close-issue/SKILL.md`
-(step 8) so each skill is self-contained for a reader.
-
-`/close-issue`'s cleanup will treat any line matching the regex
+The cleanup parser is **strictly line-anchored** and requires the
+marker to appear as the leading content of a markdown list-bullet
+line:
 
 ```
-^[-[:space:]]*\*\*coord-dep\*\*:[[:space:]]+blocked-by[[:space:]]+ENG-[0-9]+
+- **coord-dep**: blocked-by ENG-NNN — <rationale>
 ```
 
-as a removal target, regardless of which scan posted it (`/sr-spec`
-today, `/sr-start` once ENG-281 lands). Operators must not write the
-marker by hand in a comment unless they want it auto-removed at
-close.
+The cleanup regex (the contract `cleanup_coord_dep.sh` enforces):
+
+```
+^- \*\*coord-dep\*\*:[[:space:]]+blocked-by[[:space:]]+ENG-[0-9]+
+```
+
+Mandatory leading `- ` (literal hyphen + space), then `**coord-dep**:`,
+then `blocked-by` then `ENG-NNN`. No optional whitespace before the
+`-`, no nested-bullet indentation, no alternate prose framing.
+
+Lines that mention the marker in any other shape — inline prose
+quoting it, regex/example tokens, indented code-fence content
+without the leading `- ` bullet — are NOT treated as removal
+targets. This is the deliberate trade-off: the format is restricted
+enough that arbitrary commentary about the feature won't accidentally
+mark a real edge for deletion.
+
+**Residual risk** (documented, not designed around): a comment that
+includes a fenced code block whose **first character on a line** is
+`-` followed by `**coord-dep**:` (e.g., a markdown-rendered example
+of an audit comment) WILL match the regex. The mitigation is
+discipline: prose explaining the marker should escape it (e.g.,
+`\\-` or use indented quoting `>`), and operator-facing docs/
+comments should avoid showing a faithful audit-line example without
+markup adjustments. A more aggressive sentinel (an opaque token
+that never appears in prose) was considered and rejected — it would
+trade away the human readability of audit comments for marginal
+robustness against an unlikely accident.
+
+The single source of truth for this format is the header comment of
+`skills/sr-spec/scripts/coord_dep_scan.sh`, copied as a `## Marker
+format` section into both `skills/sr-spec/SKILL.md` (step 11) and
+`skills/close-issue/SKILL.md` (step 8) so each skill is
+self-contained for a reader. `/sr-spec` (today) and `/sr-start`
+once ENG-281 lands both produce the same format; `/close-issue`'s
+cleanup uses the same regex regardless of which scan posted the
+comment.
 
 ## Components
 
@@ -258,16 +282,34 @@ prose after operator confirmation.
 
 The skill's step 11 prose drives the rest:
 
-1. Run the helper:
+1. **Label-existence preflight.** Before any mutation, verify that
+   the configured `coord-dep` label exists in the workspace:
+
+   ```bash
+   linear_label_exists "$CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL" || {
+     echo "step 11: workspace label '$CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL' missing. Create it once via the Linear UI or update the plugin config to name an existing label, then re-run /sr-spec. Skipping step 11 for now is acceptable — proceed to step 12 if the operator confirms (the /sr-start backstop in ENG-281 will catch missed edges later)." >&2
+     # Operator chooses: create label and retry, or skip step 11 and proceed to step 12.
+   }
+   ```
+
+   The check is duplicated here (rather than relying on `/sr-start`'s
+   preflight) because `linear issue update --label` silently no-ops
+   on an unknown label name. Without the duplicated check, an
+   operator who upgrades the plugin and runs `/sr-spec` before any
+   `/sr-start` would write coord-dep edges and audit comments
+   without ever landing the visible label, leaving no operator
+   signal if `/close-issue`'s cleanup later partially fails.
+
+2. Run the helper:
    `bash "$CLAUDE_PLUGIN_ROOT/skills/sr-spec/scripts/coord_dep_scan.sh" "$SPEC_FILE" "${PREREQS[@]}"`.
    Capture the JSON bundle.
 
-2. **Trivial fast path.** If `peers` is empty, or if every potential
+3. **Trivial fast path.** If `peers` is empty, or if every potential
    overlap maps to a parent already in `existing_blockers`, emit one
    line — `step 11: No coordination dependencies detected.` — and proceed
    to step 12 (finalize).
 
-3. **Structured-prompt reasoning.** Present the new spec body and
+4. **Structured-prompt reasoning.** Present the new spec body and
    each peer's title + description and work the six-item checklist:
 
    1. For the new spec, list **path-level surface**: files mentioned
@@ -287,16 +329,16 @@ The skill's step 11 prose drives the rest:
    the case where the operator added a relation manually mid-dialogue
    between the helper run and this step).
 
-4. **Per-candidate operator gate.** For each surviving candidate,
+5. **Per-candidate operator gate.** For each surviving candidate,
    show: parent ID + title, category (`path-collide` / `identifier`
    / `rename`), one-line rationale. Three choices:
    **accept / reject / edit-rationale**.
 
-5. **If accepted candidates is empty:** skip the rest of step 11
+6. **If accepted candidates is empty:** skip the rest of step 11
    and proceed to step 12 (finalize). No comment, no label, no
    relations to add.
 
-6. **Post the audit comment FIRST, BEFORE any relation-adds.**
+7. **Post the audit comment FIRST, BEFORE any relation-adds.**
 
    - Build `accepted_edges` from the accepted candidates (each is
      `{parent, rationale}`).
@@ -308,8 +350,8 @@ The skill's step 11 prose drives the rest:
      NOT proceed to relation-add. The operator's choices: retry the
      comment-post, abort the scan entirely (no edges added, no
      leakage), or proceed-anyway (operator manually posts the
-     comment, then re-runs from step 7).
-   - If comment-post succeeds: continue to step 7.
+     comment, then re-runs step 11 starting at sub-step 7 above).
+   - If comment-post succeeds: continue to sub-step 8 (relation-adds).
 
    Why comment-first: `/close-issue`'s cleanup is the ONLY mechanism
    that finds and removes coord-dep edges. If a relation-add lands
@@ -322,7 +364,7 @@ The skill's step 11 prose drives the rest:
    (it walks marker comments, attempts delete, and treats genuine
    "edge absent" as benign).
 
-7. **After successful comment-post, walk accepted candidates and
+8. **After successful comment-post, walk accepted candidates and
    add relations.** For each `{parent, rationale}` in
    `accepted_edges`:
 
@@ -331,12 +373,34 @@ The skill's step 11 prose drives the rest:
      `SCAN_ADDED_EDGES` (kept SEPARATE from `PREREQS`; see the
      finalize-integration callout below) and append `{parent,
      rationale}` to local `committed_edges`.
-   - On failure: log a clear warning naming `$parent` and continue.
-     Do NOT prompt for retry/abort here — the audit trail is
-     already posted, so missed adds are recoverable at close time
-     via the cleanup helper's "edge absent (benign)" path.
+   - On failure: surface the error to the operator with three
+     choices — **retry / skip-this-edge / abort step 11**.
+     - **retry**: re-attempt `linear issue relation add` for the
+       same parent.
+     - **skip-this-edge**: REMOVE `$parent` from `accepted_edges`
+       entirely. Semantically: the operator is changing their mind
+       and rejecting the edge in light of the failure. The audit
+       comment will over-claim (it lists this edge under the
+       `**coord-dep**` heading), but `/close-issue`'s cleanup
+       tolerates that gracefully via the "edge absent (benign)"
+       partition (described in Section 5 below).
+     - **abort step 11**: stop the loop with no further mutations.
+       `/sr-spec` exits step 11 in a partial state. The operator's
+       responsibility to either re-run `/sr-spec` (which detects
+       In Design and resumes; the next scan re-proposes the
+       partially-added edges since they're not yet in
+       Linear-blocked-by) or to manually clean up.
 
-8. **Add the label.** `linear_add_label "$ISSUE_ID" "$CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL"`.
+   **Invariant after sub-step 8 completes:** `accepted_edges ==
+   committed_edges` (modulo any edge the operator chose to skip,
+   which is removed from BOTH arrays). This invariant is what makes
+   finalize sub-step 5's verification correct. The skill prose at
+   step 11 MUST NOT silently swallow relation-add failures — doing
+   so would let an Approved issue land with operator-confirmed
+   coord-dep edges missing from Linear, breaking the sequencing
+   guarantee this feature is supposed to provide.
+
+9. **Add the label.** `linear_add_label "$ISSUE_ID" "$CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL"`.
    Idempotent — labels are additive in `lib/linear.sh::linear_add_label`.
    On failure: log; continue. The comment is the load-bearing
    artifact, not the label.
@@ -441,14 +505,20 @@ if [[ "$has_next" == "true" ]]; then
   exit 1
 fi
 
-# 3. Per-line regex extraction across the matching comment bodies, dedup.
-#    `|| true` guards: under `set -euo pipefail`, grep returns 1 on
-#    zero matches and would propagate via `pipefail` to fail the
-#    pipeline. The common path (no coord-dep comments) is exactly
-#    that — handle gracefully.
+# 3. Line-anchored extraction across the matching comment bodies,
+#    dedup. The sed expression enforces the contract from "The
+#    reserved marker" section: literal leading `- ` bullet, then
+#    the marker pattern. Lines that don't match this exact shape
+#    are NOT treated as removal targets, even if they contain the
+#    marker text inline. The capture group extracts ONLY the
+#    parent-ID immediately after `blocked-by`, so any incidental
+#    `ENG-NNN` references in the rationale (e.g. "overlaps with
+#    ENG-Y's restructure") are NOT mistaken for parent IDs.
+#
+#    sed with `-n` + `p` outputs only matched lines; returns 0
+#    even on zero matches, so no `|| true` guard is needed.
 parents=$(printf '%s' "$comments" | jq -r '.data.issue.comments.nodes[].body' \
-  | { grep -Eo '\*\*coord-dep\*\*:[[:space:]]+blocked-by[[:space:]]+ENG-[0-9]+' || true; } \
-  | { grep -Eo 'ENG-[0-9]+' || true; } \
+  | sed -nE 's/^- \*\*coord-dep\*\*:[[:space:]]+blocked-by[[:space:]]+(ENG-[0-9]+).*/\1/p' \
   | sort -u)
 
 # Fast path: no marker matches → no edges to remove. Still attempt
@@ -459,39 +529,49 @@ if [[ -z "$parents" ]]; then
   exit 0
 fi
 
-# 4. Pre-fetch the issue's CURRENT blocked-by set. This lets us
-#    distinguish "edge already absent (benign)" from "edge present
-#    but delete failed (real failure)" — Linear returns the same
-#    exit status for both, so we partition on prior knowledge.
-blockers_json=$(linear_get_issue_blockers "$ISSUE_ID") || {
-  echo "cleanup_coord_dep: linear_get_issue_blockers failed for $ISSUE_ID — aborting cleanup" >&2
+# 4. Best-effort delete loop — try to delete every marker-parent.
+#    Linear's relation-delete returns the same exit status whether
+#    the edge was present-and-deleted, present-and-failed, or
+#    absent-from-the-start, so we don't try to classify here. We
+#    just attempt all deletes and let the post-delete state speak
+#    for itself.
+for p in $parents; do
+  linear issue relation delete "$ISSUE_ID" blocked-by "$p" 2>/dev/null || true
+done
+
+# 5. Re-fetch blockers AFTER the delete loop. The post-delete state
+#    is the ground truth — pre-fetch snapshots can go stale under
+#    concurrent Linear UI edits (a human removing the relation
+#    between our pre-fetch and our delete would otherwise be
+#    misclassified as a real failure). Any marker-parent still in
+#    blockers IS a real failure.
+final_blockers_json=$(linear_get_issue_blockers "$ISSUE_ID") || {
+  echo "cleanup_coord_dep: linear_get_issue_blockers (post-delete) failed for $ISSUE_ID — cannot verify cleanup state; KEEPING coord-dep label conservatively" >&2
   exit 1
 }
-existing_parents=$(printf '%s' "$blockers_json" | jq -r '.[].id' | sort -u)
+final_blockers=$(printf '%s' "$final_blockers_json" | jq -r '.[].id' | sort -u)
 
-# 5. Walk marker-parents. Skip those already absent (benign);
-#    delete those still present, counting REAL failures only.
 real_failures=0
 for p in $parents; do
-  if printf '%s\n' "$existing_parents" | grep -qx "$p"; then
-    linear issue relation delete "$ISSUE_ID" blocked-by "$p" \
-      || { echo "cleanup_coord_dep: delete failed for $p — KEEPING coord-dep label" >&2
-           real_failures=$((real_failures + 1)); }
-  else
-    echo "cleanup_coord_dep: $p edge already absent (benign) — skipping" >&2
+  if printf '%s\n' "$final_blockers" | grep -qx "$p"; then
+    echo "cleanup_coord_dep: $p still present in blockers after delete attempt — real failure" >&2
+    real_failures=$((real_failures + 1))
   fi
 done
 
-# 6. Label removal — only if every real delete succeeded. Removing
-#    the label after partial failures would erase the only signal
-#    that cleanup is incomplete (the issue is already in Done at
-#    this point, so the normal close flow won't run again).
+# 6. Label removal — only if every marker-parent is absent from the
+#    final post-delete state. Removing the label after partial
+#    failures would erase the only signal that cleanup is
+#    incomplete (the issue is already in Done at this point, so
+#    the normal close flow won't run again, and the persistent
+#    label is the operator's signal to investigate).
 if [[ "$real_failures" -eq 0 ]]; then
-  linear_remove_label "$ISSUE_ID" "$CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL" \
-    || echo "cleanup_coord_dep: label removal failed — continuing" >&2
+  linear_label_exists "$CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL" 2>/dev/null && \
+    linear_remove_label "$ISSUE_ID" "$CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL" \
+      || echo "cleanup_coord_dep: label removal skipped or failed (label may not exist in workspace) — continuing" >&2
   exit 0
 else
-  echo "cleanup_coord_dep: $real_failures edge deletion(s) failed; coord-dep label intentionally kept so the operator can see incomplete cleanup. Investigate and clear manually." >&2
+  echo "cleanup_coord_dep: $real_failures edge(s) still present after delete attempt; coord-dep label intentionally kept so the operator can see incomplete cleanup. Investigate and clear manually." >&2
   exit 1
 fi
 ```
@@ -505,22 +585,41 @@ Five properties guaranteed:
   bypassed entirely. The hard 250 ceiling is a sanity bound on the
   filter result, not on total comments.
 - **Multi-comment safe.** All matching comments walked; all parent
-  IDs collected into one set before deletion. N re-spec runs
-  producing N comments → all parents removed in one pass.
-- **Idempotent.** `sort -u` dedups across comments. Re-running
-  `/close-issue` (e.g., after partial failure on the merge step
-  earlier) is safe; benign "edge already absent" cases are
-  partitioned from real failures via the pre-fetched blocker set.
-- **Label kept on real failure.** If any delete genuinely failed
-  (target was present in pre-fetched blockers but couldn't be
-  deleted), the `ralph-coord-dep` label stays on the issue so the
-  incomplete cleanup is visible. After the `Done` transition the
-  normal close flow won't run again, so this label is the operator's
-  only signal that something needs hand-cleanup.
-- **Zero-match safe under `set -euo pipefail`.** The grep pipeline
-  uses `|| true` guards so the no-marker-comments path (the common
-  case for issues without any coord-dep history) doesn't exit the
-  script via `pipefail`.
+  IDs collected into one set before any delete is attempted. N
+  re-spec runs producing N comments → all parents handled in one
+  pass.
+- **Idempotent under concurrent UI edits.** Failure classification
+  is computed from the **post-delete blocker state** via a fresh
+  re-fetch, NOT from a pre-delete snapshot. If a human removes a
+  relation in Linear between our delete attempt and our re-fetch,
+  cleanup correctly classifies that parent as absent (cleanup
+  complete). If a relation is still present after our delete
+  attempt, that's a real failure regardless of when it was
+  introduced.
+- **Label kept on real failure.** If any marker-parent is still in
+  the blocker set after the delete loop, the `ralph-coord-dep`
+  label stays on the issue and the script exits non-zero. After
+  the `Done` transition the normal close flow won't run again, so
+  this persistent label is the operator's only signal that
+  something needs hand-cleanup.
+- **Zero-match safe under `set -euo pipefail`.** The sed extraction
+  returns 0 even on no matches (no need for `|| true`); the
+  no-marker-comments path is the common case for issues without
+  any coord-dep history and exits cleanly with the label-remove
+  attempt.
+
+**Documented edge case (not designed around):** if an operator
+manually removes a coord-dep relation, then later re-adds the same
+parent ID as a SEMANTIC `blocked-by` relation, this cleanup will
+delete the (semantic) relation when the issue closes. The marker
+comment is the only provenance signal cleanup uses, and it doesn't
+encode "when this edge was added vs. removed." Workaround for
+operators repurposing a relation: also delete the corresponding
+marker line from the audit comment by hand. Cost-of-fixing this
+algorithmically (e.g., per-edge timestamps in the marker, or
+mutating the audit comment when the relation is removed) outweighs
+the value — the scenario is rare and requires deliberate operator
+action that happens to match this specific pattern.
 
 `/close-issue`'s SKILL.md step 8 invokes the helper:
 
