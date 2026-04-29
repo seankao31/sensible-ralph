@@ -654,8 +654,33 @@ purely doc-enforced.
     leaves marker file and MERGING state, dispatches successfully
     (no `setup_failed`); (b) create-path INTEGRATION multi-parent
     conflict same outcome.
-7. Existing single-parent merge behavior and existing single-parent
-   bats coverage are unchanged.
+7. **Single-parent observable behavior is preserved** (conflicts
+   left in worktree, helper returns 0, session-side drain
+   resolves). The on-disk shape changes: single-parent conflicts
+   now also write `.sensible-ralph-pending-merges` (with one SHA
+   line for the conflicting parent), unifying the single and
+   multi-parent contracts. Existing single-parent bats tests
+   continue to assert their original outcomes (status 0,
+   conflicts in tree); new tests for marker behavior cover the
+   marker side specifically — no existing single-parent test is
+   deleted or has its assertions weakened.
+
+7b. **Rollout precondition.** Before applying this change to a
+    repo that has ENG-279's per-issue worktrees in flight, the
+    operator MUST verify no worktree is currently in MERGING/UU
+    state without a marker. Any such legacy worktree (a
+    pre-change single-parent conflict that was left for the
+    session to resolve and never drained) would be misclassified
+    as unowned state by the new Step 2 gate after rollout. For
+    each such worktree: either (a) finish the merge manually
+    (`git commit --no-edit` on the resolved files), or (b)
+    `git worktree remove --force` and let the next dispatch
+    recreate from scratch. The implementer should run
+    `git worktree list` against each repo this plugin manages and
+    inspect any non-clean worktree before merging this change.
+    The plugin's own dogfood repo is the primary case; operators
+    of other consumers should be advised via the issue's
+    completion comment.
 8. `skills/sr-spec/SKILL.md` includes the multi-parent prerequisite
    caveat paragraph in its prerequisites discussion area.
 9. `docs/design/worktree-contract.md` includes a new "Pending parent
