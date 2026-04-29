@@ -700,22 +700,36 @@ harness:
 
 3. **`skills/close-issue/scripts/test/cleanup_coord_dep.bats`** —
    unit-tests the cleanup helper. Mocks `linear api`,
-   `linear_get_issue_blockers`, `linear issue relation delete`, and
-   `linear_remove_label`. Asserts:
+   `linear_get_issue_blockers`, `linear_label_exists`,
+   `linear issue relation delete`, and `linear_remove_label`.
+   Asserts:
    - Zero matching comments → label-remove still attempted, exit 0
-     (no failed pipeline under `set -euo pipefail`).
-   - Multi-comment dedup works.
+     (sed extraction returns 0 on no match without needing
+     `|| true`).
+   - Multi-comment dedup works (same parent in multiple matching
+     comments collapses to one delete attempt).
+   - Lines that mention the marker outside the leading-bullet form
+     (inline prose, alternative indentation) are NOT extracted.
    - `pageInfo.hasNextPage=true` aborts loud (exit 1, label not
      removed).
-   - Malformed marker lines inside a matching comment (e.g., missing
-     colon) are skipped (no false-positive parent IDs).
-   - "Edge already absent" (parent NOT in pre-fetched blockers) is
-     treated as benign — no delete attempted, no failure counted.
-   - "Edge present + delete fails" counts as a real failure → label
-     KEPT, exit 1.
-   - All deletes succeed → label removed, exit 0.
-   - Label-remove failure on the success path logs but doesn't
-     abort (still exit 0).
+   - Concurrent-UI scenario A: parent absent before delete attempt,
+     stays absent after → cleanup classifies as success (no real
+     failure recorded; label removed; exit 0).
+   - Concurrent-UI scenario B: parent present before delete attempt,
+     delete-call returns non-zero, parent IS absent in post-delete
+     re-fetch → cleanup classifies as success (the pre-delete
+     state isn't consulted; only the post-delete re-fetch
+     matters).
+   - Real failure: parent still present in post-delete re-fetch →
+     real failure counted, label KEPT, exit 1.
+   - All deletes succeed (post-delete re-fetch confirms all
+     marker-parents absent) → label removed, exit 0.
+   - Workspace label missing on the success path → label-remove
+     skipped (logged); exit 0 because relation-deletes still
+     completed cleanly.
+   - GraphQL/`jq`-parse failure (e.g., malformed response shape)
+     propagates as a non-zero exit — must NOT be masked by
+     `|| true` guards or treated as "no edges to delete."
 
 The reasoning step itself is **not** unit-tested — it's Claude prose
 in `skills/sr-spec/SKILL.md`, not code. The structured-prompt
@@ -790,19 +804,35 @@ No `blocked-by` relations to declare for this issue.
    existing step 11 (finalize) becomes step 12; existing step 10
    (codex) and all earlier numbers stay unchanged; informal "Spec
    self-review" and "User review gate" sections stay informal.
-5. `skills/close-issue/scripts/cleanup_coord_dep.sh` exists, queries
-   marker-matching comments via `linear api` with a `body.contains`
-   filter (NOT via `linear issue comment list`, which truncates at
-   ~50 with no cursor support), refuses silent truncation when
-   `pageInfo.hasNextPage=true`, runs the per-line regex parser over
-   the matching-comment bodies (with `|| true` guards so zero
-   matches under `set -euo pipefail` is benign), pre-fetches the
-   issue's current blockers to partition "edge already absent
-   (benign)" from "edge present + delete failed (real failure),"
-   removes the `coord-dep` label only when every real delete
-   succeeded, and exits non-zero on real-failure or unexpected
-   truncation (signaling `/close-issue` to log; `/close-issue`
-   proceeds to worktree teardown either way).
+5. `skills/close-issue/scripts/cleanup_coord_dep.sh` exists and
+   implements the cleanup contract:
+   - Queries marker-matching comments via `linear api` with a
+     `body.contains` filter (NOT via `linear issue comment list`,
+     which truncates at ~50 with no cursor support).
+   - Refuses silent truncation when `pageInfo.hasNextPage=true`
+     (exit 1, label retained).
+   - Extracts parent IDs via `sed -n ... p` with the line-anchored
+     leading-bullet regex (see "The reserved marker" section).
+     `sed` returns 0 on zero matches — no `|| true` guard, so a
+     genuine `jq`/parser failure still propagates under
+     `set -euo pipefail`.
+   - Attempts `linear issue relation delete` on every extracted
+     parent (best effort), then **re-fetches** blockers and
+     classifies failure from the post-delete state — NOT from a
+     pre-delete snapshot. This is deliberate: a pre-fetch goes
+     stale under concurrent UI edits and misclassifies completed
+     cleanup as failure. Implementers MUST NOT reintroduce the
+     pre-fetch-snapshot pattern.
+   - Verifies workspace label exists (via `linear_label_exists`)
+     before attempting `linear_remove_label`; skips just the
+     label-remove call if missing, while still doing relation
+     deletes.
+   - Removes the `coord-dep` label only when no marker-parent
+     remains in the post-delete blocker set.
+   - Exits 0 on a clean cleanup (every marker-parent absent in
+     post-delete state); exits 1 on real-failure or unexpected
+     truncation (signaling `/close-issue` to log; `/close-issue`
+     proceeds to worktree teardown either way).
 6. `skills/close-issue/SKILL.md` documents step 8 (cleanup) and
    step 9 (reap codex broker + remove worktree — was step 8). The
    new step's prose includes the marker format and the contract
