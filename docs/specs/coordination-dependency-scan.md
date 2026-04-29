@@ -292,29 +292,53 @@ The skill's step 11 prose drives the rest:
    / `rename`), one-line rationale. Three choices:
    **accept / reject / edit-rationale**.
 
-5. **Mutation per acceptance.** Walk accepted candidates one at a
-   time:
+5. **If accepted candidates is empty:** skip the rest of step 11
+   and proceed to step 12 (finalize). No comment, no label, no
+   relations to add.
 
-   - `linear issue relation add "$ISSUE_ID" blocked-by "$PARENT"`.
-   - On success: append `$PARENT` to in-shell `PREREQS`, append
-     `{parent, rationale}` to local `committed_edges`.
-   - On failure: surface to operator with three choices —
-     **retry / skip-this-edge / abort-scan**. Don't silently swallow.
+6. **Post the audit comment FIRST, BEFORE any relation-adds.**
 
-6. **Post-loop, if `committed_edges` is non-empty:**
-
-   - Compose one consolidated comment in the format below.
+   - Build `accepted_edges` from the accepted candidates (each is
+     `{parent, rationale}`).
+   - Compose one consolidated comment in the format below, listing
+     every entry in `accepted_edges`.
    - `linear issue comment add "$ISSUE_ID" --body-file <tmp>`.
-   - `linear_add_label "$ISSUE_ID" "$CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL"`.
-   - If the comment or label call fails: print the comment body
-     inline so the operator can manually post; do NOT roll back
-     relation-adds. Operator decides what to do next.
+   - **If comment-post fails: ABORT step 11.** Print the comment body
+     inline so the operator can manually post if they want, but do
+     NOT proceed to relation-add. The operator's choices: retry the
+     comment-post, abort the scan entirely (no edges added, no
+     leakage), or proceed-anyway (operator manually posts the
+     comment, then re-runs from step 7).
+   - If comment-post succeeds: continue to step 7.
 
-   Mutation order — **relations first, comment + label last** —
-   chosen so the most-likely-failure (network/CLI hiccup on
-   relation-add) leaves no orphaned audit trail. The reverse failure
-   mode (relations succeed, comment fails) is rarer and surfaces
-   clearly.
+   Why comment-first: `/close-issue`'s cleanup is the ONLY mechanism
+   that finds and removes coord-dep edges. If a relation-add lands
+   but the comment doesn't, `/close-issue` has no source of truth to
+   discover the edge, and it leaks into the relation graph
+   permanently. Posting the comment first makes the audit trail the
+   load-bearing artifact: if it doesn't land, no edges land either.
+   Inversely, if a later relation-add fails, the comment may
+   overstate — `/close-issue`'s cleanup tolerates that gracefully
+   (it walks marker comments, attempts delete, and treats genuine
+   "edge absent" as benign).
+
+7. **After successful comment-post, walk accepted candidates and
+   add relations.** For each `{parent, rationale}` in
+   `accepted_edges`:
+
+   - `linear issue relation add "$ISSUE_ID" blocked-by "$parent"`.
+   - On success: append `$parent` to in-shell `PREREQS` (so finalize
+     sub-step 5's verification covers the union of design-time +
+     scan-time edges) and append to local `committed_edges`.
+   - On failure: log a clear warning naming `$parent` and continue.
+     Do NOT prompt for retry/abort here — the audit trail is
+     already posted, so missed adds are recoverable at close time
+     via the cleanup helper's "edge absent (benign)" path.
+
+8. **Add the label.** `linear_add_label "$ISSUE_ID" "$CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL"`.
+   Idempotent — labels are additive in `lib/linear.sh::linear_add_label`.
+   On failure: log; continue. The comment is the load-bearing
+   artifact, not the label.
 
 **Comment format** (Approach C — one consolidated comment per scan
 run, marker repeats per line):
@@ -385,25 +409,61 @@ if [[ "$has_next" == "true" ]]; then
 fi
 
 # 3. Per-line regex extraction across the matching comment bodies, dedup.
+#    `|| true` guards: under `set -euo pipefail`, grep returns 1 on
+#    zero matches and would propagate via `pipefail` to fail the
+#    pipeline. The common path (no coord-dep comments) is exactly
+#    that — handle gracefully.
 parents=$(printf '%s' "$comments" | jq -r '.data.issue.comments.nodes[].body' \
-  | grep -Eo '\*\*coord-dep\*\*:[[:space:]]+blocked-by[[:space:]]+ENG-[0-9]+' \
-  | grep -Eo 'ENG-[0-9]+' \
+  | { grep -Eo '\*\*coord-dep\*\*:[[:space:]]+blocked-by[[:space:]]+ENG-[0-9]+' || true; } \
+  | { grep -Eo 'ENG-[0-9]+' || true; } \
   | sort -u)
 
-# 4. Best-effort relation removal.
+# Fast path: no marker matches → no edges to remove. Still attempt
+# label-remove (idempotent) and exit 0.
+if [[ -z "$parents" ]]; then
+  linear_remove_label "$ISSUE_ID" "$CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL" \
+    || echo "cleanup_coord_dep: label removal failed (no edges to delete) — continuing" >&2
+  exit 0
+fi
+
+# 4. Pre-fetch the issue's CURRENT blocked-by set. This lets us
+#    distinguish "edge already absent (benign)" from "edge present
+#    but delete failed (real failure)" — Linear returns the same
+#    exit status for both, so we partition on prior knowledge.
+blockers_json=$(linear_get_issue_blockers "$ISSUE_ID") || {
+  echo "cleanup_coord_dep: linear_get_issue_blockers failed for $ISSUE_ID — aborting cleanup" >&2
+  exit 1
+}
+existing_parents=$(printf '%s' "$blockers_json" | jq -r '.[].id' | sort -u)
+
+# 5. Walk marker-parents. Skip those already absent (benign);
+#    delete those still present, counting REAL failures only.
+real_failures=0
 for p in $parents; do
-  linear issue relation delete "$ISSUE_ID" blocked-by "$p" \
-    || echo "cleanup_coord_dep: $p edge absent or delete failed — continuing" >&2
+  if printf '%s\n' "$existing_parents" | grep -qx "$p"; then
+    linear issue relation delete "$ISSUE_ID" blocked-by "$p" \
+      || { echo "cleanup_coord_dep: delete failed for $p — KEEPING coord-dep label" >&2
+           real_failures=$((real_failures + 1)); }
+  else
+    echo "cleanup_coord_dep: $p edge already absent (benign) — skipping" >&2
+  fi
 done
 
-# 5. Best-effort label removal via lib helper.
-linear_remove_label "$ISSUE_ID" "$CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL" \
-  || echo "cleanup_coord_dep: label removal failed — continuing" >&2
-
-exit 0
+# 6. Label removal — only if every real delete succeeded. Removing
+#    the label after partial failures would erase the only signal
+#    that cleanup is incomplete (the issue is already in Done at
+#    this point, so the normal close flow won't run again).
+if [[ "$real_failures" -eq 0 ]]; then
+  linear_remove_label "$ISSUE_ID" "$CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL" \
+    || echo "cleanup_coord_dep: label removal failed — continuing" >&2
+  exit 0
+else
+  echo "cleanup_coord_dep: $real_failures edge deletion(s) failed; coord-dep label intentionally kept so the operator can see incomplete cleanup. Investigate and clear manually." >&2
+  exit 1
+fi
 ```
 
-Four properties guaranteed:
+Five properties guaranteed:
 
 - **Server-side filtered, no truncation surprise.** The
   `body.contains` filter on `**coord-dep**:` returns only matching
@@ -416,13 +476,18 @@ Four properties guaranteed:
   producing N comments → all parents removed in one pass.
 - **Idempotent.** `sort -u` dedups across comments. Re-running
   `/close-issue` (e.g., after partial failure on the merge step
-  earlier) is safe; already-deleted relations log a benign warning
-  and the loop continues.
-- **Conservative on failure.** Per-parent and label failures log and
-  continue. Only a wholesale GraphQL failure or unexpected
-  truncation exits non-zero — worth a warning back to
-  `/close-issue`'s prose, but `/close-issue` treats non-zero as
-  log-and-proceed-to-step-9.
+  earlier) is safe; benign "edge already absent" cases are
+  partitioned from real failures via the pre-fetched blocker set.
+- **Label kept on real failure.** If any delete genuinely failed
+  (target was present in pre-fetched blockers but couldn't be
+  deleted), the `ralph-coord-dep` label stays on the issue so the
+  incomplete cleanup is visible. After the `Done` transition the
+  normal close flow won't run again, so this label is the operator's
+  only signal that something needs hand-cleanup.
+- **Zero-match safe under `set -euo pipefail`.** The grep pipeline
+  uses `|| true` guards so the no-marker-comments path (the common
+  case for issues without any coord-dep history) doesn't exit the
+  script via `pipefail`.
 
 `/close-issue`'s SKILL.md step 8 invokes the helper:
 
@@ -493,15 +558,23 @@ harness:
    `$ISSUE_ID` not in peer list), bad spec-file path returns exit 2.
 
 3. **`skills/close-issue/scripts/test/cleanup_coord_dep.bats`** —
-   unit-tests the cleanup helper. Mocks `linear api` to return
-   fixture GraphQL responses (matching-comment node arrays);
-   asserts: multi-comment dedup works, non-marker comments are
-   absent from the filtered response (server-side filter handles
-   that — assert helper passes the marker correctly to `linear api`),
-   `pageInfo.hasNextPage=true` aborts loud, malformed marker lines
-   inside a matching comment (e.g., missing colon) are skipped,
-   per-parent failure logs but doesn't abort, label removal failure
-   logs but doesn't abort.
+   unit-tests the cleanup helper. Mocks `linear api`,
+   `linear_get_issue_blockers`, `linear issue relation delete`, and
+   `linear_remove_label`. Asserts:
+   - Zero matching comments → label-remove still attempted, exit 0
+     (no failed pipeline under `set -euo pipefail`).
+   - Multi-comment dedup works.
+   - `pageInfo.hasNextPage=true` aborts loud (exit 1, label not
+     removed).
+   - Malformed marker lines inside a matching comment (e.g., missing
+     colon) are skipped (no false-positive parent IDs).
+   - "Edge already absent" (parent NOT in pre-fetched blockers) is
+     treated as benign — no delete attempted, no failure counted.
+   - "Edge present + delete fails" counts as a real failure → label
+     KEPT, exit 1.
+   - All deletes succeed → label removed, exit 0.
+   - Label-remove failure on the success path logs but doesn't
+     abort (still exit 0).
 
 The reasoning step itself is **not** unit-tested — it's Claude prose
 in `skills/sr-spec/SKILL.md`, not code. The structured-prompt
@@ -574,9 +647,14 @@ No `blocked-by` relations to declare for this issue.
    filter (NOT via `linear issue comment list`, which truncates at
    ~50 with no cursor support), refuses silent truncation when
    `pageInfo.hasNextPage=true`, runs the per-line regex parser over
-   the matching-comment bodies, dedups parent IDs, removes edges and
-   the label best-effort, exits 0 except on a wholesale GraphQL
-   failure or unexpected truncation.
+   the matching-comment bodies (with `|| true` guards so zero
+   matches under `set -euo pipefail` is benign), pre-fetches the
+   issue's current blockers to partition "edge already absent
+   (benign)" from "edge present + delete failed (real failure),"
+   removes the `coord-dep` label only when every real delete
+   succeeded, and exits non-zero on real-failure or unexpected
+   truncation (signaling `/close-issue` to log; `/close-issue`
+   proceeds to worktree teardown either way).
 6. `skills/close-issue/SKILL.md` documents step 8 (cleanup) and
    step 9 (reap codex broker + remove worktree — was step 8). The
    new step's prose includes the marker format and the contract
