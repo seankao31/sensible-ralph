@@ -350,44 +350,79 @@ Inputs:
 Behavior:
 
 ```bash
-# 1. Pull all comments. linear comment list returns the full thread by default.
-comments=$(linear issue comment list "$ISSUE_ID" --json) || {
-  echo "cleanup_coord_dep: failed to list comments on $ISSUE_ID — skipping cleanup" >&2
+# 1. Server-side query for comments containing the marker. linear's
+#    `issue comment list` CLI returns only the first ~50 comments
+#    with no cursor flag exposed (see skills/prepare-for-review/SKILL.md
+#    for the same constraint), so on long-lived issues older
+#    coord-dep comments would be silently invisible. Use `linear api`
+#    with a body.contains filter instead — same pattern
+#    /prepare-for-review uses for its dedup check.
+comments=$(linear api \
+  --variable "issueId=$ISSUE_ID" \
+  --variable "marker=**coord-dep**:" <<'GRAPHQL'
+query($issueId: String!, $marker: String!) {
+  issue(id: $issueId) {
+    comments(filter: { body: { contains: $marker } }, first: 250) {
+      pageInfo { hasNextPage }
+      nodes { body }
+    }
+  }
+}
+GRAPHQL
+) || {
+  echo "cleanup_coord_dep: failed to query comments on $ISSUE_ID — skipping cleanup" >&2
   exit 1
 }
 
-# 2. Per-line regex extraction across all comment bodies, dedup.
-parents=$(printf '%s' "$comments" | jq -r '.nodes[].body' \
+# 2. Refuse silent truncation. 250 marker-matching comments on a
+#    single issue is implausible; if it ever happens, fail loud
+#    rather than work from incomplete data — the same posture
+#    `linear_get_issue_blockers` and `linear_label_exists` take.
+has_next=$(printf '%s' "$comments" | jq -r '.data.issue.comments.pageInfo.hasNextPage // false')
+if [[ "$has_next" == "true" ]]; then
+  echo "cleanup_coord_dep: marker-comment query truncated for $ISSUE_ID at 250 — aborting cleanup; investigate manually" >&2
+  exit 1
+fi
+
+# 3. Per-line regex extraction across the matching comment bodies, dedup.
+parents=$(printf '%s' "$comments" | jq -r '.data.issue.comments.nodes[].body' \
   | grep -Eo '\*\*coord-dep\*\*:[[:space:]]+blocked-by[[:space:]]+ENG-[0-9]+' \
   | grep -Eo 'ENG-[0-9]+' \
   | sort -u)
 
-# 3. Best-effort relation removal.
+# 4. Best-effort relation removal.
 for p in $parents; do
   linear issue relation delete "$ISSUE_ID" blocked-by "$p" \
     || echo "cleanup_coord_dep: $p edge absent or delete failed — continuing" >&2
 done
 
-# 4. Best-effort label removal via lib helper.
+# 5. Best-effort label removal via lib helper.
 linear_remove_label "$ISSUE_ID" "$CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL" \
   || echo "cleanup_coord_dep: label removal failed — continuing" >&2
 
 exit 0
 ```
 
-Three properties guaranteed:
+Four properties guaranteed:
 
-- **Multi-comment safe.** All comments walked; all matched parent IDs
-  collected into one set before deletion. N re-spec runs producing N
-  comments → all parents removed in one pass.
+- **Server-side filtered, no truncation surprise.** The
+  `body.contains` filter on `**coord-dep**:` returns only matching
+  comments — typically 0 or a small handful per issue (one per
+  scan-run that found edges). The CLI's first-50 page limit is
+  bypassed entirely. The hard 250 ceiling is a sanity bound on the
+  filter result, not on total comments.
+- **Multi-comment safe.** All matching comments walked; all parent
+  IDs collected into one set before deletion. N re-spec runs
+  producing N comments → all parents removed in one pass.
 - **Idempotent.** `sort -u` dedups across comments. Re-running
   `/close-issue` (e.g., after partial failure on the merge step
   earlier) is safe; already-deleted relations log a benign warning
   and the loop continues.
 - **Conservative on failure.** Per-parent and label failures log and
-  continue. Only a wholesale `comment list` failure exits non-zero —
-  worth a warning back to `/close-issue`'s prose, but `/close-issue`
-  treats non-zero as log-and-proceed-to-step-9.
+  continue. Only a wholesale GraphQL failure or unexpected
+  truncation exits non-zero — worth a warning back to
+  `/close-issue`'s prose, but `/close-issue` treats non-zero as
+  log-and-proceed-to-step-9.
 
 `/close-issue`'s SKILL.md step 8 invokes the helper:
 
@@ -458,12 +493,15 @@ harness:
    `$ISSUE_ID` not in peer list), bad spec-file path returns exit 2.
 
 3. **`skills/close-issue/scripts/test/cleanup_coord_dep.bats`** —
-   unit-tests the cleanup helper. Mocks `linear issue comment list`
-   to return fixture comment threads; asserts: multi-comment dedup
-   works, non-marker comments are ignored, malformed marker lines
-   (e.g., wrong issue prefix, missing colon, code-fenced) are
-   handled per the documented behavior, per-parent failure logs but
-   doesn't abort, label removal failure logs but doesn't abort.
+   unit-tests the cleanup helper. Mocks `linear api` to return
+   fixture GraphQL responses (matching-comment node arrays);
+   asserts: multi-comment dedup works, non-marker comments are
+   absent from the filtered response (server-side filter handles
+   that — assert helper passes the marker correctly to `linear api`),
+   `pageInfo.hasNextPage=true` aborts loud, malformed marker lines
+   inside a matching comment (e.g., missing colon) are skipped,
+   per-parent failure logs but doesn't abort, label removal failure
+   logs but doesn't abort.
 
 The reasoning step itself is **not** unit-tested — it's Claude prose
 in `skills/sr-spec/SKILL.md`, not code. The structured-prompt
@@ -531,10 +569,14 @@ No `blocked-by` relations to declare for this issue.
    step 12; existing step 10 (codex) and all earlier numbers stay
    unchanged; informal "Spec self-review" and "User review gate"
    sections stay informal.
-5. `skills/close-issue/scripts/cleanup_coord_dep.sh` exists,
-   implements the per-line regex parser, walks all comments, dedups
-   parent IDs, removes edges and the label best-effort, exits 0
-   except on wholesale comment-list failure.
+5. `skills/close-issue/scripts/cleanup_coord_dep.sh` exists, queries
+   marker-matching comments via `linear api` with a `body.contains`
+   filter (NOT via `linear issue comment list`, which truncates at
+   ~50 with no cursor support), refuses silent truncation when
+   `pageInfo.hasNextPage=true`, runs the per-line regex parser over
+   the matching-comment bodies, dedups parent IDs, removes edges and
+   the label best-effort, exits 0 except on a wholesale GraphQL
+   failure or unexpected truncation.
 6. `skills/close-issue/SKILL.md` documents step 8 (cleanup) and
    step 9 (reap codex broker + remove worktree — was step 8). The
    new step's prose includes the marker format and the contract
