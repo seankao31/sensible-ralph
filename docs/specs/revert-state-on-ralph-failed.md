@@ -79,20 +79,21 @@ There is no scenario that produces `Approved` (no label) on a failed issue. Sile
 
 ### Code
 
-`skills/sr-start/scripts/orchestrator.sh`, two adjacent branches inside `_dispatch_issue`:
+`skills/sr-start/scripts/orchestrator.sh`, two adjacent branches inside the post-dispatch outcome `if/elif/else` in `_dispatch_issue`:
 
-- Line 580 (`outcome="exit_clean_no_review"`): replace the existing single `linear_add_label ... || ...` line with the label-first/gated-revert block above. `_taint_descendants "$issue_id"` already follows on line 582 — keep its position (after the new block).
-- Line 585 (`outcome="failed"`): same replacement. `_taint_descendants "$issue_id"` already follows on line 587.
+- **`exit_clean_no_review` branch** (current lines 580-582 — the `linear_add_label ... || printf ...` pair followed by `_taint_descendants`): replace the two-line label-add with the label-first/gated-revert block above. `_taint_descendants "$issue_id"` stays as the last statement of the branch.
+- **`failed` branch** (current lines 585-587 — same pair): same replacement.
 
-No other call sites change. `linear_set_state` and `linear_add_label` (`lib/linear.sh:264-301`) are unchanged.
+The two call sites are textually identical and should remain so after the change — copy the same block to both branches. No other call sites change. `linear_set_state` and `linear_add_label` (`lib/linear.sh:264-301`) are unchanged.
 
 ### Tests (`skills/sr-start/scripts/test/orchestrator.bats`)
 
-- **Existing Test 3** (`hard failure: exit non-zero adds ralph-failed label, outcome=failed with exit_code`, line 352): add an assertion that `set_state ENG-20 Approved` appears in `STUB_LINEAR_CALLS_FILE` AFTER both `set_state ENG-20 In Progress` (the dispatch-time transition) and `add_label ENG-20 ralph-failed` (the new label-first ordering). Order verified by line-number comparison in the call log, matching the harness pattern already used elsewhere.
-- **Existing Test 4** (`soft failure: exit 0 without state transition adds ralph-failed, outcome=exit_clean_no_review`, line 374): same additions for `ENG-30`.
-- **New test: revert-fails on label success (failed path).** Stub `linear_set_state` to fail on the post-dispatch revert call only (the In-Progress transition at dispatch time must still succeed). Assert: label was added, revert was attempted, the "failed to revert" stderr warning appears in `$output`, the orchestrator continues, and the progress.json end-record `outcome` is still `failed`.
-- **New test: revert-fails on label success (exit_clean_no_review path).** Same shape for the soft-failure branch — stub `linear_set_state` to fail on the post-dispatch revert, classify as `exit_clean_no_review`.
-- **New test: label-fail gates revert.** Stub `linear_add_label` to fail. Assert: the post-dispatch `set_state ENG-X Approved` call does NOT appear in the call log (gated out), the "leaving state In Progress" stderr warning appears, the orchestrator continues, and the progress.json end-record `outcome` is still `failed` / `exit_clean_no_review` (test once per branch).
+Because the `exit_clean_no_review` and `failed` branches inline textually-identical blocks, partial-write coverage targets the `failed` branch only — the implementer should resist any temptation to diverge the two call sites.
+
+- **Existing Test 3** (`hard failure: exit non-zero adds ralph-failed label, outcome=failed with exit_code`, line 352): add a membership assertion that `set_state ENG-20 Approved` appears in `STUB_LINEAR_CALLS_FILE` (in addition to the existing `set_state ENG-20 In Progress` and `add_label ENG-20 ralph-failed` membership checks).
+- **Existing Test 4** (`soft failure: exit 0 without state transition adds ralph-failed, outcome=exit_clean_no_review`, line 374): same membership addition for `ENG-30`.
+- **New test: revert fails on label success.** Run against the hard-failure branch (`STUB_CLAUDE_EXIT != 0`). Stub `linear_set_state` so the post-dispatch revert call fails while the dispatch-time `In Progress` transition succeeds — i.e. fail the second `set_state` invocation, not the first. Assert: `add_label ENG-X ralph-failed` is in the call log, `set_state ENG-X Approved` was attempted (in the call log), the `'orchestrator: failed to revert ... (continuing)'` stderr warning appears in `$output`, and the progress.json end-record `outcome` is still `failed`.
+- **New test: label-fail gates revert.** Run against the hard-failure branch. Stub `linear_add_label` to fail. Assert: `set_state ENG-X Approved` does NOT appear in the call log (the gate kept the revert from running), the `'orchestrator: failed to add ralph-failed label to ENG-X; leaving state In Progress so the failure stays visible (continuing)'` stderr warning appears, and the progress.json end-record `outcome` is still `failed`.
 
 The existing test stubs for `linear_set_state` and `linear_add_label` (`orchestrator.bats:114-135`) already support failure-injection via per-call counters or env flags; extend the stubs minimally if needed to distinguish the dispatch-time `set_state` call (must succeed) from the post-dispatch revert call (must fail) in the revert-fails tests.
 
@@ -120,12 +121,12 @@ All four docs below carry the broken "remove the failed label and re-queue" reci
 1. After a `failed` or `exit_clean_no_review` outcome on the happy path, the issue's Linear state is `Approved` and it carries the `ralph-failed` label.
 2. After the operator removes the `ralph-failed` label, the next `/sr-start` queues the issue without any other operator action — `linear_list_approved_issues` returns it, the preflight chain check passes, the orchestrator dispatches it.
 3. Partial-write paths (label-add fails; or label-add succeeds and revert fails) leave the issue in a visible state — never silently rejoining the dispatch queue. Specifically, no failure path produces an `Approved`-state issue without the `ralph-failed` label.
-4. All existing `orchestrator.bats` tests pass. New assertions in Tests 3 and 4 assert the post-dispatch `set_state ... Approved` call appears in the call log after the In-Progress transition. Three new tests cover the partial-write paths.
+4. All existing `orchestrator.bats` tests pass. New assertions in Tests 3 and 4 assert the post-dispatch `set_state ... Approved` call appears in the call log. Two new tests cover the partial-write paths (`revert fails on label success`, `label-fail gates revert`).
 5. The four documentation surfaces above are updated in the same commit as the code change. The phrase "remove the failed label and re-queue" no longer appears in the repo's live docs.
 
 ## Notes for the autonomous implementer
 
 - The TDD workflow: start with the failing assertions in Tests 3 and 4 (assert the new revert call), then write the orchestrator change. Add the three new tests after the orchestrator code is in place (the failure-injection paths require the new code to even be reachable).
-- `linear_set_state` returns non-zero on `linear issue update --state` failure (`lib/linear.sh:264-269`). The bats stub at `orchestrator.bats:114` already mirrors this — extend the stub with a per-call failure counter if you need to fail only the second invocation (the revert) while letting the first invocation (the dispatch-time In Progress transition) succeed.
+- `linear_set_state` returns non-zero on `linear issue update --state` failure (`lib/linear.sh:264-269`). The bats stub at `orchestrator.bats:114` currently fails ALL calls for an issue when `STUB_SET_STATE_FAIL_<KEY>` is set; the `revert fails on label success` test needs to fail only the post-dispatch revert call (target state `Approved`) while letting the dispatch-time `In Progress` transition succeed. The minimal stub extension is to add a second env flag like `STUB_SET_STATE_FAIL_ON_REVERT_<KEY>` that triggers only when `$2 == "$CLAUDE_PLUGIN_OPTION_APPROVED_STATE"`. This keeps the existing `STUB_SET_STATE_FAIL_*` semantics intact for other tests.
 - Keep the stderr warning text close to the existing pattern at the same call sites (`'orchestrator: failed to add %s label to %s (continuing)\n'`). The new lines should read naturally alongside the unchanged neighbors.
 - Match `lib/linear.sh:227` (`_record_setup_failure`'s label-add) — that call site stays best-effort label-add only and explicitly does NOT revert state, because setup_failed paths never reached the `In Progress` transition. The asymmetry between the dispatched-outcome branches (revert) and the setup-failed branches (no revert) is intentional and worth preserving visibly in the code.
