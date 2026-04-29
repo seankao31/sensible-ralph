@@ -126,9 +126,10 @@ h2_hint=""
 if [[ "$h2_eligible" -eq 0 ]]; then
   porcelain="$(git -C "$worktree_path" status --porcelain 2>/dev/null || printf '')"
   log_filename="${CLAUDE_PLUGIN_OPTION_STDOUT_LOG_FILENAME:-ralph-output.log}"
-  # Filter orchestrator-owned files: any porcelain line whose pathname (after
-  # the two-character status field and the separator space) is exactly
-  # `.sensible-ralph-base-sha` or the configured stdout log filename.
+  # Filter orchestrator-owned files using bash string comparison, NOT awk -v.
+  # BSD awk on macOS evaluates `ralph-output.log` passed via -v as an
+  # arithmetic expression (result: -inf) so the equality check silently
+  # never matches; every log line ends up in `remaining` and H2 always fires.
   remaining=""
   while IFS= read -r line; do
     [[ -z "$line" ]] && continue
@@ -203,11 +204,13 @@ if [[ "$h3_eligible" -eq 0 ]]; then
         idx=$((idx + 1))
       done <<< "$assistant_window"
 
-      # Fire if a Skill tool_use was seen and no later assistant turn had any
-      # tool_use. Window length ≥ 2 with the Skill at any earlier position
-      # is the canonical context-loss shape; window of length 1 ending in a
-      # Skill+text turn does not fire (we cannot tell if the agent intended
-      # to keep going).
+      # Fire if a Skill tool_use was seen AND no later assistant turn in the
+      # window had any tool_use. The `idx > last_skill_idx + 1` guard is
+      # essential: if the Skill turn is the LAST event in the window (idx ==
+      # last_skill_idx + 1), we cannot distinguish "agent stopped after Skill"
+      # from "agent will call more tools on the next turn" — do NOT fire.
+      # The context-loss shape requires a chronologically-later text-only turn
+      # to confirm the agent stopped, not just a Skill as the final event.
       if [[ "$last_skill_idx" -ge 0 && "$last_tool_use_idx" -le "$last_skill_idx" && "$idx" -gt $((last_skill_idx + 1)) ]]; then
         if [[ -n "$last_skill_name" ]]; then
           h3_hint="context-loss after Skill (${last_skill_name}) (claude-code#17351)"
