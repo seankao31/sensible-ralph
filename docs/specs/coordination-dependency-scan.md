@@ -501,15 +501,23 @@ verify"). Step 12's modified internal sequence:
    if [[ -f "$COORD_DEP_FILE" ]]; then
      # Validate file shape BEFORE consuming. A truncated /
      # hand-edited / corrupted file must abort finalize, not
-     # silently approve the issue with no coord-dep audit. `jq -e`
-     # exits non-zero on parse failure; we capture both the parsed
-     # output and the exit status before assigning to the array.
-     if ! parsed_parents=$(jq -e -r '.[].parent' "$COORD_DEP_FILE" 2>&1); then
-       echo "step 12: $COORD_DEP_FILE is malformed JSON or unexpected shape — aborting finalize." >&2
+     # silently approve the issue with no coord-dep audit.
+     #
+     # Shape contract: a JSON array of objects, each having a
+     # 'parent' key. Empty array `[]` is valid (the trivial
+     # fast-path case in step 11 sub-step 4 writes exactly this).
+     # `jq -e` returns non-zero only on parse failure or boolean-
+     # false / null result; the predicate below is a boolean so
+     # we get a clean exit-code semantic.
+     if ! jq -e 'type == "array" and all(.[]; type == "object" and has("parent"))' \
+            "$COORD_DEP_FILE" >/dev/null 2>&1; then
+       echo "step 12: $COORD_DEP_FILE is malformed (expected JSON array of {parent: ..., rationale: ...} entries) — aborting finalize." >&2
        echo "  Inspect or delete the file by hand before re-running /sr-spec." >&2
-       echo "  jq output: $parsed_parents" >&2
        exit 1
      fi
+     # Extract parent IDs. Empty output for an empty array is
+     # expected and fine — accepted_parents stays empty.
+     parsed_parents=$(jq -r '.[].parent' "$COORD_DEP_FILE")
      while IFS= read -r p; do
        [[ -n "$p" ]] && accepted_parents+=("$p")
      done <<< "$parsed_parents"
@@ -764,24 +772,41 @@ fi
 tmpdir=$(mktemp -d)
 trap 'rm -rf "$tmpdir"' EXIT
 
-# Extract each fenced block to its own file. The awk script
-# numbers blocks sequentially so each gets a distinct path.
-printf '%s' "$comments" | jq -r '.data.issue.comments.nodes[].body' \
-  | awk -v dir="$tmpdir" '
-      /^```coord-dep-audit$/{n++; out=sprintf("%s/block-%05d.json", dir, n); flag=1; next}
-      /^```$/{flag=0; next}
-      flag{print > out}
-    '
+# Iterate comments INDEPENDENTLY. A single awk over the
+# concatenated comment bodies would let an unclosed
+# ```coord-dep-audit fence in one comment (i.e. opening fence
+# present but no matching closing ``` line) keep `flag=1` and
+# accidentally consume content from later comments. Run awk
+# per-comment so flag state cannot leak across comment boundaries.
+#
+# Comment bodies can contain newlines / shell-special characters,
+# so iterate via base64-encoded one-line-per-comment output rather
+# than newline-separated.
+comment_count=0
+while IFS= read -r body_b64; do
+  [[ -n "$body_b64" ]] || continue
+  comment_count=$((comment_count + 1))
+  # Per-comment awk: writes any fenced blocks under
+  # $tmpdir/c<comment>-block-<n>.json. Each invocation starts
+  # with flag unset, so unclosed fences in earlier comments do
+  # NOT leak into this one.
+  printf '%s' "$body_b64" | base64 -d | awk -v dir="$tmpdir" -v c="$comment_count" '
+    /^```coord-dep-audit$/{n++; out=sprintf("%s/c%05d-block-%05d.json", dir, c, n); flag=1; next}
+    /^```$/{flag=0; next}
+    flag{print > out}
+  '
+done < <(printf '%s' "$comments" | jq -r '.data.issue.comments.nodes[].body | @base64')
 
-# Count actual fenced blocks. This is the authoritative
-# "audit-data exists?" signal — NOT the GraphQL filter result,
-# which matches inline mentions of the fence tag too.
-fenced_block_count=$(find "$tmpdir" -maxdepth 1 -name 'block-*.json' -type f 2>/dev/null | wc -l | tr -d ' ')
+# Count actual fenced blocks across all comments. This is the
+# authoritative "audit-data exists?" signal — NOT the GraphQL
+# filter result, which matches inline mentions of the fence tag
+# too.
+fenced_block_count=$(find "$tmpdir" -maxdepth 1 -name 'c*-block-*.json' -type f 2>/dev/null | wc -l | tr -d ' ')
 
 # Parse each block independently. Per-file jq failures are
 # silenced and skipped; valid blocks contribute their parents.
 parents=$(
-  for f in "$tmpdir"/block-*.json; do
+  for f in "$tmpdir"/c*-block-*.json; do
     [[ -f "$f" ]] || continue
     jq -r '.parents[]?' "$f" 2>/dev/null || true
   done | sort -u
@@ -1018,6 +1043,14 @@ harness:
      backticks, prose, etc.) but NO actual fenced blocks → fast
      path runs, label removed, exit 0. The fenced-block count
      (NOT the GraphQL filter match) is the authoritative signal.
+   - Per-comment awk isolation: fixture with two comments — the
+     first opens a ` ```coord-dep-audit ` fence but is missing
+     the closing ` ``` ` (truncated mid-block; treat as a
+     single malformed block), the second is a well-formed audit
+     comment with `parents: ["ENG-Z"]`. The cleanup must extract
+     `ENG-Z` from the second comment and attempt to delete it
+     (the unclosed fence in the first comment must NOT consume
+     the second comment's content as an extension of itself).
    - `pageInfo.hasNextPage=true` aborts loud (exit 1, label not
      removed).
    - Concurrent-UI scenario A: parent absent before delete attempt,
@@ -1149,11 +1182,13 @@ No `blocked-by` relations to declare for this issue.
    - Refuses silent truncation when `pageInfo.hasNextPage=true`
      (exit 1, label retained).
    - Extracts parent IDs ONLY from ` ```coord-dep-audit ` fenced
-     JSON blocks. Each block is parsed INDEPENDENTLY (awk emits
-     each block to its own temp file; jq runs per file with
-     parse-error suppression) so a single malformed block does NOT
-     suppress valid `parents` arrays from other well-formed blocks.
-     A single-pass `jq -s` over the concatenated stream is
+     JSON blocks. **Each comment is processed in its own awk
+     invocation** so an unclosed fence in one comment cannot
+     leak `flag=1` into the next comment's body. Each extracted
+     block is then parsed INDEPENDENTLY by jq with parse-error
+     suppression, so a single malformed block does NOT suppress
+     valid `parents` arrays from other well-formed blocks. A
+     single-pass `jq -s` over the concatenated stream is
      explicitly NOT permitted — it would reject the whole stream
      on the first parse error and silently lose all valid
      parents. Free-form bullet text, prose mentions, and any
