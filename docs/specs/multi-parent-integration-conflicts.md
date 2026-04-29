@@ -215,14 +215,16 @@ content:
 ```markdown
 ## Step 2: Drain pending parent merges
 
-Check whether the orchestrator left work for you:
+Check whether the orchestrator left work for you. ALL THREE of these
+gate the recovery flow:
 
-    git status --short
+    git rev-parse -q --verify MERGE_HEAD   # any in-progress merge?
+    git status --short                      # any unmerged or staged files?
     ls .sensible-ralph-pending-merges 2>/dev/null
 
-If neither shows anything, skip to Step 3. Otherwise, drain the merges
-in this order — finish any in-progress merge BEFORE re-invoking the
-helper:
+If all three are empty/non-zero, skip to Step 3. Otherwise, drain the
+merges in this order — finish any in-progress merge BEFORE re-invoking
+the helper:
 
 1. **Resolve unmerged files (if any).** If `git status` shows
    unmerged files (UU/AA), resolve each using `git diff`, the spec,
@@ -251,7 +253,10 @@ helper:
    Skipping this step and going straight to the helper would invoke
    `git merge` on a worktree with MERGE_HEAD set, producing
    "fatal: You have not concluded your merge" → helper returns 1 →
-   spurious red flag.
+   spurious red flag. Including MERGE_HEAD in the initial gate above
+   ensures recovery is entered even in the (rare) case where
+   `git status --short` misses a fully-staged merge or where the
+   marker has been cleaned up by a prior partial run.
 
 3. **Re-invoke the helper to drain remaining parents.** Pass the
    marker contents as args; the helper accepts SHAs uniformly with
@@ -383,12 +388,20 @@ honored.
 
 9. `worktree_merge_parents: zero-parent invocation cleans up stale marker`. Setup: write a fake marker file at `<wt>/.sensible-ralph-pending-merges` with arbitrary SHA content. Invoke `worktree_merge_parents "$wt_path"` (no parent args). Assert: status 0, marker file gone. Verifies the orphaned-marker hole is closed.
 
-10. `worktree_merge_parents: SHA-pinned retry merges the original commit even after the named ref advances`. Setup: parent ref `eng-282-pin-test` at SHA A. Trigger a conflict so the helper writes the marker (SHA = A). Advance the parent ref to SHA B (`git checkout eng-282-pin-test; git commit --amend ...` or similar). Manually resolve the conflict + commit. Re-invoke the helper with the marker's SHA A as arg. Assert: status 0, marker gone, the merged commit content matches A's content, NOT B's. Confirms SHA pinning prevents drift.
+10a. `worktree_create_with_integration: SHA-pinned retry merges the original commit even after the named ref advances`. Setup: two parent refs A0 and B at distinct SHAs; A0 conflicts with main on a file. Run helper with [A0, B] → marker has 2 SHA lines, conflict in tree. Advance the local A0 ref to a new SHA A1 (`git commit --amend` or `--reset` on A0's branch tip). Manually resolve A0's conflict + commit. Re-invoke the helper with the marker's SHAs (which are A0's *original* SHA, plus B). Assert: status 0, marker gone, merged content matches A0's *original* SHA, NOT A1. Confirms SHA pinning prevents drift on the create path.
 
-11. `worktree_merge_parents: helper accepts a 40-char hex SHA as a parent arg`. Setup: a parent ref pointing at SHA X. Invoke helper with the SHA X directly (no ref name). Assert: status 0, parent content present, no errors. Confirms the SHA-arg branch in the resolution loop. Single test (one helper) suffices because both helpers share the resolution logic — the spec specifies it as a common change.
+10b. `worktree_merge_parents: SHA-pinned retry merges the original commit even after the named ref advances`. Same shape as (10a) for the existing-worktree case. Required because the helpers have duplicated bodies — covering one does not cover the other.
 
-Total deltas: 2 flipped, 9 added. Existing single-parent tests are
-not modified.
+11a. `worktree_create_with_integration: helper accepts a 40-char hex SHA as a parent arg`. Setup: a parent ref pointing at SHA X. Invoke helper with the SHA X directly (no ref name). Assert: status 0, parent content present, no errors. Confirms the SHA-arg branch in the create-path resolution loop.
+
+11b. `worktree_merge_parents: helper accepts a 40-char hex SHA as a parent arg`. Same shape as (11a) for the existing-worktree case. Required because the helpers have duplicated bodies.
+
+Total deltas: 2 flipped, 11 added. Existing single-parent tests are
+not modified. Tests 10a/10b and 11a/11b are duplicated across helpers
+because `lib/worktree.sh` keeps the resolution and merge-loop
+implementations separate (not factored into a shared subroutine);
+covering both helpers prevents the create path from drifting from
+the merge-parents path under future refactors.
 
 ### Tests deliberately not added
 
@@ -416,12 +429,18 @@ not modified.
    axes for the existing-worktree case. Additionally, its zero-parent
    fast path is removed: a zero-parent invocation falls through to
    the post-loop cleanup, removing any orphaned marker.
-3. Both helpers' resolution loops accept either a ref name (local
-   short-name, `origin/<branch>`) or a 40-char hex SHA, validated
-   via `git cat-file -e <sha>^{commit}`. Marker writes use the
-   resolved SHAs; subsequent reinvocations passing those SHAs back
-   merge the same commits even if the original ref names have
-   advanced.
+3. Both helpers' resolution loops accept either an unprefixed ref
+   name (resolved internally to `refs/heads/<arg>` first, then
+   falling back to `refs/remotes/origin/<arg>`) or a 40-char hex
+   SHA, validated via `git cat-file -e <sha>^{commit}`. The helper
+   does NOT accept already-prefixed forms like `origin/<branch>`
+   as input; matching the existing pre-change contract. Marker
+   writes use the resolved SHAs; subsequent reinvocations passing
+   those SHAs back merge the same commits even if the original ref
+   names have advanced. The marker's optional column-2 display ref
+   may include a resolved-form prefix (`origin/<branch>`) for
+   logging readability — it is informational only and never fed
+   back to the helper.
 4. The orchestrator's `_dispatch_issue` checks for the marker file
    after both helper call sites. If present, it logs the stderr
    notice described in the "Orchestrator changes" section and
