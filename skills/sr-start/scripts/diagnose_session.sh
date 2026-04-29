@@ -124,22 +124,25 @@ fi
 # ---------------------------------------------------------------------------
 h2_hint=""
 if [[ "$h2_eligible" -eq 0 ]]; then
-  porcelain="$(git -C "$worktree_path" status --porcelain 2>/dev/null || printf '')"
   log_filename="${CLAUDE_PLUGIN_OPTION_STDOUT_LOG_FILENAME:-ralph-output.log}"
-  # Filter orchestrator-owned files using bash string comparison, NOT awk -v.
-  # BSD awk on macOS evaluates `ralph-output.log` passed via -v as an
-  # arithmetic expression (result: -inf) so the equality check silently
-  # never matches; every log line ends up in `remaining` and H2 always fires.
-  remaining=""
-  while IFS= read -r line; do
-    [[ -z "$line" ]] && continue
-    path="${line:3}"
+  # Use --porcelain -z (NUL-delimited) so paths are never C-quoted by git.
+  # The standard `--porcelain` format C-quotes paths with special characters
+  # (spaces, backslashes, non-ASCII), which makes reliable path comparison
+  # against `log_filename` unnecessarily complex. The -z form gives us raw
+  # bytes with no quoting, which we can compare directly.
+  #
+  # Format with -z: each record is "<XY><SP><path>\0", so we split on NUL
+  # and strip the first 3 bytes (status + space) to get the path.
+  remaining=0
+  while IFS= read -r -d '' record; do
+    [[ -z "$record" ]] && continue
+    path="${record:3}"
     [[ "$path" == ".sensible-ralph-base-sha" ]] && continue
     [[ "$path" == "$log_filename" ]] && continue
-    remaining="${remaining}${line}"$'\n'
-  done <<< "$porcelain"
+    remaining=$((remaining + 1))
+  done < <(git -C "$worktree_path" status --porcelain -z 2>/dev/null || true)
 
-  if [[ -n "$remaining" ]]; then
+  if [[ "$remaining" -gt 0 ]]; then
     h2_hint="uncommitted edits left in worktree"
     _dbg "H2: fired — $h2_hint"
   else
@@ -173,8 +176,11 @@ if [[ "$h3_eligible" -eq 0 ]]; then
     # Read the last 5 assistant events, oldest-to-newest within the window.
     # Use jq to pre-filter to assistant lines and tail/head to bound the
     # window. Suppress all jq diagnostics — defensive parsing posture.
+    # The `|| true` keeps the script from aborting on parse failure if `-e`
+    # is ever added to the set flags; the empty window is then treated as
+    # "no assistant events" and H3 suppresses silently (correct behavior).
     assistant_window="$(jq -c 'select(.type == "assistant")' < "$transcript_path" 2>/dev/null \
-      | tail -n 5)"
+      | tail -n 5)" || true
     if [[ -z "$assistant_window" ]]; then
       _dbg "H3: no assistant events in transcript — suppressing"
     else

@@ -105,6 +105,23 @@ teardown() {
   [ -z "$output" ]
 }
 
+@test "H2 (P3) C-quoted log filename in porcelain output is filtered correctly" {
+  echo "x" > "$WT_DIR/a.txt"
+  git -C "$WT_DIR" add a.txt
+  git -C "$WT_DIR" commit -m "impl" -q
+
+  # Create a log file whose name contains a space. git --porcelain will
+  # C-quote it ("my log.log"), so ${line:3} yields the quoted form. The
+  # H2 filter must strip the outer quotes before comparing to log_filename.
+  echo "$BASE_SHA" > "$WT_DIR/.sensible-ralph-base-sha"
+  printf 'log' > "$WT_DIR/my log.log"
+
+  CLAUDE_PLUGIN_OPTION_STDOUT_LOG_FILENAME="my log.log" \
+    run "$DIAGNOSE_SH" failed "$WT_DIR" "$BASE_SHA" "$TRANSCRIPT_DIR/no-such.jsonl"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
 # ---------------------------------------------------------------------------
 # H3 — JSONL-driven heuristic
 # ---------------------------------------------------------------------------
