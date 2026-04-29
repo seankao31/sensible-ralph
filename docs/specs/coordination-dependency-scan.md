@@ -1,4 +1,4 @@
-# Hidden-dependency scan in `/sr-spec` and cleanup in `/close-issue`
+# Coordination-dependency scan in `/sr-spec` and cleanup in `/close-issue`
 
 **Linear:** ENG-280
 **Spec base SHA:** `fc6166a762ee42e57a018a065f882c1f2f208c7e`
@@ -58,8 +58,8 @@ in both skills' SKILL.md stay as they are today.
            "Spec self-review" and "User review gate" sections
            between 7 and 10 — those informal sections stay informal)
   step 1-10   (unchanged, including step 10 = codex review gate)
-  step 11     hidden-dependency scan         ← NEW
-                ├─ skills/sr-spec/scripts/hidden_dep_scan.sh   (data assembly)
+  step 11     coord-dep scan         ← NEW
+                ├─ skills/sr-spec/scripts/coord_dep_scan.sh   (data assembly)
                 ├─ structured-prompt reasoning (skill prose)   (judgment)
                 └─ on accepted findings: linear issue relation add
                                          linear_add_label (once)
@@ -72,8 +72,8 @@ in both skills' SKILL.md stay as they are today.
                invariant, Source plugin libs, Resolve FEATURE_BRANCH,
                Pre-flight — are unnumbered and unchanged)
   steps 4-7   (unchanged, including step 7 = transition Linear issue to Done)
-  step 8      hidden-dep cleanup             ← NEW
-                └─ skills/close-issue/scripts/cleanup_hidden_dep.sh
+  step 8      coord-dep cleanup             ← NEW
+                └─ skills/close-issue/scripts/cleanup_coord_dep.sh
                     ├─ walk all comments, regex-extract parent IDs, dedup
                     ├─ for each: linear issue relation delete (best-effort)
                     └─ linear_remove_label (once)
@@ -94,12 +94,12 @@ Linear-side mutations.
 ## The reserved marker
 
 ```
-**hidden-dependency**: blocked-by ENG-NNN
+**coord-dep**: blocked-by ENG-NNN
 ```
 
 This exact string, anywhere in any comment body of any issue, is
 owned by this feature. The single source of truth for the format is
-the header comment of `skills/sr-spec/scripts/hidden_dep_scan.sh`,
+the header comment of `skills/sr-spec/scripts/coord_dep_scan.sh`,
 copied as a `## Marker format` section into both
 `skills/sr-spec/SKILL.md` (step 11) and `skills/close-issue/SKILL.md`
 (step 8) so each skill is self-contained for a reader.
@@ -107,7 +107,7 @@ copied as a `## Marker format` section into both
 `/close-issue`'s cleanup will treat any line matching the regex
 
 ```
-^[-[:space:]]*\*\*hidden-dependency\*\*:[[:space:]]+blocked-by[[:space:]]+ENG-[0-9]+
+^[-[:space:]]*\*\*coord-dep\*\*:[[:space:]]+blocked-by[[:space:]]+ENG-[0-9]+
 ```
 
 as a removal target, regardless of which scan posted it (`/sr-spec`
@@ -122,11 +122,11 @@ close.
 Add a new `userConfig` option to `.claude-plugin/plugin.json`:
 
 ```json
-"hidden_dep_label": {
+"coord_dep_label": {
   "type": "string",
-  "title": "Hidden-dependency label",
-  "description": "Label applied by /sr-spec when its hidden-dependency scan adds blocked-by edges; cleared by /close-issue (default: ralph-hidden-dep)",
-  "default": "ralph-hidden-dep"
+  "title": "Coordination-dependency label",
+  "description": "Label applied by /sr-spec when its coord-dep scan adds blocked-by edges; cleared by /close-issue (default: ralph-coord-dep)",
+  "default": "ralph-coord-dep"
 }
 ```
 
@@ -135,12 +135,12 @@ top of that file says "The defaults mirror the plugin.json userConfig
 defaults — update in lockstep"):
 
 ```bash
-: "${CLAUDE_PLUGIN_OPTION_HIDDEN_DEP_LABEL=ralph-hidden-dep}"
+: "${CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL=ralph-coord-dep}"
 # ...
-export CLAUDE_PLUGIN_OPTION_HIDDEN_DEP_LABEL
+export CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL
 ```
 
-Append `CLAUDE_PLUGIN_OPTION_HIDDEN_DEP_LABEL` to the hardcoded
+Append `CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL` to the hardcoded
 `required_vars` array in
 `skills/sr-start/scripts/lib/preflight_labels.sh::preflight_labels_check`:
 
@@ -148,7 +148,7 @@ Append `CLAUDE_PLUGIN_OPTION_HIDDEN_DEP_LABEL` to the hardcoded
 local -a required_vars=(
   CLAUDE_PLUGIN_OPTION_FAILED_LABEL
   CLAUDE_PLUGIN_OPTION_STALE_PARENT_LABEL
-  CLAUDE_PLUGIN_OPTION_HIDDEN_DEP_LABEL
+  CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL
 )
 ```
 
@@ -157,7 +157,7 @@ deliberate per that file's design note: explicit lists keep the set
 of "things that must exist in Linear" auditable.
 
 **Upgrade note** for the spec: workspaces upgrading the plugin must
-create the `ralph-hidden-dep` workspace-scoped label once before the
+create the `ralph-coord-dep` workspace-scoped label once before the
 next `/sr-start` runs, otherwise preflight refuses with a clear
 diagnostic naming both the literal label and the env var. Add to
 `skills/sr-start/SKILL.md` Prerequisites alongside the existing
@@ -199,7 +199,7 @@ log-and-continue.
 
 ### 3. `/sr-spec` step 11 — the scan helper
 
-New file: `skills/sr-spec/scripts/hidden_dep_scan.sh`. Pure data
+New file: `skills/sr-spec/scripts/coord_dep_scan.sh`. Pure data
 assembly, no decisions. Does not write to Linear.
 
 Inputs:
@@ -246,7 +246,7 @@ Failure modes (all return non-zero, with stderr diagnostics):
 
 - Linear CLI failure listing peers or viewing any peer → exit 1.
 - Empty peer list → emit valid JSON with `peers: []`, exit 0
-  (the skill prose fast-paths to "No hidden dependencies detected").
+  (the skill prose fast-paths to "No coordination dependencies detected").
 - New spec file does not exist at the passed path → exit 2 with a
   "step 7 spec file missing" message (sanity check; should be
   impossible in normal flow).
@@ -259,12 +259,12 @@ prose after operator confirmation.
 The skill's step 11 prose drives the rest:
 
 1. Run the helper:
-   `bash "$CLAUDE_PLUGIN_ROOT/skills/sr-spec/scripts/hidden_dep_scan.sh" "$SPEC_FILE" "${PREREQS[@]}"`.
+   `bash "$CLAUDE_PLUGIN_ROOT/skills/sr-spec/scripts/coord_dep_scan.sh" "$SPEC_FILE" "${PREREQS[@]}"`.
    Capture the JSON bundle.
 
 2. **Trivial fast path.** If `peers` is empty, or if every potential
    overlap maps to a parent already in `existing_blockers`, emit one
-   line — `step 11: No hidden dependencies detected.` — and proceed
+   line — `step 11: No coordination dependencies detected.` — and proceed
    to step 12 (finalize).
 
 3. **Structured-prompt reasoning.** Present the new spec body and
@@ -305,7 +305,7 @@ The skill's step 11 prose drives the rest:
 
    - Compose one consolidated comment in the format below.
    - `linear issue comment add "$ISSUE_ID" --body-file <tmp>`.
-   - `linear_add_label "$ISSUE_ID" "$CLAUDE_PLUGIN_OPTION_HIDDEN_DEP_LABEL"`.
+   - `linear_add_label "$ISSUE_ID" "$CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL"`.
    - If the comment or label call fails: print the comment body
      inline so the operator can manually post; do NOT roll back
      relation-adds. Operator decides what to do next.
@@ -320,10 +320,10 @@ The skill's step 11 prose drives the rest:
 run, marker repeats per line):
 
 ```
-**hidden-dependency** edges added by /sr-spec scan:
+**coord-dep** edges added by /sr-spec scan:
 
-- **hidden-dependency**: blocked-by ENG-X — both restructure `lib/scope.sh`'s `_scope_load` function
-- **hidden-dependency**: blocked-by ENG-Y — ENG-Y renames `foo.sh` which this spec edits inline
+- **coord-dep**: blocked-by ENG-X — both restructure `lib/scope.sh`'s `_scope_load` function
+- **coord-dep**: blocked-by ENG-Y — ENG-Y renames `foo.sh` which this spec edits inline
 
 Will be removed automatically on `/close-issue`.
 ```
@@ -341,36 +341,36 @@ both step 11 and step 12.
 
 ### 5. `/close-issue` step 8 — cleanup helper
 
-New file: `skills/close-issue/scripts/cleanup_hidden_dep.sh`.
+New file: `skills/close-issue/scripts/cleanup_coord_dep.sh`.
 
 Inputs:
 
-- Env: `$ISSUE_ID`, `$CLAUDE_PLUGIN_OPTION_HIDDEN_DEP_LABEL`.
+- Env: `$ISSUE_ID`, `$CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL`.
 
 Behavior:
 
 ```bash
 # 1. Pull all comments. linear comment list returns the full thread by default.
 comments=$(linear issue comment list "$ISSUE_ID" --json) || {
-  echo "cleanup_hidden_dep: failed to list comments on $ISSUE_ID — skipping cleanup" >&2
+  echo "cleanup_coord_dep: failed to list comments on $ISSUE_ID — skipping cleanup" >&2
   exit 1
 }
 
 # 2. Per-line regex extraction across all comment bodies, dedup.
 parents=$(printf '%s' "$comments" | jq -r '.nodes[].body' \
-  | grep -Eo '\*\*hidden-dependency\*\*:[[:space:]]+blocked-by[[:space:]]+ENG-[0-9]+' \
+  | grep -Eo '\*\*coord-dep\*\*:[[:space:]]+blocked-by[[:space:]]+ENG-[0-9]+' \
   | grep -Eo 'ENG-[0-9]+' \
   | sort -u)
 
 # 3. Best-effort relation removal.
 for p in $parents; do
   linear issue relation delete "$ISSUE_ID" blocked-by "$p" \
-    || echo "cleanup_hidden_dep: $p edge absent or delete failed — continuing" >&2
+    || echo "cleanup_coord_dep: $p edge absent or delete failed — continuing" >&2
 done
 
 # 4. Best-effort label removal via lib helper.
-linear_remove_label "$ISSUE_ID" "$CLAUDE_PLUGIN_OPTION_HIDDEN_DEP_LABEL" \
-  || echo "cleanup_hidden_dep: label removal failed — continuing" >&2
+linear_remove_label "$ISSUE_ID" "$CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL" \
+  || echo "cleanup_coord_dep: label removal failed — continuing" >&2
 
 exit 0
 ```
@@ -392,8 +392,8 @@ Three properties guaranteed:
 `/close-issue`'s SKILL.md step 8 invokes the helper:
 
 ```bash
-bash "$CLAUDE_PLUGIN_ROOT/skills/close-issue/scripts/cleanup_hidden_dep.sh" \
-  || echo "close-issue: hidden-dep cleanup returned non-zero; proceeding to worktree teardown" >&2
+bash "$CLAUDE_PLUGIN_ROOT/skills/close-issue/scripts/cleanup_coord_dep.sh" \
+  || echo "close-issue: coord-dep cleanup returned non-zero; proceeding to worktree teardown" >&2
 ```
 
 Cleanup is housekeeping; the merge + `Done` are the load-bearing
@@ -402,7 +402,7 @@ mutations and have already landed.
 ## Edge cases
 
 - **No Approved peers in scope.** Helper emits `peers: []`; skill
-  prose fast-paths to "No hidden dependencies detected." Step 11
+  prose fast-paths to "No coordination dependencies detected." Step 11
   completes silently.
 - **Operator declared a logical `blocked-by` at design time AND scan
   finds path overlap with that same parent.** Helper's
@@ -413,7 +413,7 @@ mutations and have already landed.
   edge — semantic edges survive close, as they should.
 - **Re-spec on an Approved issue (state-matrix `Approved` row).**
   The current issue's prior spec exists on its branch + as Linear
-  description. Hidden-dep edges from the prior session are already
+  description. Coord-dep edges from the prior session are already
   in `blocked-by`, so the helper's `existing_blockers` includes
   them; they're skipped. Newly-discovered edges (if any) get a new
   comment. Both old and new comments persist; `/close-issue` cleans
@@ -425,7 +425,7 @@ mutations and have already landed.
   dialogue. Skipping step 11 is acceptable and supported, with a
   one-line warning logged to the operator's session output. The
   `/sr-start` backstop in ENG-281 will catch missed edges later.
-- **Operator manually edits a prior hidden-dep audit comment.** The
+- **Operator manually edits a prior coord-dep audit comment.** The
   marker regex still matches if the edit preserves the line format;
   edits that break the line format are picked up as zero matches and
   the corresponding edge stays at close. Document the marker as
@@ -435,7 +435,7 @@ mutations and have already landed.
   regex matches across fence boundaries; the cleanup helper would
   treat it as a removal target. Mitigation: document that the marker
   is reserved anywhere in any comment body. Risk of accidental match
-  in normal prose is low (the literal `**hidden-dependency**:
+  in normal prose is low (the literal `**coord-dep**:
   blocked-by ENG-NNN` prefix is unusual).
 
 ## Testing
@@ -449,7 +449,7 @@ harness:
    diagnostic on missing-workspace-label, propagation of API
    failures.
 
-2. **`skills/sr-spec/scripts/test/hidden_dep_scan.bats`** —
+2. **`skills/sr-spec/scripts/test/coord_dep_scan.bats`** —
    unit-tests the data-assembly helper. Mocks `linear` CLI for
    issue-list and issue-view; asserts: empty peer list emits valid
    JSON with `peers: []`, peer descriptions are passed through
@@ -457,7 +457,7 @@ harness:
    (and the union with design-time PREREQS), self-exclusion (current
    `$ISSUE_ID` not in peer list), bad spec-file path returns exit 2.
 
-3. **`skills/close-issue/scripts/test/cleanup_hidden_dep.bats`** —
+3. **`skills/close-issue/scripts/test/cleanup_coord_dep.bats`** —
    unit-tests the cleanup helper. Mocks `linear issue comment list`
    to return fixture comment threads; asserts: multi-comment dedup
    works, non-marker comments are ignored, malformed marker lines
@@ -495,7 +495,7 @@ No `blocked-by` relations to declare for this issue.
   blocked-by this issue. ENG-281 reuses the same marker, label, and
   `/close-issue` cleanup; no further `/close-issue` change is needed
   when ENG-281 lands.
-- Auto-removal of hidden-dep edges on re-spec when a re-spec scan
+- Auto-removal of coord-dep edges on re-spec when a re-spec scan
   determines a prior edge no longer applies. Too risky — can't
   reliably distinguish "scan changed its mind" from "operator added
   this manually." Edges live until `/close-issue` cleans them up.
@@ -513,13 +513,13 @@ No `blocked-by` relations to declare for this issue.
 
 ## Acceptance criteria
 
-1. New `userConfig` option `hidden_dep_label` exists in
-   `.claude-plugin/plugin.json` with default `ralph-hidden-dep`,
+1. New `userConfig` option `coord_dep_label` exists in
+   `.claude-plugin/plugin.json` with default `ralph-coord-dep`,
    mirrored in `lib/defaults.sh`.
 2. `lib/linear.sh::linear_remove_label` exists, follows the
    `linear_add_label` pattern, returns 0 on success or no-op-on-absent,
    non-zero on workspace-label-missing or API failure.
-3. `skills/sr-spec/scripts/hidden_dep_scan.sh` exists, takes the spec
+3. `skills/sr-spec/scripts/coord_dep_scan.sh` exists, takes the spec
    file path and design-time PREREQS as inputs, emits the documented
    JSON bundle on stdout, exits 0 on empty peers, 1 on Linear failure,
    2 on missing spec file.
@@ -531,7 +531,7 @@ No `blocked-by` relations to declare for this issue.
    step 12; existing step 10 (codex) and all earlier numbers stay
    unchanged; informal "Spec self-review" and "User review gate"
    sections stay informal.
-5. `skills/close-issue/scripts/cleanup_hidden_dep.sh` exists,
+5. `skills/close-issue/scripts/cleanup_coord_dep.sh` exists,
    implements the per-line regex parser, walks all comments, dedups
    parent IDs, removes edges and the label best-effort, exits 0
    except on wholesale comment-list failure.
@@ -540,9 +540,9 @@ No `blocked-by` relations to declare for this issue.
    new step's prose includes the marker format and the contract
    with the scan.
 7. `skills/sr-start/scripts/lib/preflight_labels.sh::preflight_labels_check`
-   includes `CLAUDE_PLUGIN_OPTION_HIDDEN_DEP_LABEL` in `required_vars`.
+   includes `CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL` in `required_vars`.
 8. `skills/sr-start/SKILL.md` Prerequisites lists the new
-   `ralph-hidden-dep` workspace-scoped label setup command alongside
+   `ralph-coord-dep` workspace-scoped label setup command alongside
    the existing `ralph-failed` and `stale-parent` ones.
 9. New bats files cover the helpers per the testing section.
 10. Existing bats coverage for `lib/linear.sh`, `lib/preflight_labels.sh`,
