@@ -215,16 +215,30 @@ content:
 ```markdown
 ## Step 2: Drain pending parent merges
 
-Check whether the orchestrator left work for you. ALL THREE of these
-gate the recovery flow:
+The marker file is the authority for entering recovery. Two checks
+gate the flow:
 
-    git rev-parse -q --verify MERGE_HEAD   # any in-progress merge?
-    git status --short                      # any unmerged or staged files?
-    ls .sensible-ralph-pending-merges 2>/dev/null
+    [ -f .sensible-ralph-pending-merges ] && echo MARKER
+    git rev-parse -q --verify MERGE_HEAD && echo MERGING
 
-If all three are empty/non-zero, skip to Step 3. Otherwise, drain the
-merges in this order — finish any in-progress merge BEFORE re-invoking
-the helper:
+Three cases:
+
+- **Marker absent, MERGE_HEAD absent:** no drain work. Skip to Step 3.
+
+- **Marker absent, MERGE_HEAD present:** the worktree is mid-merge
+  but the state was NOT created by this feature (the helper would
+  have written a marker alongside the merge). Do NOT auto-commit —
+  this is unowned state. Treat as a red flag per Step 5: post a
+  Linear comment ("worktree is mid-merge but `.sensible-ralph-pending-merges`
+  is absent; this state was not produced by the orchestrator's
+  parent-merge helpers and cannot be safely auto-resolved"), exit
+  clean. Do NOT invoke `/prepare-for-review`.
+
+- **Marker present:** enter the drain loop. Marker presence proves
+  the merge state belongs to this feature. Run the loop below until
+  the marker is gone.
+
+### Drain loop
 
 1. **Resolve unmerged files (if any).** If `git status` shows
    unmerged files (UU/AA), resolve each using `git diff`, the spec,
@@ -232,31 +246,28 @@ the helper:
    `git add` resolved files (do NOT commit yet — fall through to
    step 2).
 
-2. **Finish any in-progress merge.** Check whether the worktree is in
-   MERGING state:
+2. **Finish any in-progress merge.** Check whether the worktree is
+   in MERGING state:
 
        git rev-parse -q --verify MERGE_HEAD
 
-   If this prints a SHA (exit 0), a merge is in progress and must be
-   committed before the helper can run again. Run:
+   If this prints a SHA (exit 0), a merge is in progress and must
+   be committed before the helper can run again. Run:
 
        git commit --no-edit
 
    This handles three crash-recovery cases:
    - Conflicts just resolved in step 1 → commit them now.
-   - Conflicts resolved + staged in a prior session attempt but the
-     session crashed before committing → MERGE_HEAD still exists, no
-     UU/AA files; this commit completes the merge.
-   - Resolution committed already → MERGE_HEAD does not exist; the
-     `git rev-parse` returns non-zero, no commit needed.
+   - Conflicts resolved + staged in a prior session attempt but
+     the session crashed before committing → MERGE_HEAD still
+     exists, no UU/AA files; this commit completes the merge.
+   - Resolution committed already → MERGE_HEAD does not exist;
+     the `git rev-parse` returns non-zero, no commit needed.
 
-   Skipping this step and going straight to the helper would invoke
-   `git merge` on a worktree with MERGE_HEAD set, producing
-   "fatal: You have not concluded your merge" → helper returns 1 →
-   spurious red flag. Including MERGE_HEAD in the initial gate above
-   ensures recovery is entered even in the (rare) case where
-   `git status --short` misses a fully-staged merge or where the
-   marker has been cleaned up by a prior partial run.
+   Skipping this step and going straight to the helper would
+   invoke `git merge` on a worktree with MERGE_HEAD set, producing
+   "fatal: You have not concluded your merge" → helper returns 1
+   → spurious red flag.
 
 3. **Re-invoke the helper to drain remaining parents.** Pass the
    marker contents as args; the helper accepts SHAs uniformly with
@@ -417,6 +428,10 @@ the merge-parents path under future refactors.
   the helper's behavior when called WITH MERGE_HEAD set is implicitly
   covered by test 11's documented contract that the session must
   finish the merge first.
+- No bats coverage for the unowned-state red flag (marker absent +
+  MERGE_HEAD present). This is a session-side hard stop documented
+  in `/sr-implement` Step 2; the helper itself never enters this
+  path because the helper is the only writer of the marker.
 
 ## Acceptance criteria
 
@@ -446,12 +461,23 @@ the merge-parents path under future refactors.
    notice described in the "Orchestrator changes" section and
    proceeds with `base_sha` capture and dispatch (it does NOT
    record `setup_failed` for the marker case).
-5. The dispatched session's `/sr-implement` Step 2 includes the
-   drain-loop instructions described in the "Session-side drain"
-   section: resolve unmerged files → finish any in-progress merge
+5. The dispatched session's `/sr-implement` Step 2 implements the
+   recovery flow described in the "Session-side drain" section:
+   marker presence is the sole authority for entering the drain
+   loop. If the marker is absent and MERGE_HEAD is set, the session
+   red-flags (post Linear comment, exit clean — do not invoke
+   `/prepare-for-review`). If the marker is present, the drain loop
+   runs: resolve unmerged files → finish any in-progress merge
    via `git rev-parse -q --verify MERGE_HEAD` + `git commit --no-edit`
    → re-invoke `worktree_merge_parents` with marker SHAs → loop
    until marker is gone.
+
+5b. The plugin repo's `.gitignore` includes a new line
+    `/.sensible-ralph-pending-merges` alongside the existing
+    `/.sensible-ralph-base-sha` entry, so the marker file (when
+    present in the dogfood case where the plugin repo IS the
+    consumer) does not show up as untracked content in
+    `git status`.
 6. `lib/test/worktree.bats` covers, for both helpers (except where
    noted): (a) clean multi-parent merge exits 0 with no marker file,
    (b) conflicting multi-parent merge exits 0 with conflict markers
