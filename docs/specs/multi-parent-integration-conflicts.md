@@ -621,8 +621,10 @@ purely doc-enforced.
      unowned merge state.
    - Marker absent + clean tree → skip to Step 3.
 
-   Drain loop body (only entered when marker is present and every
-   non-empty line is well-formed): resolve unmerged files → finish
+   Drain loop body (only entered when marker is present and EVERY
+   line — including any blank/whitespace-only line — passes both
+   the regex and reachability checks above): resolve unmerged
+   files → finish
    any in-progress merge via `git rev-parse -q --verify MERGE_HEAD`
    + `git commit --no-edit` → re-invoke `worktree_merge_parents`
    with marker SHAs → loop until marker is gone.
