@@ -396,11 +396,20 @@ the scan.
    `bash "$CLAUDE_PLUGIN_ROOT/skills/sr-spec/scripts/coord_dep_scan.sh" "$SPEC_FILE" "${PREREQS[@]}"`.
    Capture the JSON bundle.
 
-4. **Trivial fast path.** If `peers` is empty, or if every potential
-   overlap maps to a parent already in `existing_blockers`, write
-   an empty array `[]` to the transport file (sub-step 7), emit
-   one line — `step 11: No coordination dependencies detected.` —
-   and proceed to step 12 (finalize).
+4. **Trivial fast path.** If `peers` is empty (or every potential
+   overlap maps to a parent already in `existing_blockers`) AND
+   `prior_accepted_edges` is empty: write an empty array `[]` to
+   the transport file (sub-step 7), emit one line — `step 11: No
+   coordination dependencies detected.` — and proceed to step 12.
+
+   If there are no fresh-scan candidates BUT `prior_accepted_edges`
+   is non-empty (the recovery scenario from sub-step 1), do NOT
+   take the fast path — fall through to the operator gate
+   (sub-step 6) so the operator can confirm/reject each prior
+   entry. Otherwise we'd silently overwrite the transport file
+   with `[]`, drop the prior entries, and step 12 would never
+   re-post the missing audit comment for relations stranded by
+   an earlier partial finalize.
 
 5. **Structured-prompt reasoning.** Present the new spec body and
    each peer's title + description and work the six-item checklist:
@@ -729,44 +738,54 @@ fi
 #
 #    Implementation: awk extracts each block to its own temp file,
 #    then jq is called per file with `2>/dev/null` to suppress
-#    parse errors. Per-file empty/malformed → no parents from that
-#    block; valid blocks contribute their `parents` to the
-#    aggregated set.
+#    parse errors. We also need to count actual fenced blocks (not
+#    GraphQL substring matches) for the fast-path/malformed
+#    distinguisher in sub-step 4 below — comments that merely
+#    mention `coord-dep-audit` inline (in backticks, prose, etc.)
+#    must NOT be treated as malformed audit data.
+tmpdir=$(mktemp -d)
+trap 'rm -rf "$tmpdir"' EXIT
+
+# Extract each fenced block to its own file. The awk script
+# numbers blocks sequentially so each gets a distinct path.
+printf '%s' "$comments" | jq -r '.data.issue.comments.nodes[].body' \
+  | awk -v dir="$tmpdir" '
+      /^```coord-dep-audit$/{n++; out=sprintf("%s/block-%05d.json", dir, n); flag=1; next}
+      /^```$/{flag=0; next}
+      flag{print > out}
+    '
+
+# Count actual fenced blocks. This is the authoritative
+# "audit-data exists?" signal — NOT the GraphQL filter result,
+# which matches inline mentions of the fence tag too.
+fenced_block_count=$(find "$tmpdir" -maxdepth 1 -name 'block-*.json' -type f 2>/dev/null | wc -l | tr -d ' ')
+
+# Parse each block independently. Per-file jq failures are
+# silenced and skipped; valid blocks contribute their parents.
 parents=$(
-  tmpdir=$(mktemp -d)
-  trap 'rm -rf "$tmpdir"' EXIT
-
-  # Extract each fenced block to its own file. The awk script
-  # numbers blocks sequentially so each gets a distinct path.
-  printf '%s' "$comments" | jq -r '.data.issue.comments.nodes[].body' \
-    | awk -v dir="$tmpdir" '
-        /^```coord-dep-audit$/{n++; out=sprintf("%s/block-%05d.json", dir, n); flag=1; next}
-        /^```$/{flag=0; next}
-        flag{print > out}
-      '
-
-  # Parse each block independently. Per-file jq failures are
-  # silenced and skipped; valid blocks contribute their parents.
   for f in "$tmpdir"/block-*.json; do
     [[ -f "$f" ]] || continue
     jq -r '.parents[]?' "$f" 2>/dev/null || true
   done | sort -u
 )
 
-# Distinguish "no audit comments at all" from "audit comments
+# Distinguish "no fenced audit blocks at all" from "fenced blocks
 # existed but parsed to zero parents (likely all malformed)". The
 # former is a clean fast path; the latter is a real failure mode
 # that must keep the label and exit non-zero — silently clearing
 # the label on malformed audit data would erase the operator's
 # only signal that cleanup is incomplete.
-matching_count=$(printf '%s' "$comments" | jq -r '.data.issue.comments.nodes | length')
-
+#
+# We use $fenced_block_count (count of ACTUAL extracted blocks),
+# NOT the GraphQL match count, because the GraphQL filter matches
+# substring occurrences of `coord-dep-audit` — including inline
+# prose mentions in backticks — which are not delete authority.
 if [[ -z "$parents" ]]; then
-  if [[ "$matching_count" -gt 0 ]]; then
-    echo "cleanup_coord_dep: $matching_count audit-block-bearing comment(s) found but yielded zero parsable parents (malformed JSON?) — KEEPING coord-dep label and skipping cleanup; investigate manually" >&2
+  if [[ "$fenced_block_count" -gt 0 ]]; then
+    echo "cleanup_coord_dep: $fenced_block_count audit block(s) found but yielded zero parsable parents (malformed JSON?) — KEEPING coord-dep label and skipping cleanup; investigate manually" >&2
     exit 1
   fi
-  # Truly no audit comments. Safe fast path: attempt label-remove,
+  # Truly no audit blocks. Safe fast path: attempt label-remove,
   # gated on linear_label_exists.
   linear_label_exists "$CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL" 2>/dev/null && \
     linear_remove_label "$ISSUE_ID" "$CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL" \
@@ -973,12 +992,14 @@ harness:
      well-formed blocks remain. Concretely: a fixture with one
      malformed block AND one valid block (with `parents:
      ["ENG-X"]`) must result in a delete attempt for `ENG-X`.
-   - All-malformed scenario: fixture with one or more comments
-     matching the `coord-dep-audit` filter but EVERY fenced block
-     is malformed → exit 1 with the coord-dep label KEPT (the
-     fast path only runs when zero comments matched the GraphQL
-     filter, NOT when comments matched but parsing yielded zero
-     parents).
+   - All-malformed scenario: fixture with one or more **fenced
+     `coord-dep-audit` blocks** that are EVERY malformed JSON →
+     exit 1 with the coord-dep label KEPT.
+   - Inline mention of `coord-dep-audit`: fixture with a comment
+     whose body contains the string `coord-dep-audit` inline (in
+     backticks, prose, etc.) but NO actual fenced blocks → fast
+     path runs, label removed, exit 0. The fenced-block count
+     (NOT the GraphQL filter match) is the authoritative signal.
    - `pageInfo.hasNextPage=true` aborts loud (exit 1, label not
      removed).
    - Concurrent-UI scenario A: parent absent before delete attempt,
