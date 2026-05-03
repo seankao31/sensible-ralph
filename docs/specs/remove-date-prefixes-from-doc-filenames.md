@@ -31,7 +31,7 @@ Two reasons:
 
 ### In scope
 
-**Renames (9 files, via `git mv`):**
+**Renames (10 files, via `git mv`):**
 
 | Current path | New path |
 |---|---|
@@ -40,10 +40,21 @@ Two reasons:
 | `docs/decisions/2026-04-26-rename-sweep-grep-word-boundary.md` | `docs/decisions/rename-sweep-grep-word-boundary.md` |
 | `docs/decisions/2026-04-26-sr-prefix-shell-variable-naming.md` | `docs/decisions/sr-prefix-shell-variable-naming.md` |
 | `docs/decisions/2026-04-27-base-sha-written-only-by-orchestrator.md` | `docs/decisions/base-sha-written-only-by-orchestrator.md` |
+| `docs/decisions/2026-04-28-autonomous-handoff-skill-imperatives.md` | `docs/decisions/autonomous-handoff-skill-imperatives.md` |
 | `docs/specs/2026-04-25-close-issue-bats-harness.md` | `docs/specs/close-issue-bats-harness.md` |
 | `docs/specs/2026-04-25-close-issue-stale-parent-bats.md` | `docs/specs/close-issue-stale-parent-bats.md` |
 | `docs/specs/2026-04-25-codex-review-gate-in-ralph-spec.md` | `docs/specs/codex-review-gate-in-ralph-spec.md` |
 | `docs/specs/2026-04-25-ralph-start-default-base-branch.md` | `docs/specs/ralph-start-default-base-branch.md` |
+
+**Mid-flight scope expansion:** the rename table originally listed 9
+files. The 10th (`2026-04-28-autonomous-handoff-skill-imperatives.md`)
+landed via the merge of ENG-307 into this branch (commit `485e033`)
+after the spec's last revision but before implementation began. The
+autonomous `/sr-implement` dispatch correctly hit the escape hatch
+rather than silently narrow the criteria; the operator chose to absorb
+the 10th file into ENG-305 (option 1 from the escape-hatch comment)
+rather than file a follow-up ticket. This kept the convention
+enforcement that the criteria are designed to deliver intact.
 
 The invariant is that the rename is detected as `R100` in the final
 diff (criterion 3 below). `git mv` is the simplest way to produce that
@@ -184,7 +195,7 @@ Execute on the per-issue branch `eng-305-remove-date-prefixes-from-doc-filenames
    See "Acceptance criteria → criterion 3" below for why the resolver
    form (`git rev-parse --git-path`) matters in a linked worktree.
 
-1. **Rename via `git mv`.** Run nine `git mv` invocations from the worktree
+1. **Rename via `git mv`.** Run ten `git mv` invocations from the worktree
    root. Each command moves a single file; do not glob or batch them so
    that mistakes are localized. The renames are independent — order does
    not matter.
@@ -211,9 +222,9 @@ branch:
    returns no matches and exits with status 1.
 
 2. **The orchestrator.md cross-refs were rewritten to the correct new
-   path, and no stale references to the 9 renamed files survive
+   path, and no stale references to the 10 renamed files survive
    anywhere except the carve-outs.** Three checks — two positive, one
-   negative — all scoped to the 9 specific basenames this ticket
+   negative — all scoped to the 10 specific basenames this ticket
    renames.
 
    - *Positive (new file resolves):* the new file exists at the
@@ -235,26 +246,26 @@ branch:
      criterion accepts ≥ 2 to avoid a false failure if a legitimate
      third reference is added by a different ticket landing on the
      branch).
-   - *Negative (no stale references to the 9 specific renamed
+   - *Negative (no stale references to the 10 specific renamed
      basenames outside the carve-outs):* For each old basename in the
      rename table, run `git grep -lF "<old-basename>"`. `git grep`
      searches only tracked files (no editor backups, scratch notes,
      or other untracked working-tree residue), so the sweep stays on
      repository content. The matches must be a subset of:
      - `docs/specs/remove-date-prefixes-from-doc-filenames.md` — this
-       spec quotes all 9 old paths in its rename table by design.
+       spec quotes all 10 old paths in its rename table by design.
      - `docs/specs/rename-to-sensible-ralph.md` — frozen-spec
-       carve-out (matches 2 of the 9 basenames per "Out of scope"
+       carve-out (matches 2 of the 10 basenames per "Out of scope"
        above).
      - Any file under `docs/archive/**` — point-in-time records (none
-       expected to match the 9 specific basenames today, but allowed
+       expected to match the 10 specific basenames today, but allowed
        if a future archived doc happens to reference one).
 
      Any match outside this allowlist is a stale reference that
      escaped the rename — fix it before marking the work complete.
 
    Note: a broader `[0-9]{4}-` pattern grep is intentionally *not* an
-   acceptance criterion. This ticket renames only the 9 files in the
+   acceptance criterion. This ticket renames only the 10 files in the
    table. Other files contain dated references to **different**
    historical artifacts — a deleted `docs/plans/` tree, chezmoi-repo
    paths from before the plugin was extracted, an archived recon
@@ -319,8 +330,8 @@ branch:
      ':!docs/specs/remove-date-prefixes-from-doc-filenames.md'
    ```
 
-   The output must contain exactly 11 lines, in any order:
-   - 9 lines, each beginning with `R100<TAB><old-path><TAB><new-path>`
+   The output must contain exactly 12 lines, in any order:
+   - 10 lines, each beginning with `R100<TAB><old-path><TAB><new-path>`
      — one per rename in the table above. The `R100` rename score
      requires the renamed file's content to be byte-identical across
      the rename, which is the case here (none of the renamed files'
@@ -368,9 +379,9 @@ branch:
 
 No bats coverage is added — there are no tests for doc filenames in the
 repo today, and the three acceptance criteria above cover the
-deliverables of this ticket: that the 9 renames produced rename
+deliverables of this ticket: that the 10 renames produced rename
 detection, that the live cross-refs in `docs/design/orchestrator.md`
-point at the new path, and that no stale references to the 9 specific
+point at the new path, and that no stale references to the 10 specific
 old basenames survive outside the carve-outs.
 
 ## Reasoning
@@ -380,7 +391,7 @@ live cross-ref fix, `CLAUDE.md` tightening) all express a single
 conceptual edit: "the kebab-case-no-date convention now applies uniformly
 to all three doc layers." Splitting them into separate commits would
 fragment what `git log` shows for this conceptual change without making
-review easier — the diff is small (9 renames + 4 modified lines + 2
+review easier — the diff is small (10 renames + 4 modified lines + 2
 CLAUDE.md sentences). Per `CLAUDE.md` "Unit of Work", code/docs/comment
 changes for the same conceptual edit land together.
 
@@ -393,20 +404,22 @@ convention at this ticket's land-time:
 
 - Criterion 1 (`git ls-files | grep` over `docs/{specs,decisions}/`)
   fails on any date-prefixed file in those directories, not just on
-  the 9 renamed ones. If a concurrent ticket added another
+  the 10 renamed ones. If a concurrent ticket added another
   date-prefixed file in those dirs, that file is itself a convention
-  violation and should be caught.
-- Criterion 2's literal-string scan over the 9 old basenames fails on
+  violation and should be caught. (This criterion is what triggered
+  the mid-flight scope expansion described above: the 10th file was
+  added by ENG-307 between spec freeze and impl dispatch.)
+- Criterion 2's literal-string scan over the 10 old basenames fails on
   any *new* stale reference to a renamed file outside the carve-outs.
   Same logic: the renamed files no longer exist at their old paths,
   so any reference to those old paths outside the documented
   carve-outs is stale.
-- Criterion 3's exact-11-line diff (over the four scoped paths) fails
+- Criterion 3's exact-12-line diff (over the four scoped paths) fails
   if the implementer makes any other edit to those paths on the same
   branch. Per-issue branch isolation is part of the
   one-issue-at-a-time flow `/sr-start` enforces, so this is the
   correct discipline check: this ticket's work on these paths is the
-  9 renames + 2 modifications; anything else is scope drift.
+  10 renames + 2 modifications; anything else is scope drift.
 
 The trade-off accepted: if a concurrent ticket lands work on the same
 paths or introduces convention violations, ENG-305's verification will
