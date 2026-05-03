@@ -31,19 +31,23 @@ Three places live docs go:
 - **`docs/specs/`** — per-ticket implementation specs. Written by
   `/sr-spec`, scoped to a single Linear issue, frozen on completion.
   Mostly implementation context and detail; not a project-design
-  reference.
+  reference. Filenames are kebab-case topic names, no date prefix.
 - **`docs/decisions/`** — captured non-obvious choices, atomic and
   retrospective. Decisions accumulate here until enough related ones
   exist to synthesize into a design doc; once synthesized, the decision
   moves to `docs/archive/decisions/`. Decisions that don't relate to
   any subsystem (one-off tactical choices) just get archived directly
-  on completion.
+  on completion. Filenames are kebab-case topic names, no date prefix.
 
 **Implementer responsibility:** when a change touches a subsystem with
 a design doc, update the design doc in the same commit/PR. Same rule
 as code + comments + READMEs (see `~/.claude/CLAUDE.md` "Unit of Work").
 Skill-level enforcement of this rule is a deferred follow-up — for
-now it's social.
+now it's social. Frozen specs in `docs/specs/` may quote earlier
+versions of these conventions or other rules; those quotes are
+point-in-time records of what the ticket added at the time, not the
+current convention. This file (project-root `CLAUDE.md`) is the live
+source of truth.
 
 ## Commit messages
 

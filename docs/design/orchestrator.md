@@ -198,7 +198,7 @@ Each record carries:
 - **`hint`** (ENG-308) — end records on `exit_clean_no_review`, `failed`, `unknown_post_state` only, and only when at least one diagnose heuristic fired. Field is omitted entirely when no heuristic matched (so `jq -r '.hint // ""'` cleanly yields empty for the no-hint case).
 - **(none beyond core)** — `skipped` records carry only `issue`, `outcome`, `event`, `timestamp`, `run_id`.
 
-The schema is additive: old consumers reading only `outcome` continue to work because `start` records have no `outcome` field and naturally filter out. See `docs/decisions/2026-04-25-progress-json-event-discriminator.md` for the alternatives considered.
+The schema is additive: old consumers reading only `outcome` continue to work because `start` records have no `outcome` field and naturally filter out. See `docs/decisions/progress-json-event-discriminator.md` for the alternatives considered.
 
 ## See also
 
@@ -208,4 +208,4 @@ The schema is additive: old consumers reading only `outcome` continue to work be
 - `docs/design/autonomous-mode.md` (forthcoming, ENG-297) — the preamble injected at session start and how it overrides CLAUDE.md rules for dispatched sessions.
 - `docs/design/worktree-contract.md` (forthcoming, ENG-296) — naming conventions and the `.sensible-ralph-base-sha` contract between the orchestrator and `/prepare-for-review`.
 - `docs/archive/decisions/ralph-v2-multi-parent-integration-abort.md` — why multi-parent integration aborts on conflict instead of leaving conflicts for the agent.
-- `docs/decisions/2026-04-25-progress-json-event-discriminator.md` — why `event` is a discriminator field rather than a separate file or nested structure.
+- `docs/decisions/progress-json-event-discriminator.md` — why `event` is a discriminator field rather than a separate file or nested structure.
