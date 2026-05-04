@@ -125,13 +125,23 @@ The invocation:
 ```bash
 (
   cd "$path"
-  CLAUDE_CONFIG_DIR="$config_dir" claude -p \
-    --permission-mode auto \
-    --model "$CLAUDE_PLUGIN_OPTION_MODEL" \
-    --name "$issue_id: $title" \
-    --session-id "$session_id" \
-    "$prompt" \
-    2>&1 | tee "$path/$CLAUDE_PLUGIN_OPTION_STDOUT_LOG_FILENAME"
+  if (( _propagate_config_dir )); then
+    CLAUDE_CONFIG_DIR="$config_dir" claude -p \
+      --permission-mode auto \
+      --model "$CLAUDE_PLUGIN_OPTION_MODEL" \
+      --name "$issue_id: $title" \
+      --session-id "$session_id" \
+      "$prompt" \
+      2>&1 | tee "$path/$CLAUDE_PLUGIN_OPTION_STDOUT_LOG_FILENAME"
+  else
+    claude -p \
+      --permission-mode auto \
+      --model "$CLAUDE_PLUGIN_OPTION_MODEL" \
+      --name "$issue_id: $title" \
+      --session-id "$session_id" \
+      "$prompt" \
+      2>&1 | tee "$path/$CLAUDE_PLUGIN_OPTION_STDOUT_LOG_FILENAME"
+  fi
 )
 ```
 
@@ -141,7 +151,8 @@ A few details that matter:
 - **Foreground, sequential.** Parallel dispatch within a DAG layer is an explicit non-goal; the loop processes issues one at a time.
 - **Full session log captured.** The `tee` writes the entire `claude -p` stream to `<worktree>/<stdout_log_filename>` for later inspection. `PIPESTATUS[0]` preserves claude's exit code through the tee pipe.
 - **Session name `<ISSUE_ID>: <title>`** — used by `claude --resume` so the operator can drop back into any dispatched session interactively.
-- **`--session-id <uuid>`** — the orchestrator pre-generates a v4 UUID per dispatch and passes it explicitly so the JSONL transcript path is known up-front. The same UUID is persisted into `progress.json` (`session_id` and `transcript_path` fields) so `/sr-status` can surface the transcript pointer on non-success rows. `CLAUDE_CONFIG_DIR` is forwarded so the JSONL writes land where the orchestrator recorded — independent of caller-side misconfiguration. See ENG-308 / `docs/decisions/2026-04-28-session-diagnostics-A-C-E.md`.
+- **`--session-id <uuid>`** — the orchestrator pre-generates a v4 UUID per dispatch and passes it explicitly so the JSONL transcript path is known up-front. The same UUID is persisted into `progress.json` (`session_id` and `transcript_path` fields) so `/sr-status` can surface the transcript pointer on non-success rows. See ENG-308 / `docs/decisions/2026-04-28-session-diagnostics-A-C-E.md`.
+- **`CLAUDE_CONFIG_DIR` forwarded only when the parent had it set.** The dispatch site exports `CLAUDE_CONFIG_DIR="$config_dir"` iff the parent had the variable set to *some* value (even empty/relative — those are the cases where the orchestrator's normalization is doing real work and the child must see the same path so the recorded `transcript_path` stays in sync). When the parent had `CLAUDE_CONFIG_DIR` unset the child's env is left alone: claude 2.x branches its auth-resolution path on the *set-ness* of `CLAUDE_CONFIG_DIR` (not its value), and an explicit default-valued export disables the macOS keychain fallback (`Not logged in · Please run /login` for every dispatch). See ENG-337.
 
 The `progress.json` `event: "start"` record is written immediately before the subshell so `/sr-status` can render an in-flight Running row mid-run.
 

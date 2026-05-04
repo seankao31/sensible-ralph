@@ -544,9 +544,21 @@ _dispatch_issue() {
   # `${VAR+set}` (no colon) is "set, possibly empty" — so the first branch
   # tells us "VAR is unset entirely" and we fall through silently to the
   # default. Subsequent branches catch the misconfigured shapes.
+  #
+  # _propagate_config_dir gates whether the dispatch site exports
+  # CLAUDE_CONFIG_DIR to the child. We propagate iff the parent had the
+  # variable set to *some* value (even empty/relative — those are the
+  # cases where the orchestrator's normalization is doing real work and
+  # the child must see the same path so the recorded transcript_path
+  # stays in sync). When the parent had it unset we leave the child's
+  # env alone: claude 2.x branches its auth-resolution path on the
+  # set-ness of CLAUDE_CONFIG_DIR (not its value), and an explicit
+  # default-valued export disables the macOS keychain fallback.
   local config_dir
+  local _propagate_config_dir=1
   if [[ -z "${CLAUDE_CONFIG_DIR+set}" ]]; then
     config_dir="$HOME/.claude"
+    _propagate_config_dir=0
   elif [[ -z "$CLAUDE_CONFIG_DIR" ]]; then
     printf 'orchestrator: CLAUDE_CONFIG_DIR is set but empty; falling back to $HOME/.claude\n' >&2
     config_dir="$HOME/.claude"
@@ -601,16 +613,27 @@ _dispatch_issue() {
   (
     cd "$path"
     set +e
-    # CLAUDE_CONFIG_DIR="$config_dir" forces the subprocess to use the same
-    # config directory the orchestrator just normalized; without it, an
-    # empty/relative caller-side value would land the JSONL somewhere other
-    # than the path we recorded.
-    CLAUDE_CONFIG_DIR="$config_dir" claude -p \
-      --permission-mode auto \
-      --model "$CLAUDE_PLUGIN_OPTION_MODEL" \
-      --name "$issue_id: $title" \
-      --session-id "$session_id" \
-      "$prompt" 2>&1 | tee "$path/$CLAUDE_PLUGIN_OPTION_STDOUT_LOG_FILENAME"
+    # When the parent had an empty/relative CLAUDE_CONFIG_DIR we forward
+    # the normalized value so the child writes its JSONL where the
+    # orchestrator recorded transcript_path. When the parent had it
+    # unset we leave the child's env alone so claude's macOS keychain
+    # auth fallback continues to work — see the _propagate_config_dir
+    # block above for the auth-vs-path rationale.
+    if (( _propagate_config_dir )); then
+      CLAUDE_CONFIG_DIR="$config_dir" claude -p \
+        --permission-mode auto \
+        --model "$CLAUDE_PLUGIN_OPTION_MODEL" \
+        --name "$issue_id: $title" \
+        --session-id "$session_id" \
+        "$prompt" 2>&1 | tee "$path/$CLAUDE_PLUGIN_OPTION_STDOUT_LOG_FILENAME"
+    else
+      claude -p \
+        --permission-mode auto \
+        --model "$CLAUDE_PLUGIN_OPTION_MODEL" \
+        --name "$issue_id: $title" \
+        --session-id "$session_id" \
+        "$prompt" 2>&1 | tee "$path/$CLAUDE_PLUGIN_OPTION_STDOUT_LOG_FILENAME"
+    fi
     ec="${PIPESTATUS[0]}"
     exit "$ec"
   ) || claude_exit=$?

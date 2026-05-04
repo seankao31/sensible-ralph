@@ -56,6 +56,13 @@ setup() {
   # Claude invocation capture + state-transition trace
   export STUB_CLAUDE_ARGS_FILE="$STUB_DIR/claude_args"
   : > "$STUB_CLAUDE_ARGS_FILE"
+  # ENG-337: capture child's CLAUDE_CONFIG_DIR set-ness + value, one line per
+  # invocation. Format: `unset` when not in env, `set:<value>` when in env
+  # (empty value renders as `set:`). Lets tests distinguish "parent had it
+  # set to default" from "parent had it unset" — distinct because claude's
+  # auth-resolution path branches on set-ness, not value.
+  export STUB_CLAUDE_ENV_CONFIG_DIR_FILE="$STUB_DIR/claude_env_config_dir"
+  : > "$STUB_CLAUDE_ENV_CONFIG_DIR_FILE"
   export STUB_LINEAR_CALLS_FILE="$STUB_DIR/linear_calls"
   : > "$STUB_LINEAR_CALLS_FILE"
 
@@ -187,11 +194,18 @@ printf '%s\n' "${!var:-main}"
 DAGSH
   chmod +x "$STUB_DIR/scripts/dag_base.sh"
 
-  # Stub claude via PATH. Records argv, optionally transitions Linear state.
+  # Stub claude via PATH. Records argv + inherited CLAUDE_CONFIG_DIR,
+  # optionally transitions Linear state.
   cat > "$STUB_DIR/claude" <<'CLAUDESH'
 #!/usr/bin/env bash
 printf '%q ' "$@" >> "$STUB_CLAUDE_ARGS_FILE"
 printf '\n' >> "$STUB_CLAUDE_ARGS_FILE"
+# ${VAR+set} (no colon) distinguishes unset from set-but-empty.
+if [[ -z "${CLAUDE_CONFIG_DIR+set}" ]]; then
+  printf 'unset\n' >> "$STUB_CLAUDE_ENV_CONFIG_DIR_FILE"
+else
+  printf 'set:%s\n' "$CLAUDE_CONFIG_DIR" >> "$STUB_CLAUDE_ENV_CONFIG_DIR_FILE"
+fi
 if [[ -n "${STUB_CLAUDE_TRANSITION_STATE:-}" && -n "${STUB_CLAUDE_ISSUE_ID:-}" ]]; then
   printf '%s' "$STUB_CLAUDE_TRANSITION_STATE" > "$STUB_DIR/linear_state_$STUB_CLAUDE_ISSUE_ID"
 fi
@@ -1890,4 +1904,69 @@ CLAUDESH
   [ -f "$STUB_DIR/diagnose_invocation" ]
   # base_sha arg is the empty string when .sensible-ralph-base-sha is unreadable.
   grep -qE 'base_sha= ' "$STUB_DIR/diagnose_invocation"
+}
+
+# ---------------------------------------------------------------------------
+# ENG-337: child claude must inherit unset CLAUDE_CONFIG_DIR when parent had
+# it unset, so claude's macOS keychain auth fallback continues to work. The
+# orchestrator should still propagate a normalized value when the parent had
+# an empty/relative (misconfigured) value, preserving ENG-308's defense
+# against transcript_path/JSONL divergence.
+# ---------------------------------------------------------------------------
+
+@test "ENG-337 child sees CLAUDE_CONFIG_DIR unset when parent had it unset" {
+  export STUB_CLAUDE_EXIT=0
+  export STUB_CLAUDE_TRANSITION_STATE="In Review"
+  export STUB_CLAUDE_ISSUE_ID="ENG-337A"
+
+  local fake_home; fake_home="$(cd "$(mktemp -d)" && pwd -P)"
+  HOME="$fake_home" run bash -c "unset CLAUDE_CONFIG_DIR; cd '$REPO_DIR' && '$STUB_DIR/scripts/orchestrator.sh' '$(write_queue ENG-337A)'"
+
+  [ "$status" -eq 0 ]
+  [ -f "$STUB_CLAUDE_ENV_CONFIG_DIR_FILE" ]
+  run cat "$STUB_CLAUDE_ENV_CONFIG_DIR_FILE"
+  [ "$output" = "unset" ]
+  rm -rf "$fake_home"
+}
+
+@test "ENG-337 child inherits CLAUDE_CONFIG_DIR when parent had it set to absolute path" {
+  export STUB_CLAUDE_EXIT=0
+  export STUB_CLAUDE_TRANSITION_STATE="In Review"
+  export STUB_CLAUDE_ISSUE_ID="ENG-337B"
+
+  local config_override; config_override="$(cd "$(mktemp -d)" && pwd -P)"
+  CLAUDE_CONFIG_DIR="$config_override" run bash -c "cd '$REPO_DIR' && '$STUB_DIR/scripts/orchestrator.sh' '$(write_queue ENG-337B)'"
+
+  [ "$status" -eq 0 ]
+  run cat "$STUB_CLAUDE_ENV_CONFIG_DIR_FILE"
+  [ "$output" = "set:$config_override" ]
+  rm -rf "$config_override"
+}
+
+@test "ENG-337 child sees normalized CLAUDE_CONFIG_DIR when parent had it set to empty (defended case)" {
+  export STUB_CLAUDE_EXIT=0
+  export STUB_CLAUDE_TRANSITION_STATE="In Review"
+  export STUB_CLAUDE_ISSUE_ID="ENG-337C"
+
+  local fake_home; fake_home="$(cd "$(mktemp -d)" && pwd -P)"
+  HOME="$fake_home" CLAUDE_CONFIG_DIR="" run bash -c "cd '$REPO_DIR' && '$STUB_DIR/scripts/orchestrator.sh' '$(write_queue ENG-337C)'"
+
+  [ "$status" -eq 0 ]
+  run cat "$STUB_CLAUDE_ENV_CONFIG_DIR_FILE"
+  [ "$output" = "set:$fake_home/.claude" ]
+  rm -rf "$fake_home"
+}
+
+@test "ENG-337 child sees normalized CLAUDE_CONFIG_DIR when parent had it set to relative path (defended case)" {
+  export STUB_CLAUDE_EXIT=0
+  export STUB_CLAUDE_TRANSITION_STATE="In Review"
+  export STUB_CLAUDE_ISSUE_ID="ENG-337D"
+
+  local fake_home; fake_home="$(cd "$(mktemp -d)" && pwd -P)"
+  HOME="$fake_home" CLAUDE_CONFIG_DIR="relative/path" run bash -c "cd '$REPO_DIR' && '$STUB_DIR/scripts/orchestrator.sh' '$(write_queue ENG-337D)'"
+
+  [ "$status" -eq 0 ]
+  run cat "$STUB_CLAUDE_ENV_CONFIG_DIR_FILE"
+  [ "$output" = "set:$fake_home/.claude" ]
+  rm -rf "$fake_home"
 }
