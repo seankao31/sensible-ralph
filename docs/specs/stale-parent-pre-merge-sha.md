@@ -33,7 +33,7 @@ The same property holds in the legacy create path (`worktree_create_at_base "$pa
 
 `/close-issue` captures `PARENT_TIP_PRE_MERGE` from the parent's worktree HEAD just before invoking `close-branch`, and passes both that SHA and `INTEGRATION_SHA` to a 3-arg form of `close_issue_label_stale_children`. The PR-pending skip (no `INTEGRATION_SHA`) moves to the call site as an explicit `if` guard, because `PARENT_TIP_PRE_MERGE` will be non-empty whenever the parent worktree exists.
 
-**Implicit invariant the fix relies on.** The captured SHA — the parent's worktree HEAD just before `close-branch` runs — is asserted to be the SHA that the human reviewer signed off on. `/prepare-for-review` is the only step in the lifecycle that runs *during review* and writes commits, and it doesn't move the branch tip beyond what the reviewer can see; the In-Review state means review is complete. Any commit that `close-branch` itself appends (generated-file commits, fixups, integration normalization in a hypothetical project-local implementation) is post-review and is therefore correctly excluded from the freshness check — the child not having those commits is not a review-integrity gap. This invariant lets the global skill capture the right SHA without widening the project-local `close-branch` contract; if a future project-local `close-branch` ever wants to mutate the parent branch *during* review (rather than at integration time), this invariant breaks and the contract has to be revisited.
+**Implicit invariant the fix relies on.** The captured SHA — the parent's worktree HEAD just before `close-branch` runs — is treated as the SHA the human reviewer signed off on. The lifecycle convention supports this softly, not via enforcement: `/prepare-for-review` records the handoff revision in the Linear footer and transitions to In Review, and re-running `/prepare-for-review` on subsequent commits is the documented response to mid-review amendments. There is no mechanism in `close-issue` that gates on "HEAD still matches the handoff-comment SHA," so an operator who amends commits in the parent's worktree after handoff and skips re-running `/prepare-for-review` will have a discrepancy between "what was reviewed" and "what gets compared against children." That gap exists today and is not introduced by this fix; importantly, the stale-parent label still fires correctly in that scenario because the post-amendment HEAD is not in the child's history. The broader concern (parent shipping content that was never re-reviewed) is a separate axis of review integrity and out of scope for ENG-300. This fix's only structural assumption is that `close-branch` does not mutate the parent branch *before* its own integration steps (rebase + merge); if a future project-local `close-branch` ever pre-mutates the parent during review, the contract has to be revisited.
 
 ### Change 1 — capture in `close-issue/SKILL.md`
 
@@ -84,10 +84,12 @@ close_issue_label_stale_children() {
 }
 ```
 
-Empty-arg defensive guard hardens to:
+Empty-arg defensive guard hardens to an explicit `if` block (not the `||`/`&&` shorthand — `&&` and `||` are equal-precedence and left-associative in bash, so the shorthand parses correctly but is easy to misread; for a defensive guard, clarity beats compactness):
 
 ```bash
-[ -z "$parent_pre_merge_sha" ] || [ -z "$parent_integration_sha" ] && return 0
+if [ -z "$parent_pre_merge_sha" ] || [ -z "$parent_integration_sha" ]; then
+  return 0
+fi
 ```
 
 Both shorts are derived inside the helper:
@@ -256,6 +258,8 @@ These three cases exercise ACs 1, 2, and 5 respectively and complete the testing
 - Project-local `close-branch` implementations of any flavor (rebase + no-ff merge, fast-forward only, PR-pending, multi-step cascade) — none need to expose a new value or modify their implementation. The capture happens in `close-issue` *before* delegation, so the global skill always has the parent's worktree HEAD at handoff regardless of what `close-branch` does internally afterwards. Earlier wording in this spec is precise: the captured SHA is "the parent's worktree HEAD just before `close-branch` runs", not "the post-merge HEAD".
 - The `TODO(ENG-236)` malformed-SHA hardening at `stale_parent.sh:73` — same comment extends to the second SHA, but the hardening itself is signposted to ENG-236 and not in this ticket.
 - `prepare-for-review`'s rebase semantics — verified at design time that it does not rebase; the fix's correctness does not depend on prepare-for-review's behavior.
+- `close-branch`'s mechanical-conflict-resolution policy. close-branch's project-local `SKILL.md` permits inline mechanical conflict resolution during its rebase step (`.claude/skills/close-branch/SKILL.md` Step 1). If a resolution materially changes content beyond mechanical, that's a close-branch policy bug, not a stale-parent labeling defect — children are checked against the pre-rebase tip (= the reviewed content), and any divergence introduced during rebase belongs to the close-branch contract. The "content-equivalent amendments, dismiss manually" hint in the comment body covers the residual case if a mechanical resolution does sneak through and trips a label.
+- Enforcing that the parent's HEAD at `/close-issue` time still matches the SHA recorded in `/prepare-for-review`'s Linear handoff comment. That tripwire would close the soft-contract gap described in "Implicit invariant" above, but it's a separate review-integrity feature spanning prepare-for-review and close-issue, not a stale-parent-label fix.
 
 ## References
 
