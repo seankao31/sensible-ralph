@@ -56,14 +56,16 @@ you a working setup.
 - **Linear CLI** ([`schpet/linear-cli`](https://github.com/schpet/linear-cli))
   authenticated against your workspace (`linear --version` succeeds).
 - **`jq`** on PATH.
-- **Two workspace-scoped Linear labels**, one-time setup per workspace.
-  Names are plugin-configurable; the defaults are `ralph-failed` and
-  `stale-parent`:
+- **Three workspace-scoped Linear labels**, one-time setup per workspace.
+  Names are plugin-configurable; the defaults are `ralph-failed`,
+  `stale-parent`, and `ralph-coord-dep`:
   ```bash
   linear label create --name ralph-failed --color '#EB5757' \
     --description 'Orchestrator dispatched this issue but it did not reach the review state.'
   linear label create --name stale-parent --color '#F2994A' \
     --description 'In-Review issue whose blocked-by parent was amended after dispatch.'
+  linear label create --name ralph-coord-dep --color '#9B51E0' \
+    --description 'Has at least one coord-dep blocked-by edge auto-added by the /sr-spec scan; cleared on /close-issue.'
   ```
 - **Per-repo `.sensible-ralph.json`** at the repo root declaring which Linear
   projects this repo's sessions drain. Two shapes:
