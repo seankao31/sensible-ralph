@@ -98,7 +98,7 @@ parent_integration_short=$(git rev-parse --short "$parent_integration_sha")
 
 The pre-existing `TODO(ENG-236)` note about malformed SHAs aborting the ritual via the caller's `set -e` still applies and stays in place — extend the comment to cover both new SHAs.
 
-`is_branch_fresh_vs_sha` and `list_commits_ahead` calls inside the helper now take `parent_pre_merge_sha` (the meaningful axis), not `parent_integration_sha` — the integration SHA is body-text only.
+The `is_branch_fresh_vs_sha` call inside `close_issue_label_stale_children` (currently `is_branch_fresh_vs_sha "$a_sha" "refs/heads/$child_branch"` at `stale_parent.sh:148`) becomes `is_branch_fresh_vs_sha "$parent_pre_merge_sha" "refs/heads/$child_branch"`. The `list_commits_ahead` call in `_close_issue_stale_label_and_comment` (Change 4) does the equivalent rename. The integration SHA is body-text only — never fed to ancestry helpers.
 
 ### Change 4 — inner helper signature
 
@@ -123,9 +123,9 @@ Inside, `list_commits_ahead "$parent_pre_merge_sha" "refs/heads/$child_branch"` 
 
 ### Change 5 — comment body template
 
-Replace the existing body in `_close_issue_stale_label_and_comment` with:
+Replace the existing body in `_close_issue_stale_label_and_comment` with the template below. Note the four-backtick outer fence — the inner code block uses three backticks, so the outer fence is escalated to four to render correctly in Linear and on GitHub.
 
-```
+````
 **Stale-parent check** — parent `${parent_id}` closed at `${parent_integration_short}`. Pre-merge branch tip was `${parent_pre_merge_short}`.
 
 This branch (`${child_branch}`) does not have `${parent_pre_merge_short}` as an ancestor: `${parent_id}` received commits during review that this branch was not rebased onto, so the reviewer signed off on content against an older base.
@@ -137,7 +137,7 @@ ${commits}${truncated}
 ```
 
 Recommended: rebase this branch onto the landed parent and re-review. If the diverging commits are content-equivalent to what was already reviewed (e.g. mechanical fixups, amended commit messages), dismiss the label manually. If this branch has its own In-Progress/In-Review descendants, rebasing here cascades to them.
-```
+````
 
 Three deliberate choices preserved from the design dialogue:
 
