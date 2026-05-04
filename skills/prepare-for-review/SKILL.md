@@ -482,6 +482,8 @@ cat >> "$COMMENT_FILE" <<'COMMENT'
 
 **Surprises during implementation:** <bulleted list of things the PRD didn't anticipate; "None" if clean>
 
+**Known gaps / deferred:** <anything intentionally left unfinished; "None" if complete>
+
 **Documentation changes:** <bulleted list of decisions captured and docs pruned this session; "None" if nothing>
 - Decision: <file:line or path> — <one-sentence summary>
 - Pruned: <path> — <one-sentence reason>
@@ -491,8 +493,6 @@ cat >> "$COMMENT_FILE" <<'COMMENT'
 **Golden path:** <specific manual steps to verify the core behavior works>
 
 **Edge cases worth checking:** <bulleted list of risky paths — what was tricky to get right, what boundary conditions exist>
-
-**Known gaps / deferred:** <anything intentionally left unfinished; "None" if complete>
 COMMENT
 
 # Dynamic: commits section header + actual git log output
