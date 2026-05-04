@@ -2321,3 +2321,126 @@ CLAUDESH
   run cat "$STUB_CLAUDE_ENV_CONFIG_DIR_FILE"
   [ "$output" = "set:$fake_home/.claude" ]
   rm -rf "$fake_home"
+
+# ENG-287: orchestrator commitment-publishes ordered_queue.txt with a run_id
+# header before the first progress.json record lands. /sr-status reads the
+# header directly, so /sr-start's pre-dispatch and the orchestrator's first
+# `start` write can no longer mismatch.
+# ---------------------------------------------------------------------------
+
+@test "ENG-287 orchestrator publishes ordered_queue.txt with run_id header before dispatch" {
+  export STUB_CLAUDE_EXIT=0
+  export STUB_CLAUDE_TRANSITION_STATE="In Review"
+  export STUB_CLAUDE_ISSUE_ID="ENG-400"
+
+  local q; q="$(write_queue ENG-400)"
+  run_orch "$q"
+
+  [ "$status" -eq 0 ]
+
+  # ordered_queue.txt published at the canonical path under the repo root.
+  local ord="$REPO_DIR/.sensible-ralph/ordered_queue.txt"
+  [ -f "$ord" ]
+
+  # First line is the literal-prefixed run_id header in ISO 8601 UTC.
+  local first_line; first_line="$(head -n 1 "$ord")"
+  [[ "$first_line" =~ ^\#\ run_id:\ [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
+
+  # Remaining lines are the issue IDs from the pending queue, in order.
+  local rest; rest="$(tail -n +2 "$ord")"
+  [ "$rest" = "ENG-400" ]
+}
+
+@test "ENG-287 orchestrator's published header run_id matches every progress.json record's run_id" {
+  export STUB_CLAUDE_EXIT=0
+  export STUB_CLAUDE_TRANSITION_STATE="In Review"
+
+  cat > "$STUB_DIR/claude" <<'CLAUDESH'
+#!/usr/bin/env bash
+printf '%q ' "$@" >> "$STUB_CLAUDE_ARGS_FILE"
+printf '\n' >> "$STUB_CLAUDE_ARGS_FILE"
+issue_id=""
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == "--name" ]]; then
+    shift
+    issue_id="${1%%:*}"
+    break
+  fi
+  shift
+done
+if [[ -n "${STUB_CLAUDE_TRANSITION_STATE:-}" && -n "$issue_id" ]]; then
+  printf '%s' "$STUB_CLAUDE_TRANSITION_STATE" > "$STUB_DIR/linear_state_$issue_id"
+fi
+exit 0
+CLAUDESH
+  chmod +x "$STUB_DIR/claude"
+
+  local q; q="$(write_queue ENG-401 ENG-402 ENG-403)"
+  run_orch "$q"
+
+  [ "$status" -eq 0 ]
+
+  # Parse run_id out of the queue file's header line.
+  local ord="$REPO_DIR/.sensible-ralph/ordered_queue.txt"
+  local header; header="$(head -n 1 "$ord")"
+  local header_run_id="${header#\# run_id: }"
+  [ -n "$header_run_id" ]
+
+  # Every progress.json record must carry that exact run_id (byte-equal).
+  local distinct; distinct="$(jq -r '[.[].run_id] | unique | .[]' < "$REPO_DIR/.sensible-ralph/progress.json")"
+  [ "$distinct" = "$header_run_id" ]
+}
+
+@test "ENG-287 ordered_queue.txt publish is atomic — sentinel replaced fully, no tmpfile lingers" {
+  export STUB_CLAUDE_EXIT=0
+  export STUB_CLAUDE_TRANSITION_STATE="In Review"
+  export STUB_CLAUDE_ISSUE_ID="ENG-404"
+
+  # Pre-populate ordered_queue.txt with a sentinel from a prior run.
+  mkdir -p "$REPO_DIR/.sensible-ralph"
+  printf '# run_id: 2020-01-01T00:00:00Z\nENG-PRIOR\n' > "$REPO_DIR/.sensible-ralph/ordered_queue.txt"
+
+  local q; q="$(write_queue ENG-404)"
+  run_orch "$q"
+
+  [ "$status" -eq 0 ]
+
+  # Old content fully replaced — no PRIOR id, no old run_id header survives.
+  local ord="$REPO_DIR/.sensible-ralph/ordered_queue.txt"
+  ! grep -q "ENG-PRIOR" "$ord"
+  ! grep -q "2020-01-01" "$ord"
+  grep -q "ENG-404" "$ord"
+
+  # No tempfile siblings remain.
+  local leftover_count
+  leftover_count="$(find "$REPO_DIR/.sensible-ralph" -maxdepth 1 -name 'ordered_queue.txt.*' -type f | wc -l | tr -d ' ')"
+  [ "$leftover_count" -eq 0 ]
+}
+
+@test "ENG-287 missing queue_pending.txt: orchestrator errors non-zero, ordered_queue.txt NOT written" {
+  # Use a path that does not exist.
+  local missing="$STUB_DIR/queue_does_not_exist"
+
+  run_orch "$missing"
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"queue_pending file does not exist"* ]] || [[ "$output" == *"$missing"* ]]
+  # Pre-condition: ordered_queue.txt must NOT be written for a contract violation.
+  [ ! -f "$REPO_DIR/.sensible-ralph/ordered_queue.txt" ]
+}
+
+@test "ENG-287 empty queue_pending.txt: orchestrator errors non-zero, ordered_queue.txt NOT written" {
+  # Empty file (whitespace-only also counts).
+  local empty="$STUB_DIR/queue_empty"
+  : > "$empty"
+
+  run_orch "$empty"
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"empty"* ]]
+  [ ! -f "$REPO_DIR/.sensible-ralph/ordered_queue.txt" ]
+
+  # claude must NOT have been invoked.
+  local invocations; invocations="$(wc -l < "$STUB_CLAUDE_ARGS_FILE" | tr -d ' ')"
+  [ "$invocations" -eq 0 ]
+}

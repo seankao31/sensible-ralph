@@ -515,16 +515,25 @@ Drift entries do NOT block subsequent dispatch.
 ```bash
 sr_root="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/.sensible-ralph"
 mkdir -p "$sr_root"
-"$SKILL_DIR/scripts/build_queue.sh" > "$sr_root/ordered_queue.txt"
+queue_pending="$sr_root/queue_pending.txt"
+if "$SKILL_DIR/scripts/build_queue.sh" "$queue_pending"; then
+  : # exit 0: non-empty queue published, continue to step 3
+else
+  rc=$?
+  case "$rc" in
+    2) echo "/sr-start: no pickup-ready Approved issues. Nothing to dispatch." >&2 ; exit 0 ;;
+    *) echo "/sr-start: build_queue.sh failed with exit $rc" >&2 ; exit "$rc" ;;
+  esac
+fi
 ```
 
 `build_queue.sh` lists pickup-ready Approved issues (state == `$CLAUDE_PLUGIN_OPTION_APPROVED_STATE`, no `$CLAUDE_PLUGIN_OPTION_FAILED_LABEL` label, every blocker in `$CLAUDE_PLUGIN_OPTION_DONE_STATE`, `$CLAUDE_PLUGIN_OPTION_REVIEW_STATE`, or `$CLAUDE_PLUGIN_OPTION_APPROVED_STATE`), then topologically sorts them via `toposort.sh` with Linear priority as the tiebreaker (priority=0 sorts last because Linear uses 0 for "no priority"). Approved blockers are accepted because the orchestrator dispatches Approved chains in topological order — the parent reaches In Review before the child runs and `dag_base.sh` picks up the parent's branch as the base. Issues with blockers in any other state (Triage, Backlog, Todo, In Progress, Canceled, Duplicate) are skipped with a warning to stderr.
 
-If exit is non-zero (cycle detected in toposort), STOP and surface the cycle to the user.
+The script publishes issue IDs (no header) atomically to `queue_pending.txt` via tempfile + same-directory `mv`. Exit codes: `0` = non-empty queue published; `1` = construction failure (toposort cycle, linear error) — STOP and surface to the user; `2` = no pickup-ready Approved issues — exit clean, nothing to dispatch. On failure or empty-queue paths, the destination file is left untouched, and `ordered_queue.txt` (the committed-run record read by `/sr-status`) is *not* affected — aborts and empty queues never create phantom runs.
 
 ### Step 4: Dry-run preview and confirmation
 
-Print the ordered queue to the user. For each issue, also print the base branch selection (call `scripts/dag_base.sh <issue_id>` for each). Format:
+Print the pending queue (`queue_pending.txt`) to the user. For each issue, also print the base branch selection (call `scripts/dag_base.sh <issue_id>` for each). Format:
 
 ```
 Queue (5 issues):
@@ -540,10 +549,10 @@ Ask the user to confirm (accept / skip specific issues / abort). Do NOT proceed 
 
 ```bash
 sr_root="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/.sensible-ralph"
-"$SKILL_DIR/scripts/orchestrator.sh" "$sr_root/ordered_queue.txt"
+"$SKILL_DIR/scripts/orchestrator.sh" "$sr_root/queue_pending.txt"
 ```
 
-The orchestrator processes the queue sequentially, creates worktrees, invokes `claude -p`, classifies outcomes (using Linear state transition AS WELL AS exit code — exit 0 alone does not imply success), propagates failure taint downstream, and appends per-issue records to `.sensible-ralph/progress.json` at the repo root (resolved via `git --git-common-dir` so the path is stable whether `/sr-start` is invoked from the main checkout or a linked worktree).
+The orchestrator generates this run's `run_id` and atomically publishes `# run_id: <iso>` plus the issue list to `.sensible-ralph/ordered_queue.txt` (the authoritative committed-run record read by `/sr-status`) before any progress.json record lands. It then processes the queue sequentially, creates worktrees, invokes `claude -p`, classifies outcomes (using Linear state transition AS WELL AS exit code — exit 0 alone does not imply success), propagates failure taint downstream, and appends per-issue records to `.sensible-ralph/progress.json` at the repo root (resolved via `git --git-common-dir` so the path is stable whether `/sr-start` is invoked from the main checkout or a linked worktree).
 
 The orchestrator runs foreground — the user should expect the session to block until the queue completes or all remaining issues are tainted. Each issue's `claude -p` output is tee'd to `<worktree>/<CLAUDE_PLUGIN_OPTION_STDOUT_LOG_FILENAME>` for later inspection.
 
@@ -551,7 +560,8 @@ The orchestrator runs foreground — the user should expect the session to block
 
 After the orchestrator returns:
 
-- **`/sr-status`** prints a sectioned Done / Running / Queued table for the latest run — faster than `jq`-ing `.sensible-ralph/progress.json` by hand. Also useful mid-run to see what's currently dispatching.
+- **`/sr-status`** prints a sectioned Done / Running / Queued table for the latest run — faster than `jq`-ing `.sensible-ralph/progress.json` by hand. Also useful mid-run to see what's currently dispatching. It reads `run_id` from the `# run_id: <iso>` header on line 1 of `.sensible-ralph/ordered_queue.txt` (published only by the orchestrator at startup) and partitions `progress.json` records by that value.
+- **`.sensible-ralph/ordered_queue.txt`** (committed-run record) is written exclusively by the orchestrator — line 1 is `# run_id: <iso>`, subsequent lines are issue IDs. **`.sensible-ralph/queue_pending.txt`** is a transient build artifact internal to `/sr-start`'s build/preview phase (issue IDs only, no header) and is never read by `/sr-status`.
 - **`.sensible-ralph/progress.json`** at the repo root lists all dispatched/skipped issues with `event: "start"` (dispatch moment) and `event: "end"` (final outcome) records.
 - **`in_review` issues:** `cd` into the worktree, run a `claude --resume` if the session is still available, review code per the QA plan in the Linear comment, then run your project's merge ritual from a session at the main-checkout root — not from inside the worktree.
 - **`failed` / `exit_clean_no_review` issues** (labeled `ralph-failed`, descendants tainted): `/sr-status` renders an indented sub-block under the row with the inline diagnostic `hint` (ENG-308), the worktree log path (`transcript:`), and the full JSONL transcript path (`session:`). Read whichever pointer is more useful — the worktree log for the session's final stdout, the JSONL for the full tool-trace. Decide: retry (remove the `ralph-failed` label — the orchestrator reverts state to `Approved` automatically; see `docs/design/linear-lifecycle.md` if the revert failed — and re-queue), cancel the issue, or debug interactively.
