@@ -260,21 +260,47 @@ prose is responsible for:
       keys, label names).
    6. Rename/move overlaps (one moves/renames a file the other
       edits).
-3. **Direction heuristic — chosen by reasoning, fixed at proposal
-   time.** Each surfaced overlap commits to a `(child, parent)`
-   direction with a one-line rationale. Heuristic priority:
-   * **Rename-before-edit:** if one spec renames or moves a file
-     the other edits, the renamer is parent (rename lands first;
-     edit rebases onto new path).
-   * **Interface-before-use:** if one spec introduces an identifier
-     (function, env var, label) the other consumes, the introducer
-     is parent.
-   * **Symmetric collision:** if both touch the same section
-     without an introducer/renamer ordering, the rationale must say
-     so. Numeric-suffix order on the Linear IDs is the proposal-
-     direction tiebreaker (smaller suffix = parent). Arbitrary but
-     deterministic — running the scan twice on identical state
-     produces identical proposals.
+3. **Direction heuristic — total ordering, deterministic.** Each
+   surfaced overlap commits to one `(child, parent)` direction
+   with a one-line rationale. The heuristic is a total ordering;
+   apply the **first matching rule** and stop:
+   1. **Rename-before-edit, one-sided:** exactly one spec renames
+      or moves a file the other edits. The renamer is parent
+      (rename lands first; edit rebases onto new path).
+   2. **Interface-before-use, one-sided:** exactly one spec
+      introduces an identifier (function, env var, config key,
+      label name) the other consumes. The introducer is parent.
+   3. **Mixed signals — both sides have rename or
+      interface-introduction evidence in conflicting directions
+      (mutual rename of different files; both introduce
+      identifiers the other consumes; one-side rename vs. other-
+      side interface):** numeric-suffix tiebreaker — the smaller
+      Linear-ID suffix is parent. The rationale MUST enumerate
+      the conflicting evidence on both sides ("ENG-A renames X
+      while ENG-B introduces interface Y; tied on rename/interface
+      heuristics, smaller suffix wins direction") so the operator
+      sees that the choice was a tiebreak, not an asymmetry.
+   4. **Symmetric same-section collision** (both edit the same
+      section of the same file with no rename/interface
+      evidence): numeric-suffix tiebreaker. Same rationale style
+      as case 3.
+
+   The numeric-suffix tiebreaker (rules 3 and 4) is the
+   unconditional fallback for any case where rules 1 and 2 do not
+   cleanly apply. Two reasoning passes over identical bundles
+   produce identical proposals because every rule reduces to a
+   deterministic function of the spec content.
+
+   **Example mixed-signal pair** (for the reasoning prompt):
+   suppose ENG-100 renames `lib/foo.sh` → `lib/internal/foo.sh`
+   and ENG-200 introduces a new function `_foo_helper` in the
+   same file's old path. Rule 1 fires for ENG-100 (renamer side);
+   rule 2 fires for ENG-200 (interface-introducer side); they
+   point in opposite directions. Rule 3 takes over: smaller
+   suffix wins → ENG-100 is parent, ENG-200 is child. Rationale:
+   `Both restructure lib/foo.sh: ENG-100 renames the file,
+   ENG-200 adds _foo_helper. Heuristics conflict; numeric-suffix
+   tiebreaker (100 < 200).`
 4. **One candidate per pair, even with multiple overlaps.** If A
    and B share a path AND a referenced identifier AND a rename, the
    proposed edge is **one** `blocked-by` relation with a multi-fact
@@ -455,18 +481,26 @@ fails):
 fails after relations were added):
 
 * **retry** — usually transient.
-* **proceed-anyway** — print the comment body inline; operator
-  manually posts via Linear UI; do NOT add label automatically;
-  do NOT proceed to Step 3 in this run. Operator finishes
-  posting, then optionally adds the `ralph-coord-dep` label via
-  Linear UI for dispatch-time discoverability (the label is
-  observational, not load-bearing for cleanup), then re-runs
-  `/sr-start`; the next scan won't re-prompt the audited pair
-  (it's in `existing_blockers`) and Step 2 fast-paths through.
 * **rollback** — best-effort
   `linear issue relation delete "$child" blocked-by "$parent"`
   for each entry in `committed_parents`; do NOT add label; do NOT
   proceed to Step 3.
+
+**No `proceed-anyway` option.** ENG-280's analogous failure point
+offers proceed-anyway because ENG-280 keeps the issue in
+`In Design` with the transport file intact, so the next
+`/sr-spec` reloads and retries the comment-post — the orphan
+window is bounded by the next re-run. ENG-281 has no equivalent
+resume mechanism: once Step 2 exits, the pair is in
+`existing_blockers` and sub-step 3's covered-pairs filter
+fast-paths through it on every subsequent `/sr-start`, **forever**.
+That makes `proceed-anyway` permanently orphan-relation-prone
+specifically in `/sr-start`'s loop semantics. The retry path
+covers the typical transient-API-error case; rollback is the
+clean exit for unrecoverable comment failures. If retry won't
+land and rollback itself partially fails, the operator's manual
+recovery is to delete the orphan relations via Linear UI before
+re-running `/sr-start`.
 
 **Label-add failure** is log-and-continue — the comment is the
 load-bearing artifact for cleanup, not the label. The label is
@@ -549,14 +583,29 @@ SKILL.md prose + design doc land in one commit/PR.
 * **A peer's description is structurally thin** (200+ chars but
   no concrete file-touch information — e.g., headings only, vague
   prose). Step 1's PRD check has already passed by definition;
-  Step 2 cannot enrich. Reasoning prompt receives the thin
-  content; Claude either reports no overlaps for that peer
-  (correct outcome — the spec doesn't tell the scan what files it
-  touches) or asks for clarification. The skill should treat a
-  reasoning-time "I can't tell what this peer touches" as a
-  no-overlap result for that peer's pairs and continue. The
-  operator's recourse is to amend the spec via `/sr-spec` re-spec
-  if it turns out the peer DOES collide with something.
+  Step 2 cannot enrich. **Fail closed:** when the reasoning step
+  cannot determine the file-touch surface for a peer with enough
+  confidence to rule out overlap with any other Approved peer,
+  STOP Step 2 with the diagnostic:
+
+  ```
+  step 2: ENG-A description is too thin to scan reliably.
+  The backstop's purpose is catching missed coordination
+  dependencies; treating "I can't tell" as no-overlap would
+  defeat that. Either re-spec ENG-A via /sr-spec to add
+  concrete file-touch detail, or remove ENG-A from the
+  Approved set (cancel / move to In Design) before re-running
+  /sr-start.
+  ```
+
+  Operator chooses: abort `/sr-start`, fix in Linear, re-run.
+  This is a deliberate tradeoff against silent false-negative
+  scans — the thin-description case is precisely where the
+  backstop is most needed and where reasoning-confidence-based
+  no-overlap calls are least defensible. Future fix: tighten
+  Step 1's `_desc_nonws_chars` heuristic to better correlate
+  with reasoning-readiness, but the threshold is hard to
+  characterize prescriptively.
 * **Linear API failure mid-helper.** Helper exits 1, stderr names
   the offending issue. Operator chooses: retry, skip Step 2
   (proceed to Step 3 — ENG-280 covered most edges already at
@@ -653,6 +702,21 @@ the relation lands, the audit comment is posted with the correct
     cleanup; no further `/close-issue` change is needed when
     ENG-281 lands."
 
+**Spec base SHA vs. implementation baseline.** The spec base SHA
+named in this document's header (`5d4626…`) captures the state of
+`main` at `/sr-spec` time; ENG-280's artifacts are NOT yet on `main`
+at that SHA (ENG-280 is Approved, not Done, and its spec lives on
+its own branch). That is by design under the per-issue branch
+lifecycle (ENG-279, see `docs/design/worktree-contract.md`): when
+the orchestrator dispatches ENG-281, `dag_base.sh` resolves the
+in-review parent (ENG-280) and `worktree_create_with_integration`
+merges ENG-280's branch into ENG-281's worktree before
+`claude -p` is invoked, so ENG-280's artifacts are present at the
+implementation baseline by construction. The spec is written
+assuming that merged baseline. An implementer running this issue
+manually (without `/sr-start`) must merge ENG-280's branch first,
+or wait for ENG-280 to land on `main`.
+
 No other dependencies. `/sr-start`'s existing flow
 (`preflight_scan.sh`, `build_queue.sh`, `orchestrator.sh`,
 `dag_base.sh`, `toposort.sh`) is untouched.
@@ -690,19 +754,22 @@ Surfaced now and explicitly accepted as v1 trade-offs.
   proposes a `(child, parent)` direction the operator disagrees
   with, the operator must reject the candidate and add the
   inverse relation manually via Linear UI before the next
-  `/sr-start`. Symmetric collisions (no rename, no introducer/
-  consumer asymmetry) hit this most often. Mitigation: the
-  rationale text on a symmetric collision says "symmetric — Linear
-  ID order chose direction"; the operator sees the choice was
-  arbitrary and can act accordingly. Future fix: add
-  `flip-direction` as a fourth gate option.
-* **`abort` mid-write-loop leaves audit-less relations on the
-  current child.** Children processed before the failure are
-  fully audited; the current child's already-added relations
-  persist without an audit comment. Recovery recipe is printed
-  but operator must execute it manually. Future fix: persist a
-  durable recovery record (e.g., `<repo>/.sensible-ralph/coord-
-  dep-recovery.json`) that surfaces on the next `/sr-start` run.
+  `/sr-start`. Symmetric collisions and mixed-signal pairs (where
+  the numeric-suffix tiebreaker resolves direction) hit this
+  most often. Mitigation: the rationale text on a tiebreaker-
+  resolved direction says so explicitly; the operator sees the
+  choice was a tiebreak. Future fix: add `flip-direction` as a
+  fourth gate option.
+* **`abort` on per-edge failure leaves audit-less relations on the
+  current child.** Per-edge `abort` exits the loop; children
+  processed before the failure are fully audited; the current
+  child's already-added relations persist without an audit
+  comment. Recovery recipe is printed but operator must execute
+  it manually. (Per-comment failure does NOT have this gap because
+  proceed-anyway has been removed; rollback is best-effort but
+  bounded.) Future fix: persist a durable recovery record (e.g.,
+  `<repo>/.sensible-ralph/coord-dep-recovery.json`) that surfaces
+  on the next `/sr-start` run.
 * **`EXPECTED == ACTUAL` exact-set verify treats benign
   concurrent UI adds as drift.** Same limitation ENG-280 surfaces.
   Mitigation: rare; operator re-runs and the scan fast-paths
@@ -719,6 +786,21 @@ Surfaced now and explicitly accepted as v1 trade-offs.
   push leaves the issue in `In Design` (not Approved) and the
   scan never sees it. Future fix: switch both ENG-280 and
   ENG-281 to worktree source if drift is observed.
+* **Audit-comment UI deletion after Step 2 exit produces orphan
+  relations.** If the operator deletes a `coord-dep-audit`
+  comment via Linear UI later (between Step 2 exit and
+  `/close-issue`), the relation persists but cleanup at
+  `/close-issue` cannot find it (cleanup walks audit blocks per
+  ENG-280's helper; absent comment ⇒ absent block ⇒ no delete
+  authority). The next `/sr-start` sees the relation in
+  `existing_blockers` and fast-paths the pair, leaving no
+  trigger to re-audit. This is a **shared limitation with
+  ENG-280's cleanup model** — both producers' relations are
+  vulnerable to the same UI-deletion path. Mitigation: don't
+  delete `coord-dep-audit` comments via UI; remove the relation
+  itself if the dependency no longer applies. Future fix: store
+  Linear's relation IDs in audit JSON (the same per-instance-
+  cleanup direction ENG-280 already names as future work).
 
 ## Acceptance criteria
 
@@ -748,10 +830,12 @@ Surfaced now and explicitly accepted as v1 trade-offs.
 5. The label Step 2 adds is `$CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL`,
    applied to each child that received at least one accepted edge,
    via `linear_add_label`.
-6. Per-edge failure handling (retry / skip-this-edge / abort) and
-   per-comment failure handling (retry / proceed-anyway /
-   rollback) match ENG-280 step 12 sub-step 4–6 semantics. Label-
-   add failure is log-and-continue.
+6. Per-edge failure handling (retry / skip-this-edge / abort)
+   matches ENG-280 step 12 sub-step 4 semantics exactly. Per-
+   comment failure handling is **retry / rollback only** — no
+   `proceed-anyway` option (rationale: see Component 5; ENG-281
+   has no resume-on-rerun mechanism). Label-add failure is
+   log-and-continue.
 7. Per-child verification: `EXPECTED == ACTUAL` over
    `INITIAL_BLOCKERS ∪ committed_parents`. On mismatch, abort
    Step 2 with diagnostic; do NOT proceed to Step 3.
