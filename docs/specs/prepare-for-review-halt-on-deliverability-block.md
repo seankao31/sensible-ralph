@@ -96,16 +96,22 @@ preamble's escape-hatch pattern documented in
 `docs/design/autonomous-mode.md`: when human input would normally be
 required, the autonomous session takes the deterministic exit path.
 
-**Interactive mode** (no preamble; user at the keyboard): when the
-agent classifies a finding as bucket 3, before engaging the halt
-path it confirms with the user inline:
+**Interactive mode** (no preamble; user at the keyboard): the halt
+path is binary — if any finding is classified bucket 3, halt fires
+once for the run. The agent collects all bucket-3 findings from the
+current codex pass, presents them together, and asks once:
 
-> I'm classifying this codex finding as deliverability-blocking:
-> *<one-sentence why>*. Halt? `[Y/n]`
+> I'm classifying the following codex finding(s) as
+> deliverability-blocking:
+> - *<one-sentence why for finding 1>*
+> - *<one-sentence why for finding N>*
+>
+> Halt? `[Y/n]`
 
-Default Y. If the user answers `n`, the finding moves to bucket 2
-and Step 5 continues. If the user answers `y` (or default), the
-halt path engages.
+Default Y. If the user answers `n`, all listed findings move to
+bucket 2 (advisory) and Step 5 continues. If the user answers `y`
+(or default), the halt path engages once with all listed findings
+folded into the single halt comment's "Blocking discovery" section.
 
 This branch must not deadlock the autonomous session — the autonomous
 preamble already converts "STOP and ask" patterns to the escape
@@ -114,24 +120,40 @@ interactive prompt only fires when the preamble is not loaded.
 
 ### Halt path mechanics
 
-When the halt fires, run these in order:
+When the halt fires, run these in order. The mechanics are
+count-agnostic: if a single bucket-3 finding triggers the halt, the
+loops below execute once. If multiple bucket-3 findings are present,
+each finding gets its own follow-up issue and its own blocked-by
+relation, and the halt comment lists all of them.
 
-1. **File a follow-up issue** for the discovered bug per the
-   existing ENG-240 CLAUDE.md rule. The follow-up's description MUST
-   include the standard provenance prefix:
-   `**Discovered during ENG-XXX prepare-for-review.**` Capture the
-   new issue ID in shell as `$BLOCKER_ISSUE_ID`. (`ENG-XXX` is the
-   ticket prepare-for-review is running on, not the new follow-up.)
-2. **Set a `blocked-by` relation** on the current ticket pointing to
-   `$BLOCKER_ISSUE_ID`:
+1. **For each bucket-3 finding, file a follow-up issue.** The act
+   of filing is required by ENG-240's CLAUDE.md rule (out-of-scope
+   bugs → file a ticket). The follow-up's *format* follows the
+   global `linear-workflow` skill's "Creating Issues" / "Follow-ups"
+   conventions: provenance prefix
+   `**Discovered during ENG-XXX prepare-for-review.**` (where
+   `ENG-XXX` is the ticket prepare-for-review is running on, not
+   the new follow-up); state `Todo` (the discovery is a concrete
+   actionable bug, not vague backlog material); priority `Urgent`
+   if the discovery is a bug, `Medium` otherwise; no assignee. If
+   the linear-workflow skill is updated, follow whatever it says
+   at invocation time — this spec does not duplicate the full rule
+   set. Collect each new issue ID in shell as
+   `$BLOCKER_ISSUE_IDS` (a list).
+2. **For each follow-up, set a `blocked-by` relation** on the
+   current ticket:
    ```bash
-   linear issue relation add "$ISSUE_ID" blocked-by "$BLOCKER_ISSUE_ID"
+   for blocker in "${BLOCKER_ISSUE_IDS[@]}"; do
+     linear issue relation add "$ISSUE_ID" blocked-by "$blocker"
+   done
    ```
-   This is the durable record of why the parent halted. It survives
-   across sessions and is what `/sr-start`'s queue logic will see.
+   These are the durable records of why the parent halted. They
+   survive across sessions and are what `/sr-start`'s queue logic
+   will see.
 3. **Post the halt-specific comment** (template below) via
    `linear issue comment add --body-file` from a `mktemp` tempfile.
-   Reuses Step 6's tempfile pattern.
+   Reuses Step 6's tempfile pattern. The comment lists all
+   bucket-3 findings and their follow-up issue IDs.
 4. **Exit clean.** Do NOT run the regular Step 6 (handoff comment)
    or Step 7 (state transition). The issue stays in
    `In Progress`. The orchestrator's outcome classification picks
@@ -154,17 +176,20 @@ Posted via `linear issue comment add --body-file`. Body:
 review indicates the feature does not meet its acceptance criteria.
 The issue remains in `In Progress`; do NOT merge.
 
-**Blocking discovery:** <one-paragraph description of the discovered bug>
+**Blocking discoveries:**
 
-**Why this blocks deliverability:** <one-paragraph reasoning the
-agent applied to classify this as bucket 3>
+- *<one-paragraph description of finding 1>* — filed as
+  [ENG-AAA](<linear url>) (`blocked-by` set on this issue)
+- *<one-paragraph description of finding N>* — filed as
+  [ENG-NNN](<linear url>) (`blocked-by` set on this issue)
 
-**Filed as follow-up:** [ENG-XXX](<linear url>) (set as a
-`blocked-by` relation on this issue)
+**Why these block deliverability:** <one-paragraph reasoning the
+agent applied to classify the finding(s) as bucket 3 — one
+paragraph total, not one per finding>
 
 **Resume conditions:** <what needs to land before this ticket can
-be re-attempted — typically "ENG-XXX merged" but may include
-caveats>
+be re-attempted — typically "all listed follow-ups merged" but may
+include caveats>
 
 ## Commits in this branch
 
@@ -173,6 +198,10 @@ caveats>
 ---
 _Posted by `/prepare-for-review` halt path for revision `<SHA>`_
 ```
+
+For the single-finding case, the "Blocking discoveries" list still
+renders correctly with one bullet — no separate single-finding
+template variant.
 
 The footer's `halt path for revision \`<SHA>\`` substring is the
 dedup marker for the halt comment, distinct from the regular handoff
