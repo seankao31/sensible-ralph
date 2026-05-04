@@ -35,11 +35,19 @@ practice.
 
 ## Goal
 
-Add an explicit exit-code guard to Step 1's rebase snippet so the
-ritual fails fast and clean instead of cascading into a corrupt merge.
-Update the surrounding prose so the new flow (close-branch exits →
-caller resolves outside → caller re-invokes `/close-issue`) is
-unambiguous.
+Add an explicit exit-code guard to Step 1's `git rebase main` so a
+rebase conflict aborts close-branch cleanly instead of cascading into
+a corrupt merge. Update the surrounding prose so the new flow
+(close-branch exits → caller resolves outside → caller re-invokes
+`/close-issue`) is unambiguous.
+
+The Goal is **scoped to the rebase**, not Step 1 in general. The
+preceding `git fetch origin main` stays unguarded by design — Step
+1's rebase is against *local* main (per line 76 of close-branch
+SKILL.md: "Rebase onto **local** `main`, not `origin/main`"), so a
+fetch failure is non-fatal here. The fetch is advisory for Step 2's
+`git pull --ff-only`, where origin/main freshness *does* matter; that
+guard is deferred to the follow-up issue (see Out of scope).
 
 ## Scope
 
@@ -111,8 +119,14 @@ as rebase fails. Rewrite so the *flow* is explicit, the *taxonomy*
 
 > **When the guard fires** (rebase failed with conflicts), close-branch
 > has already exited non-zero. The worktree is mid-rebase; the main
-> checkout is untouched. The caller (operator running `/close-issue`,
-> or an autonomous session that dispatched it) decides what to do next:
+> checkout is untouched. close-branch did NOT write
+> `.close-branch-result`, so close-issue's existing fallback handling
+> kicks in (see line 213 below: "treats an absent file as empty
+> values, which correctly skips stale-parent labeling and falls back
+> to a generic final message") — no new contract between close-branch
+> and close-issue is introduced by this guard. The caller (operator
+> running `/close-issue`, or an autonomous session that dispatched it)
+> decides what to do next:
 >
 > *Mechanical conflict — resolve outside close-branch, then re-run.*
 > In the worktree, edit the conflicted files, `git -C "$WORKTREE_PATH"
@@ -132,9 +146,11 @@ as rebase fails. Rewrite so the *flow* is explicit, the *taxonomy*
 >
 > *Ambiguous conflict — abort and escalate.* In the worktree,
 > `git -C "$WORKTREE_PATH" rebase --abort`, then surface the conflict
-> to a human (or, in an autonomous session, post a Linear comment and
-> exit clean per the autonomous-mode rules). Do not re-invoke
-> `/close-issue` until the conflict has a known resolution.
+> to a human (or, in an autonomous session, follow the global
+> CLAUDE.md autonomous-mode rules: post a Linear comment describing
+> the conflict and exit clean — that's an existing rule, not new
+> behavior introduced here). Do not re-invoke `/close-issue` until
+> the conflict has a known resolution.
 >
 > Cases that are NOT mechanical:
 >
@@ -265,6 +281,24 @@ guards may be added to the same issue at the implementer's discretion.
 Suggested title: `close-branch: guard remaining git operations against
 silent exit-code drop`. Body should reference ENG-288 as the precedent
 and link this spec.
+
+**Acknowledged residual risk.** Adversarial spec review (codex,
+2026-05-04) called out that ENG-288 alone does not eliminate the
+wrong-`INTEGRATION_SHA` class of bug. Specifically: between ENG-288
+shipping and the follow-up issue landing, the cascade `Step 2 pull
+--ff-only fails silently → merge against stale local main succeeds →
+push rejected → INTEGRATION_SHA captures a SHA not on origin/main →
+wrong stale-parent labeling` is still possible. The cascade is less
+likely than Step 1's incident (it requires origin/main to advance
+*and* local main to have unpushed commits *and* the merge against
+stale main to be conflict-free) and is partially backstopped by Step
+3's push-rejection retry/reset prose at lines 146-163, but it is not
+fully closed by Step 1's guard. The narrow-scope decision is
+deliberate (matches ENG-288's stated scope, keeps the spec/PR review
+surface tight, and Step 1's incident class is the one observed in
+ENG-241); the trade-off is on the record. Implementer files the
+follow-up issue at the start of implementation, not the end, so it
+enters the queue immediately.
 
 Other deferrals (no follow-up issue required):
 
