@@ -15,18 +15,20 @@ Dispatch the autonomous spec-queue: sort Approved Linear issues into a DAG-aware
 
 - `linear` CLI authenticated (`linear --version` succeeds).
 - `jq` available on PATH.
-- Plugin userConfig values set. The Claude Code harness prompts for these at install time; all have defaults that work with a stock Linear workflow. The ten keys are: `design_state`, `approved_state`, `in_progress_state`, `review_state`, `done_state`, `failed_label`, `stale_parent_label`, `worktree_base`, `model`, `stdout_log_filename`. The five state-name keys must match the actual workflow state names in your Linear workspace; edit via `/config` or your `settings.json` if defaults don't match.
+- Plugin userConfig values set. The Claude Code harness prompts for these at install time; all have defaults that work with a stock Linear workflow. The eleven keys are: `design_state`, `approved_state`, `in_progress_state`, `review_state`, `done_state`, `failed_label`, `stale_parent_label`, `coord_dep_label`, `worktree_base`, `model`, `stdout_log_filename`. The five state-name keys must match the actual workflow state names in your Linear workspace; edit via `/config` or your `settings.json` if defaults don't match.
 - Per-repo `.sensible-ralph.json` at the repo root declaring the run's scope — see next section.
-- Workspace-scoped Linear labels exist (one-time admin setup). Label **names are userConfig-driven** — the orchestrator and your project's merge ritual look up labels by the values of the `failed_label` and `stale_parent_label` plugin options, so the labels you create in Linear must match whatever names those options hold. Linear's label-by-name resolution silently no-ops on a nonexistent name, so preflight fails loud rather than letting labelless "marks" accumulate:
+- Workspace-scoped Linear labels exist (one-time admin setup). Label **names are userConfig-driven** — the orchestrator, `/sr-spec`, and your project's merge ritual look up labels by the values of the `failed_label`, `stale_parent_label`, and `coord_dep_label` plugin options, so the labels you create in Linear must match whatever names those options hold. Linear's label-by-name resolution silently no-ops on a nonexistent name, so preflight fails loud rather than letting labelless "marks" accumulate:
   - The label named in the **`failed_label`** option (default `ralph-failed`) — applied by the orchestrator to issues that hard-failed, exited clean without reaching review, or hit a per-issue setup failure. `linear_list_approved_issues` excludes labeled issues from subsequent runs. Preflight (`scripts/preflight_scan.sh` via `lib/preflight_labels.sh`) aborts with a setup hint if missing.
   - The label named in the **`stale_parent_label`** option (default `stale-parent`) — applied by your project's merge ritual to In-Review child issues whose blocked-by parent was amended after dispatch (review was based on pre-amendment content). Preflight-gated by the same helper whenever the option is set.
+  - The label named in the **`coord_dep_label`** option (default `ralph-coord-dep`) — applied by `/sr-spec` step 12 (and ENG-281's `/sr-start` backstop) when the coord-dep scan auto-adds `blocked-by` edges to an Approved issue. Cleared by `/close-issue` step 8 once the audited edges have been removed. Preflight-gated by the same helper.
 
-  If you've accepted the defaults, create both labels once per workspace:
+  If you've accepted the defaults, create the three labels once per workspace:
   ```bash
   linear label create --name ralph-failed --color '#EB5757' --description 'Orchestrator dispatched this issue but it did not reach the review state.'
   linear label create --name stale-parent --color '#F2994A' --description 'In-Review issue whose blocked-by parent was amended after dispatch.'
+  linear label create --name ralph-coord-dep --color '#9B51E0' --description 'Has at least one coord-dep blocked-by edge auto-added by the /sr-spec scan; cleared on /close-issue.'
   ```
-  If you've customized `failed_label` or `stale_parent_label`, substitute their values for the `--name` argument above. The preflight error messages quote both the literal label name and the env var that points at it, so a missing or typo'd setup is unambiguous.
+  If you've customized `failed_label`, `stale_parent_label`, or `coord_dep_label`, substitute their values for the `--name` argument above. The preflight error messages quote both the literal label name and the env var that points at it, so a missing or typo'd setup is unambiguous.
 
 The orchestrator scripts have `#!/usr/bin/env bash` shebangs and source `lib/scope.sh` internally, so you can run them from any shell (zsh, fish, sh, etc.). The plugin harness auto-exports userConfig values as `CLAUDE_PLUGIN_OPTION_<KEY>` env vars in plugin subprocesses, so no manual config-path management is needed.
 

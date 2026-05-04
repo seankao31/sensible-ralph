@@ -48,6 +48,12 @@
       "description": "Label applied to In-Review children whose parent was amended (default: stale-parent)",
       "default": "stale-parent"
     },
+    "coord_dep_label": {
+      "type": "string",
+      "title": "Coordination-dependency label",
+      "description": "Label applied by /sr-spec when its coord-dep scan adds blocked-by edges; cleared by /close-issue (default: ralph-coord-dep)",
+      "default": "ralph-coord-dep"
+    },
     "worktree_base": {
       "type": "string",
       "title": "Worktree base directory",

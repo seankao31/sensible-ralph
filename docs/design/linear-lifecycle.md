@@ -43,16 +43,19 @@ Under ENG-279's per-issue branch lifecycle, the branch and worktree are created 
 
 ## Labels
 
-Two workspace-scoped labels are part of the lifecycle. Both label names are userConfig-driven via plugin options; the defaults below ship in `lib/defaults.sh`. Linear's label-by-name resolution silently no-ops on a nonexistent name, so `preflight_scan.sh` aborts with a setup hint if either label is missing from the workspace.
+Three workspace-scoped labels are part of the lifecycle. All label names are userConfig-driven via plugin options; the defaults below ship in `lib/defaults.sh`. Linear's label-by-name resolution silently no-ops on a nonexistent name, so `preflight_scan.sh` aborts with a setup hint if any label is missing from the workspace.
 
 | Label | Default name | userConfig option | Applied by | Cleared by |
 |---|---|---|---|---|
 | Failed dispatch | `ralph-failed` | `failed_label` | `orchestrator.sh` on `failed`, `exit_clean_no_review`, or `setup_failed` outcomes | Operator removes the label in Linear before re-queueing |
 | Stale parent | `stale-parent` | `stale_parent_label` | `/close-issue` (step 6) on In-Review children whose parent landed amendments during review | Operator dismisses after rebasing the child or accepting the review gap |
+| Coordination dependency | `ralph-coord-dep` | `coord_dep_label` | `/sr-spec` step 12 (and ENG-281's `/sr-start` backstop) when the coord-dep scan auto-adds `blocked-by` edges | `/close-issue` step 8 once the audited edges are deleted; kept on a non-clean cleanup as the operator's signal |
 
 **`ralph-failed` is dispatch-gating.** `linear_list_approved_issues` excludes any Approved issue carrying this label, so a labeled issue is invisible to subsequent `/sr-start` runs until the operator clears it. This is the load-bearing piece of the v2 failure-handling model: dispatch never silently retries a failure, and the issue's transitive descendants are also tainted for the same run (see Decision 8 of `docs/specs/ralph-loop-v2-design.md`).
 
 **`stale-parent` is observational.** It does not gate anything — by the time it is applied, the parent has already landed via `/close-issue`'s integration step. The label flags a review-integrity gap that the dispatch-time guardrail in `/close-issue`'s pre-flight §2 (the "all blockers Done" check) cannot catch on its own: a child issue in `In Review` reviewed against a base that the parent then amended. The operator decides whether to rebase the child and re-review, accept the gap, or dismiss the label.
+
+**`ralph-coord-dep` is observational + cleanup-bearing.** It does not gate dispatch; the load-bearing artifact for cleanup is the ```` ```coord-dep-audit ```` fenced JSON block in the `/sr-spec` audit comment. The label exists so an operator scanning Linear can tell at a glance which issues had auto-added coord-dep edges, and so that a non-clean `/close-issue` cleanup leaves a persistent visual signal (the label sticks around when at least one audited edge could not be deleted).
 
 To re-queue an issue that hit `ralph-failed`:
 

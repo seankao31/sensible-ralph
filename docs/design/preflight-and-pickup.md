@@ -95,7 +95,7 @@ The anomaly set:
 
 ### Missing workspace label
 
-- **Detection.** `lib/preflight_labels.sh::preflight_labels_check` queries Linear once per configured label name (`ralph-failed` and `stale-parent`, both userConfig-driven via the `failed_label` and `stale_parent_label` plugin options) and reports any that don't exist as a workspace-scoped label.
+- **Detection.** `lib/preflight_labels.sh::preflight_labels_check` queries Linear once per configured label name (`ralph-failed`, `stale-parent`, and `ralph-coord-dep` — userConfig-driven via the `failed_label`, `stale_parent_label`, and `coord_dep_label` plugin options) and reports any that don't exist as a workspace-scoped label.
 - **Why it blocks the run.** Linear's label-by-name resolution silently no-ops on a nonexistent label, so an unconfigured workspace would let the orchestrator keep "marking" failed issues with labels that never land — and then `linear_list_approved_issues`'s exclusion filter would silently retry every failed issue forever. Failing loud at preflight is the only way to surface the missing setup; the per-label diagnostic names both the literal label and the env var that points at it so the operator knows whether to create the label or update the config.
 - **Operator fix.** Create the label once per workspace (the SKILL.md prerequisites section provides the exact `linear label create` commands), or update the corresponding plugin option to name a label that already exists. See [`skills/sr-start/SKILL.md`](../../skills/sr-start/SKILL.md) Prerequisites.
 

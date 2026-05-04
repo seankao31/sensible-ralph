@@ -18,6 +18,7 @@
 #   linear_get_issue_state          — get current workflow state name for an issue
 #   linear_set_state                — move an issue to a named workflow state
 #   linear_add_label                — add a label additively (preserves existing labels)
+#   linear_remove_label             — remove a label from an issue (idempotent on absent)
 #   linear_label_exists             — test whether a label name exists in the workspace
 #   linear_comment                  — post a comment on an issue
 
@@ -298,6 +299,75 @@ linear_add_label() {
 
   linear issue update "$issue_id" "${label_args[@]}" \
     || { printf 'linear_add_label: failed to update labels for %s\n' "$issue_id" >&2; return 1; }
+}
+
+# Remove a label from an issue. Returns 0 on success or no-op-on-absent
+# (the label wasn't on the issue to begin with — that's idempotent
+# cleanup, not an error). Returns non-zero if the label doesn't exist
+# in the workspace, or the API call fails.
+#
+# Implementation: pure GraphQL via `linear api`. A single query fetches
+# the issue's UUID and its currently-attached labels (with IDs); a
+# follow-up `issueRemoveLabel(id, labelId)` mutation does the removal.
+# Going GraphQL-throughout (rather than `linear issue update --label`
+# for the non-empty-reduced-set case + GraphQL for the empty case)
+# avoids the cross-version ambiguity of `--label` with no flags
+# (preserve-all vs. clear-all) and keeps the failure surface uniform.
+linear_remove_label() {
+  local issue_id="$1"
+  local label_name="$2"
+
+  if ! linear_label_exists "$label_name"; then
+    printf 'linear_remove_label: workspace label %q does not exist — cannot remove from %s\n' \
+      "$label_name" "$issue_id" >&2
+    return 1
+  fi
+
+  local raw
+  raw="$(linear api --variable "issueId=$issue_id" <<'GRAPHQL'
+query($issueId: String!) {
+  issue(id: $issueId) {
+    id
+    labels(first: 50) {
+      nodes { id name }
+    }
+  }
+}
+GRAPHQL
+)" || { printf 'linear_remove_label: failed to fetch labels for %s (label %q)\n' "$issue_id" "$label_name" >&2; return 1; }
+
+  local issue_uuid label_id
+  issue_uuid="$(printf '%s' "$raw" | jq -r '.data.issue.id // empty')"
+  if [[ -z "$issue_uuid" ]]; then
+    printf 'linear_remove_label: could not resolve issue uuid for %s (label %q)\n' "$issue_id" "$label_name" >&2
+    return 1
+  fi
+
+  label_id="$(printf '%s' "$raw" | jq -r --arg name "$label_name" \
+    '[.data.issue.labels.nodes[] | select(.name == $name)] | .[0].id // empty')"
+  if [[ -z "$label_id" ]]; then
+    # Label is not on the issue — idempotent no-op.
+    return 0
+  fi
+
+  local mut
+  mut="$(linear api \
+    --variable "issueId=$issue_uuid" \
+    --variable "labelId=$label_id" <<'GRAPHQL'
+mutation($issueId: String!, $labelId: String!) {
+  issueRemoveLabel(id: $issueId, labelId: $labelId) {
+    success
+  }
+}
+GRAPHQL
+)" || { printf 'linear_remove_label: API mutation failed removing %q from %s\n' "$label_name" "$issue_id" >&2; return 1; }
+
+  local success
+  success="$(printf '%s' "$mut" | jq -r '.data.issueRemoveLabel.success // false')"
+  if [[ "$success" != "true" ]]; then
+    printf 'linear_remove_label: mutation reported failure removing %q from %s\n' "$label_name" "$issue_id" >&2
+    return 1
+  fi
 }
 
 # Test whether a workspace-scoped label with the given name exists.
