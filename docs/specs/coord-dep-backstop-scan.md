@@ -237,9 +237,23 @@ Schema:
       "rationale": "<one-line text from the original gate decision>",
       "added_at": "2026-05-04T12:00:00Z"
     }
+  ],
+  "verify_drift": [
+    {
+      "child": "ENG-C",
+      "committed_parents": ["ENG-D", "ENG-E"],
+      "expected_blockers": ["ENG-F", "ENG-D", "ENG-E"],
+      "actual_blockers": ["ENG-F", "ENG-D", "ENG-E", "ENG-G"],
+      "audit_comment_posted": true,
+      "label_added": true,
+      "drifted_at": "2026-05-04T12:00:00Z"
+    }
   ]
 }
 ```
+
+`orphans` and `verify_drift` are independent arrays; either may
+be empty. Reading sub-step 1 must validate both shapes.
 
 Path: `<repo-root>/.sensible-ralph/coord-dep-recovery.json`. The
 `.sensible-ralph/` directory is gitignored repo-wide. It is
@@ -250,17 +264,51 @@ sub-step 5/7 might need to write the recovery file. Skill prose
 must `mkdir -p "$REPO_ROOT/.sensible-ralph"` before the first
 write; subsequent runs find the directory already in place.
 
+**Atomic writes.** All writes to `$RECOVERY_FILE` use the
+temp-file + rename pattern so a partial write or interrupted
+process cannot leave malformed JSON:
+
+```bash
+tmp="$RECOVERY_FILE.tmp.$$"
+printf '%s\n' "$new_content_json" > "$tmp"
+mv "$tmp" "$RECOVERY_FILE"   # atomic on same filesystem
+```
+
+Under normal operation, malformed JSON cannot arise. If it
+somehow does (operator hand-edited, disk full mid-write before
+atomic-rename hardening landed, etc.), the spec deliberately
+does NOT offer a "delete and proceed" recovery — that would
+silently lose orphan triples and let the relations they
+describe slip through covered-pairs filtering forever. The
+operator's recovery is one of:
+
+* Inspect and repair the JSON shape by hand; re-run `/sr-start`.
+* Manually walk Linear's `ralph-coord-dep`-labeled children,
+  cross-reference each child's `blocked-by` relations against
+  the parent IDs in their `coord-dep-audit` comments, and
+  rebuild the orphan list from the diff. The operator then
+  writes the recovered list to the file and resumes.
+
+The skill prose surfaces both options; auto-deletion is NOT
+offered. This is a deliberate friction point: a malformed
+recovery file means cleanup-trail integrity is at risk, and
+the operator must consciously address it.
+
 Recovery flow (run before sub-step 2's helper invocation):
 
 ```bash
 RECOVERY_FILE="$REPO_ROOT/.sensible-ralph/coord-dep-recovery.json"
 if [[ -f "$RECOVERY_FILE" ]]; then
-  if ! jq -e 'type == "object" and has("orphans") and (.orphans | type == "array")' \
+  # Validate BOTH orphans and verify_drift array shapes; either
+  # may be empty but both keys must exist with array values.
+  if ! jq -e 'type == "object"
+              and has("orphans") and (.orphans | type == "array")
+              and has("verify_drift") and (.verify_drift | type == "array")' \
        "$RECOVERY_FILE" >/dev/null 2>&1; then
-    echo "step 2: $RECOVERY_FILE is malformed — operator must inspect or remove before re-running" >&2
-    # Operator chooses: abort, or rm the file (acknowledging that
-    # recovery information is lost; manual orphan-inspection
-    # required).
+    echo "step 2: $RECOVERY_FILE is malformed — manual repair required (do NOT delete; orphan triples and drift records would be lost)" >&2
+    echo "  Recovery options:" >&2
+    echo "    1. Hand-repair the JSON shape and re-run /sr-start." >&2
+    echo "    2. Manually rebuild the orphan list by cross-referencing each ralph-coord-dep-labeled child's blocked-by relations against the parent IDs in its coord-dep-audit comments; write the diff into a fresh recovery file." >&2
     exit 1
   fi
 
@@ -284,8 +332,9 @@ The repair attempt is the same compose-and-post sequence sub-step
 file rather than from the gate. After repair:
 
 * All orphans for child X repaired → remove X's entries from
-  `$RECOVERY_FILE`. If `$RECOVERY_FILE.orphans` becomes empty,
-  delete the file.
+  `$RECOVERY_FILE.orphans` (atomic write per the temp+rename
+  pattern). If both `$RECOVERY_FILE.orphans` AND
+  `$RECOVERY_FILE.verify_drift` are empty, delete the file.
 * Some orphans for child X failed repair (Linear API failure,
   comment-post error) → keep X's entries; surface to operator;
   proceed with normal scan (the unrepaired relations are still in
@@ -293,6 +342,16 @@ file rather than from the gate. After repair:
   operator now has a visible record they can act on next run).
 * Any operator abort during recovery → exit Step 2; do NOT
   proceed to Step 3.
+
+**Verify-drift surfacing.** If `$RECOVERY_FILE.verify_drift` is
+non-empty, list each entry to the operator as informational
+output (child ID, expected vs. actual blocker sets,
+audit-comment-posted boolean, drifted_at timestamp). No
+auto-action: drift records are observability artifacts, not
+orphans (the audit trail is intact for committed parents). The
+operator can clear drift records after investigating — the
+recipe is documented in Component 6 (sub-step 7). Drift
+surfacing does NOT block proceeding to sub-step 2.
 
 Recovery completes BEFORE the helper runs. If the file is empty or
 absent (the common path), recovery is a no-op.
@@ -332,9 +391,12 @@ prose is responsible for:
    the Linear ID (so `ENG-9 < ENG-50 < ENG-281`, not the string-
    lexicographic order which would put `ENG-281 < ENG-9`), and
    iterate `(approved[i], approved[j])` for `i < j`.
-2. **Six-item checklist per candidate pair, applied bundle-wide in
-   one prompt** — same checklist ENG-280 step 11 sub-step 5
-   specifies, repeated per candidate pair:
+2. **Seven-item checklist per candidate pair, applied bundle-wide
+   in one prompt** — extends ENG-280 step 11 sub-step 5's six
+   items with an open-ended seventh item so coordination
+   dependencies that don't fit the path/identifier/rename mental
+   model are still surfaced for direction selection. Repeated
+   per candidate pair:
    1. Path-level surface for spec A (files touched, restructured,
       renamed).
    2. Same for spec B.
@@ -344,6 +406,25 @@ prose is responsible for:
       keys, label names).
    6. Rename/move overlaps (one moves/renames a file the other
       edits).
+   7. **Any other sequencing dependency or shared invariant** not
+      captured by 1–6: behavior changes the other depends on,
+      test fixtures or helpers both modify, hooks one introduces
+      that the other consumes, contract changes (e.g., return-
+      type or argument-list changes to a function the other
+      calls), shared workflow assumptions (e.g., one skill's
+      output format that another skill parses). Surface each
+      with a one-line rationale even if it doesn't fit the path/
+      identifier/rename categories. Direction selection (rules
+      1-3 below) applies the same way to these surfaces — rule
+      3 (catch-all) handles direction when the introducer/
+      consumer asymmetry is unclear.
+
+   ENG-281's seventh item is a **strict superset** of ENG-280's
+   six-item list. ENG-280's spec is frozen; if this expansion
+   proves necessary in practice, ENG-280's checklist can be
+   extended in a follow-up issue without breaking the audit
+   contract (the contract is the `coord-dep-audit` JSON block,
+   not the reasoning-prompt structure).
 3. **Direction heuristic — total ordering, deterministic.** Each
    surfaced overlap commits to one `(child, parent)` direction
    with a one-line rationale. The heuristic is a total ordering;
@@ -633,6 +714,29 @@ operator can re-run `/sr-start` and the scan fast-paths through.
 Future fix: change verify to "every required parent is present"
 (subset, not equality), shared with ENG-280's verify.
 
+**On verify failure: persist a `verify_drift` record** to the
+recovery file before aborting Step 2. Verify only runs after all
+sub-step 6 writes (relations, comment, label) succeeded, so the
+audit trail for `committed_parents` is intact and orphans aren't
+possible — but operators benefit from a durable record that
+distinguishes "this child's run aborted at verify with these
+blockers" from "this child's run completed cleanly." The shape
+is the `verify_drift` array in the recovery file's schema. The
+next `/sr-start`'s sub-step 1 surfaces drift entries to the
+operator (informational; no auto-repair, since nothing is
+broken), and the operator can manually clear the record after
+investigating:
+
+```bash
+# After investigating, operator removes drift entries via:
+jq '.verify_drift = []' "$RECOVERY_FILE" \
+  | tee "$RECOVERY_FILE.tmp" >/dev/null \
+  && mv "$RECOVERY_FILE.tmp" "$RECOVERY_FILE"
+```
+
+Drift entries do NOT block subsequent dispatch; they are
+observability records only.
+
 ### 7. SKILL.md surface changes
 
 `skills/sr-start/SKILL.md` updates:
@@ -812,9 +916,9 @@ to one delete)").
 **Recovery-file behavior** is exercised via end-to-end manual
 testing rather than bats — the read-and-repair flow is skill
 prose (no script to invoke standalone), and the failure modes it
-handles (per-edge abort, per-comment partial-rollback) require
-mocked Linear responses that bats wouldn't reach. Test scenarios
-to walk through manually before merge:
+handles (per-edge abort, per-comment partial-rollback, verify
+failure) require mocked Linear responses that bats wouldn't
+reach. Test scenarios to walk through manually before merge:
 
 * No recovery file present → sub-step 1 is a no-op, scan proceeds
   normally.
@@ -824,14 +928,27 @@ to walk through manually before merge:
   sub-step 1 composes one consolidated audit comment per child;
   on success, all of that child's entries are removed.
 * Recovery file with malformed JSON (operator hand-edited badly)
-  → sub-step 1 surfaces operator choice (abort vs. delete-file-
-  acknowledging-loss).
+  → sub-step 1 refuses to auto-delete; surfaces both manual-
+  repair options (hand-fix JSON, or rebuild orphan list from
+  Linear); operator must consciously address before re-running.
 * Recovery-attempt failure (Linear API down) → entries kept;
   warning surfaced; scan proceeds with sub-step 2 normally.
 * Per-edge abort writes recovery entries before exit; verify
   next `/sr-start` reads them and repairs.
 * Per-comment rollback with one delete-failure writes one
   recovery entry; verify repair on next run.
+* Verify failure on a child writes a `verify_drift` entry; next
+  `/sr-start` surfaces the entry as informational output and
+  does NOT auto-repair (audit trail is intact for committed
+  parents).
+* Atomic-write contract: simulate a process kill between the
+  temp-file write and rename; verify the recovery file is
+  either fully untouched (rename never happened) or fully
+  updated (rename completed) — never half-written. This is the
+  invariant the temp+rename pattern guarantees.
+* Mixed file state: `orphans` non-empty AND `verify_drift`
+  non-empty → sub-step 1 repairs orphans; surfaces drift; both
+  paths complete in one run.
 
 End-to-end testing is manual: dispatch a `/sr-start` against an
 Approved set with a known overlap, accept the candidate, verify
@@ -983,11 +1100,12 @@ Surfaced now and explicitly accepted as v1 trade-offs.
    reasoning checklist, per-candidate operator gate, per-child
    write loop, per-child verification.
 3. New Step 2's reasoning prompt structure is documented inline
-   in SKILL.md, including the six-item checklist (path,
-   identifier, rename) and the deterministic three-rule
-   direction heuristic (rename-before-edit one-sided →
-   interface-before-use one-sided → numeric-suffix tiebreaker as
-   unconditional final fallback).
+   in SKILL.md, including the **seven-item checklist** (path,
+   identifier, rename, plus an open-ended item for any other
+   sequencing dependency or shared invariant) and the
+   deterministic three-rule direction heuristic (rename-before-
+   edit one-sided → interface-before-use one-sided → numeric-
+   suffix tiebreaker as unconditional final fallback).
 4. The audit comment Step 2 posts uses the `coord-dep-audit`
    fenced-block JSON format defined in ENG-280's spec, verbatim.
    The header text reads `**Coordination dependencies added by
@@ -1005,13 +1123,23 @@ Surfaced now and explicitly accepted as v1 trade-offs.
    `INITIAL_BLOCKERS ∪ committed_parents`. On mismatch, abort
    Step 2 with diagnostic; do NOT proceed to Step 3.
 7a. Recovery file `<repo>/.sensible-ralph/coord-dep-recovery.json`
-    is written on per-edge `abort` (orphan triples for the
-    current child) and on per-comment rollback delete-failure
-    (orphan triples for any parent whose delete returned
-    non-zero). Sub-step 1 of the next `/sr-start` reads the file
-    and attempts auto-repair (compose-and-post the audit
-    comment per child, then remove repaired entries from the
-    file). Schema is documented in Component 2.
+    holds two arrays: `orphans` (audit-less relations) and
+    `verify_drift` (relations whose verify check disagreed with
+    Linear's reported blockers). Writes to the file use temp-
+    file + rename for atomicity. The `orphans` array is
+    populated on per-edge `abort` (triples for the current
+    child) and on per-comment rollback delete-failure (triples
+    for any parent whose delete returned non-zero). The
+    `verify_drift` array is populated on sub-step 7 verify
+    failure with `{child, committed_parents, expected_blockers,
+    actual_blockers, audit_comment_posted, label_added,
+    drifted_at}`. Sub-step 1 of the next `/sr-start` reads both
+    arrays: orphans get auto-repair (compose-and-post audit
+    comment, prune on success); drift entries are surfaced to
+    the operator as informational output (no auto-action).
+    Malformed file MUST be hand-repaired or rebuilt by the
+    operator — auto-deletion is NOT offered. Schema is
+    documented in Component 2.
 8. New bats file `skills/sr-start/scripts/test/coord_dep_backstop_scan.bats`
    covers the helper's data-assembly contract per the **Testing**
    section. Existing bats coverage for `lib/linear.sh`,
