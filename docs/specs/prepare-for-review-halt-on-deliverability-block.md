@@ -352,30 +352,37 @@ above; on retry, completed steps no-op.
    comment for the current HEAD is already posted, the dedup
    gate skips *the post itself* but the halt path continues to
    step 4. The dedup never short-circuits the path's exit.
-4. **Restore `In Progress` post-state.** Read the issue's current
-   state. If it is anything other than
-   `$CLAUDE_PLUGIN_OPTION_IN_PROGRESS_STATE`, transition it back
-   to `In Progress`:
+4. **Undo a stale `In Review` post-state, if present.** Read the
+   issue's current state. If — and *only if* — it is
+   `$CLAUDE_PLUGIN_OPTION_REVIEW_STATE`, transition it back to
+   `In Progress`:
    ```bash
    current_state=$(linear issue view "$ISSUE_ID" --json | jq -r '.state.name')
-   if [ "$current_state" != "$CLAUDE_PLUGIN_OPTION_IN_PROGRESS_STATE" ]; then
+   if [ "$current_state" = "$CLAUDE_PLUGIN_OPTION_REVIEW_STATE" ]; then
      linear issue update "$ISSUE_ID" --state "$CLAUDE_PLUGIN_OPTION_IN_PROGRESS_STATE"
    fi
    ```
-   This step exists because the halt path can fire from a re-run
-   of `/prepare-for-review` after the *prior* run had already
-   transitioned the issue to `In Review` (e.g., user demoted
+   This step exists for one specific case: the halt path fires from
+   a re-run of `/prepare-for-review` after the *prior* run had
+   already transitioned the issue to `In Review` (e.g., user demoted
    bucket-3 findings interactively in the prior run, then changed
-   their mind in this run; or codex review surfaces new findings
-   on a re-invocation at the same SHA). Without this restore, the
+   their mind in this run; or codex review surfaces new findings on
+   a re-invocation at the same SHA). Without this undo, the
    orchestrator's post-dispatch state read would see `In Review`
    and classify the run as `in_review` (success), defeating the
-   entire halt mechanism. The restore makes the halt path's
-   post-state contract — `In Progress` — robust to whatever the
-   pre-halt state was. In the common case (Step 5 firing during a
-   first-run prepare-for-review where Step 7 has not run yet) the
-   conditional read shows `In Progress` already and the write is
-   skipped.
+   halt mechanism.
+
+   The guard is narrow on purpose: only `In Review` is undone. If
+   an operator manually moved the issue to a different state
+   (`Canceled`, `Done`, a custom holding state, etc.) between the
+   two runs, the halt path leaves it alone — operator state wins.
+   The orchestrator's classification will then read whatever state
+   the operator chose; outside of `In Review`, the
+   `exit_clean_no_review` outcome won't fire, but the halt comment
+   and follow-ups have still been recorded for the operator to see.
+   In the common case (Step 5 firing during a first-run
+   prepare-for-review where Step 7 has not run yet) the read shows
+   `In Progress` and the conditional skips entirely.
 5. **Exit clean** with exit code 0. Do NOT run the regular
    Step 6 (handoff comment) or Step 7 (state transition). The
    issue is now in `In Progress` regardless of the prior state.
@@ -569,20 +576,37 @@ because their footers contain the new marker substring verbatim.
 The existing "Terminal action contract" section enumerates legal
 final actions (1–3). Add a fourth:
 
-> 4. **Halt path** — the halt comment post (`linear issue comment
->    add` for the halt template) followed by clean exit, after
->    `linear issue relation add ... blocked-by` has set the durable
->    halted-on-blocker record. The issue remains in
->    `$CLAUDE_PLUGIN_OPTION_IN_PROGRESS_STATE`. The orchestrator
->    classifies the run as `exit_clean_no_review` and applies
+> 4. **Halt path** — the full sequence of: reconcile-or-create
+>    follow-up Linear issues with provenance keys, idempotent
+>    `linear issue relation add ... blocked-by` writes, halt
+>    comment post (`linear issue comment add`, gated by the
+>    halt-marker dedup which skips the post but never exits the
+>    path), and a `linear issue view` state read followed by a
+>    conditional `linear issue update --state` that undoes any
+>    stale `In Review` left by a prior run. The terminal tool call
+>    is whichever of these runs last in the actual execution: on
+>    a first-run halt that finds the issue in `In Review` from a
+>    prior partial run, the terminal call is the
+>    `linear issue update` write; on a first-run halt where the
+>    state read shows `In Progress` (the common case), the
+>    terminal call is the `linear issue view` read; on a halt-
+>    comment-already-posted retry where the state is also already
+>    `In Progress`, the terminal call is still the `linear issue
+>    view` read. In all cases the issue ends up in
+>    `$CLAUDE_PLUGIN_OPTION_IN_PROGRESS_STATE` *or* in whatever
+>    operator-set state the halt path declines to override (see
+>    halt-path execution-order step 4 for the narrow guard). The
+>    orchestrator classifies the run as `exit_clean_no_review`
+>    when the post-state is `In Progress` and applies
 >    `ralph-failed`; that label is the operator triage signal,
 >    consistent with the existing classification in
 >    `docs/design/outcome-model.md`.
 
 The illegal-final-action rule is unchanged: a markdown summary as
 the session's last output is still illegal, including in the halt
-path. The terminal tool call in the halt path is the
-`linear issue comment add` of the halt comment.
+path. The terminal tool call in the halt path is whichever of the
+sequence above ran last for that invocation, never a text
+summary.
 
 ### "Red Flags / When to Stop" update
 
@@ -658,15 +682,18 @@ No other files are touched.
    - The autonomous-mode env-var detection snippet.
    - The interactive-mode prompt block.
    - The provenance-key construction over the canonical tuple
-     (file + line span + rule id + title), not body alone.
+     `file | line_start | line_end | rule_id | title |
+     normalized_body` (the body component is mandatory, not a
+     fallback — see "Provenance key" in this spec).
    - The reconcile-or-create algorithm (issues + relations; the
      relation half is unconditional because `relation add` is
      idempotent on Linear).
    - The halt comment template with `HALT_MARKER`.
-   - The halt-path dedup pre-check.
-   - The `In Progress` post-state restore (conditional write,
-     guards against the regular-then-halt same-SHA case where
-     the prior run advanced the issue to `In Review`).
+   - The halt-path dedup gate that skips the post on retry but
+     does NOT exit the halt path (step 4 must always run).
+   - The `In Review`-only post-state undo (conditional write,
+     narrow guard so operator state on other transitions is
+     preserved).
 6. **Update the "Red Flags / When to Stop"** section with the
    clarifying note about halt being a legitimate exit.
 7. **Update the top-of-file checklist** to reflect the new Step 5
@@ -690,13 +717,14 @@ No other files are touched.
     `SENSIBLE_RALPH_AUTONOMOUS` (or equivalent reused variable).
   - The interactive-mode prompt block.
   - The per-finding provenance-key construction over a canonical
-    tuple (file + line span + rule id + title), 16-hex truncated
-    SHA-256.
+    tuple `file | line_start | line_end | rule_id | title |
+    normalized_body`, 16-hex truncated SHA-256. Body is
+    mandatory in the tuple, not an optional fallback.
   - The reconcile-or-create algorithm for follow-up issues, and
     unconditional idempotent `blocked-by` relation add.
   - The five-step execution order (reconcile-or-create issues,
-    add relations, post halt comment with dedup pre-check,
-    restore `In Progress` post-state, exit clean).
+    add relations, post halt comment with dedup gate that does
+    NOT exit, undo `In Review` post-state if present, exit clean).
 - Step 6's dedup marker is updated to `REGULAR_MARKER`
   (`'Posted by \`/prepare-for-review\` for revision \`%s\`'`).
 - The halt-path dedup snippet uses the disjoint `HALT_MARKER`
