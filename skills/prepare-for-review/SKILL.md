@@ -120,7 +120,9 @@ Once the working tree is clean, any untracked files that appear during Steps 1�
 
 ## Compute base SHA (do this before Step 1)
 
-The base SHA is used in Steps 1, 5, and 6. Compute it once now so all steps stay consistent:
+`BASE_SHA` is used in Steps 1, 5, and 6. `CURRENT_SHA` is used in Steps 5 (halt path) and 6; each path sets it at entry time (not here) so it reflects HEAD *after* any commits made by Steps 1–4.
+
+Compute `BASE_SHA` now:
 
 1. If `.sensible-ralph-base-sha` exists in the worktree root, read it:
    ```bash
@@ -294,13 +296,18 @@ Each bucket-3 finding gets a stable provenance key derived from a canonical tupl
 FINDING_BODY_NORMALIZED=$(printf '%s' "$FINDING_BODY" \
   | tr -s '[:space:]' ' ' \
   | sed -e 's/^ *//' -e 's/ *$//')
+# Length-prefix each field (len:value) before joining with '|' to prevent
+# ambiguity when field values themselves contain '|'. Two tuples that differ
+# only in how '|' falls across a field boundary cannot collide under this
+# encoding because the field lengths differ.
+lf() { printf '%d:%s' "${#1}" "$1"; }
 CANONICAL=$(printf '%s|%s|%s|%s|%s|%s' \
-  "${FINDING_FILE:-_}" \
-  "${FINDING_LINE_START:-_}" \
-  "${FINDING_LINE_END:-_}" \
-  "${FINDING_RULE_ID:-_}" \
-  "${FINDING_TITLE:-_}" \
-  "$FINDING_BODY_NORMALIZED")
+  "$(lf "${FINDING_FILE:-_}")" \
+  "$(lf "${FINDING_LINE_START:-_}")" \
+  "$(lf "${FINDING_LINE_END:-_}")" \
+  "$(lf "${FINDING_RULE_ID:-_}")" \
+  "$(lf "${FINDING_TITLE:-_}")" \
+  "$(lf "$FINDING_BODY_NORMALIZED")")
 FINDING_KEY=$(printf '%s' "$CANONICAL" | shasum -a 256 | cut -c1-16)
 PROVENANCE_TAG="<!-- halt-finding: ${ISSUE_ID}/${FINDING_KEY} -->"
 ```
@@ -340,6 +347,14 @@ Reconciling existing follow-ups is what makes the halt path safely re-runnable. 
 ##### Halt path execution order
 
 Run these in order. Each step is idempotent per the algorithm above; on retry, completed steps no-op.
+
+Before starting the sequence, capture the current revision:
+
+```bash
+CURRENT_SHA=$(git rev-parse HEAD)
+```
+
+This must be captured at halt-path entry — after Steps 1–4 may have committed docs or inline fixes — so the HALT_MARKER and halt comment footer reference the correct SHA.
 
 1. **Reconcile-or-create the follow-up issues** (loop above). Output: `$BLOCKER_ISSUE_IDS` populated with one ID per bucket-3 finding.
 2. **Reconcile-or-add `blocked-by` relations** (also handled by the loop above; the relation add is idempotent on Linear).
