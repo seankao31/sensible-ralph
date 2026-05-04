@@ -266,11 +266,20 @@ After the edits, all of the following must pass:
 
    → exactly one match.
 
-5. **No accidental change to other Step prose:** `git diff main --
-   .claude/skills/close-branch/SKILL.md` should show changes only
-   inside Step 1 (lines 70-93 region) and the one-line Red Flags
-   update (~line 220). Nothing in Steps 2-7, "Inputs on entry",
-   "Pre-flight", or "Explicitly out of scope".
+5. **No accidental change to other Step prose:**
+
+   ```bash
+   git diff "$(git merge-base HEAD main)" -- .claude/skills/close-branch/SKILL.md
+   ```
+
+   should show changes only inside Step 1 (lines 70-93 region) and
+   the one-line Red Flags update (~line 220). Nothing in Steps 2-7,
+   "Inputs on entry", "Pre-flight", or "Explicitly out of scope".
+
+   The `merge-base` form is robust to `main` advancing during the
+   implementer's session (a plain `git diff main --` would include
+   unrelated upstream edits if anyone else lands on `main` between
+   when this branch was cut and when verification runs).
 
 These greps are the verification. There is no automated test suite for
 close-branch — it's a Skill (markdown), not a script.
