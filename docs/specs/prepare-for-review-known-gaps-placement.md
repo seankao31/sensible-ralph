@@ -35,151 +35,100 @@ Step 5 already says.
 ## Change
 
 The edit target is the bash heredoc inside `skills/prepare-for-review/SKILL.md`
-that builds the handoff comment body. The heredoc begins with the
-opener `<<'COMMENT'` and ends with a `COMMENT` marker on its own
-line. Currently, the heredoc is wrapped by surrounding code that
-looks like this (line numbers approximate):
+that builds the static template body for the Linear handoff comment.
+The heredoc is identifiable by its contents, not by its sentinel
+name: it is the heredoc whose body contains the `**What shipped:**`,
+`**Deviations from the PRD:**`, `**Surprises during implementation:**`,
+`**Documentation changes:**` fields and the `## QA Test Plan` section
+heading. At the time of writing, that heredoc opens with `<<'COMMENT'`
+and closes with a `COMMENT` line, and is preceded by
+`printf '## Review Summary\n\n' > "$COMMENT_FILE"` — but the action
+described below is invariant to those particular tokens.
 
-```bash
-# Heading
-printf '## Review Summary\n\n' > "$COMMENT_FILE"
+**Important framing:** the `## Review Summary` heading is not part of
+the heredoc body. It is emitted by the separate `printf` call above
+the heredoc and concatenated into the comment file first. The
+heredoc body itself starts with the `**What shipped:**` line. Do
+NOT add `## Review Summary` inside the heredoc — doing so would
+emit the heading twice in the rendered comment.
 
-# Static body — quoted heredoc keeps backticks (and $) literal
-cat >> "$COMMENT_FILE" <<'COMMENT'
-**What shipped:** ...
-...
-COMMENT
+### Action
+
+Move the single `**Known gaps / deferred:** …` field line from its
+current location (inside the QA Test Plan region of the heredoc) to
+a new location (inside the Review Summary region of the heredoc),
+between `**Surprises during implementation:** …` and
+`**Documentation changes:** …`, with one blank line above and one
+blank line below it.
+
+This is naturally a remove-then-insert (or two `Edit` tool calls,
+or one `Edit` whose `old_string` covers both regions). Use whichever
+form is least likely to misfire on the actual file content at
+implementation time.
+
+**Anchors used to locate the regions:**
+
+- *Insert site (Review Summary region):* the unique adjacency
+  inside the heredoc where `**Surprises during implementation:** …`
+  is followed by a blank line and then `**Documentation changes:** …`.
+  Insert `**Known gaps / deferred:** <anything intentionally left
+  unfinished; "None" if complete>` between them, surrounded by one
+  blank line on each side, so the resulting sequence is field +
+  blank + new field + blank + field.
+- *Remove site (QA Test Plan region):* the unique location where
+  `**Known gaps / deferred:** …` appears inside the QA Test Plan
+  region of the heredoc. Remove that line and one of its adjacent
+  blank lines (whichever is needed to keep the surrounding QA-section
+  structure visually consistent — typically the blank line above
+  the field).
+
+**Field text to insert (verbatim, including the angle-bracket
+placeholder text — this matches the surrounding fields' style):**
+
 ```
-
-**Important:** the literal heredoc body does NOT begin with
-`## Review Summary`. That heading is emitted by the `printf` call
-**above** the heredoc and is concatenated into the comment file before
-the heredoc contents. The heredoc body itself starts with the
-`**What shipped:**` line. Do NOT add `## Review Summary` inside the
-heredoc; doing so would emit the heading twice in the rendered
-comment.
-
-### Edits to apply
-
-Two changes inside the heredoc body. Apply them as either two
-separate `Edit` tool calls or one `Edit` call whose `old_string`
-spans both regions.
-
-**Edit 1 — insert the field into Review Summary.** Find the unique
-anchor where "Surprises during implementation:" is immediately
-followed by a blank line and then "Documentation changes:". Insert
-the `**Known gaps / deferred:**` field between them, with one blank
-line above and one blank line below it. Concretely, the lines that
-currently read:
-
-```
-**Surprises during implementation:** <bulleted list of things the PRD didn't anticipate; "None" if clean>
-
-**Documentation changes:** <bulleted list of decisions captured and docs pruned this session; "None" if nothing>
-```
-
-become:
-
-```
-**Surprises during implementation:** <bulleted list of things the PRD didn't anticipate; "None" if clean>
-
 **Known gaps / deferred:** <anything intentionally left unfinished; "None" if complete>
-
-**Documentation changes:** <bulleted list of decisions captured and docs pruned this session; "None" if nothing>
 ```
 
-**Edit 2 — remove the field (and its preceding blank line) from QA
-Test Plan.** Find the unique anchor where "Edge cases worth
-checking:" is followed by a blank line and then the
-`**Known gaps / deferred:**` field, which is then followed by the
-`COMMENT` heredoc terminator on its own line. The block that
-currently reads:
-
-```
-**Edge cases worth checking:** <bulleted list of risky paths — what was tricky to get right, what boundary conditions exist>
-
-**Known gaps / deferred:** <anything intentionally left unfinished; "None" if complete>
-COMMENT
-```
-
-becomes:
-
-```
-**Edge cases worth checking:** <bulleted list of risky paths — what was tricky to get right, what boundary conditions exist>
-COMMENT
-```
-
-(The blank line between "Edge cases worth checking" and the removed
-field is also removed, so the `COMMENT` terminator now follows the
-"Edge cases" line with exactly one newline. This matches the
-heredoc's existing trailing-line pattern and keeps the bash heredoc
-syntax intact.)
-
-### After-state, exact heredoc body
-
-After both edits, the literal contents *between* the `<<'COMMENT'`
-opener and the `COMMENT` terminator must be exactly:
-
-```
-**What shipped:** <1-3 sentence summary of the implementation>
-
-**Deviations from the PRD:** <bulleted list of anything that differs from the issue description; "None" if identical>
-
-**Surprises during implementation:** <bulleted list of things the PRD didn't anticipate; "None" if clean>
-
-**Known gaps / deferred:** <anything intentionally left unfinished; "None" if complete>
-
-**Documentation changes:** <bulleted list of decisions captured and docs pruned this session; "None" if nothing>
-- Decision: <file:line or path> — <one-sentence summary>
-- Pruned: <path> — <one-sentence reason>
-
-## QA Test Plan
-
-**Golden path:** <specific manual steps to verify the core behavior works>
-
-**Edge cases worth checking:** <bulleted list of risky paths — what was tricky to get right, what boundary conditions exist>
-```
-
-The `## QA Test Plan` heading stays inside the heredoc body (it was
-already there). The `## Review Summary` heading remains in the
-preceding `printf` call above the heredoc and is **not** part of the
-heredoc body.
-
-The `**Documentation changes**` field's bullet examples
-(`- Decision: ...`, `- Pruned: ...`) stay attached directly under
-that field — do not separate them from their parent field by the
-inserted Known gaps entry.
+**Do not touch unrelated content** in either region. If, at
+implementation time, the QA Test Plan region or the Review Summary
+region of the heredoc contains additional fields or template lines
+not described here, preserve them exactly. This spec defines only
+the placement of `**Known gaps / deferred:**`; everything else in
+the heredoc is out of scope and must round-trip unchanged.
 
 ### Drift-handling rule
 
-This spec assumes the source layout described above. If, between
-spec-time and implementation, `SKILL.md` has drifted in any of the
-following ways, **stop and surface to the operator instead of
-forcing a literal block replacement**:
+The spec rests on a few semantic invariants. If any of them no
+longer holds at implementation time, stop and surface to the
+operator instead of guessing:
 
-- The heredoc opener (`<<'COMMENT'`) or its closing `COMMENT`
-  marker is no longer present, has been renamed (e.g., to
-  `<<'BODY'`), or the comment-template construction has been
-  refactored away from a single heredoc.
-- The string `**Known gaps / deferred:**` appears more than once
-  in the file, or appears zero times (the field has already been
-  moved or removed).
-- The Edit-1 anchor — the contiguous "Surprises during
-  implementation" → blank line → "Documentation changes" pattern
-  — does not match exactly once inside the heredoc body.
-- The Edit-2 anchor — the contiguous "Edge cases worth checking"
-  → blank line → `**Known gaps / deferred:**` → `COMMENT`
-  terminator pattern — does not match exactly once.
-- Step 5's "**Ambiguous findings**" bullet no longer semantically
-  designates Review Summary as the home for ambiguous findings /
-  Known gaps. Harmless copy edits to that bullet (typos,
-  punctuation, clarifications that still point at Review Summary)
-  are fine and do not block. The drift case is specifically when
-  Step 5 has been changed to redirect ambiguous findings to QA Test
-  Plan or some other section — i.e., when the conceptual premise
-  this spec rests on no longer holds. If you can read the current
-  Step 5 and confirm "ambiguous findings still go in Review
-  Summary," proceed; otherwise stop and re-spec.
+- The file `skills/prepare-for-review/SKILL.md` exists and contains
+  a heredoc identifiable by the field names listed above (the
+  static template for the Linear handoff comment body). The
+  heredoc's sentinel name is irrelevant — what matters is that the
+  heredoc still exists and is the unique carrier of these fields.
+  If the comment template has been refactored away from a heredoc
+  entirely (e.g., into a separate template file or into a series
+  of `printf` calls), stop — the conceptual change still applies
+  but the mechanical instructions don't, so re-spec.
+- A line matching `**Known gaps / deferred:**` is present at least
+  once in the heredoc body, and its current location is inside the
+  QA Test Plan region. If the field is absent (already moved or
+  removed) or appears in some surprising location not covered by
+  the anchors above, stop and inspect.
+- The Review Summary region of the heredoc still contains both
+  `**Surprises during implementation:**` and `**Documentation
+  changes:**` as adjacent fields suitable for the insert. If
+  Review Summary has been restructured such that this adjacency
+  no longer exists, stop — the insert site is ambiguous.
+- Step 5's "**Ambiguous findings**" bullet still semantically
+  directs ambiguous findings to Review Summary (specifically to
+  the Surprises or Known gaps field). Harmless copy edits to that
+  bullet are fine. The drift case is when Step 5 has been changed
+  to redirect ambiguous findings to QA Test Plan or some other
+  section — i.e., the conceptual premise this spec rests on is
+  gone. If you can read current Step 5 and confirm "ambiguous
+  findings still go in Review Summary," proceed.
 
 In any drift case, do not guess. Surface the situation and let a
 human re-evaluate.
@@ -212,19 +161,22 @@ human re-evaluate.
 
 The skill is markdown-only — no executable tests. Verification is:
 
-1. **Diff inspection.** Confirm the only changes are: removing the
-   `**Known gaps / deferred:**` line (and one preceding blank line)
-   from the QA Test Plan region of the heredoc, and inserting the
-   same line (with one blank line above and one below) into the
-   Review Summary region of the heredoc. No other characters change.
-2. **Heredoc integrity.** Bash heredoc syntax requires exactly:
-   the opener (`<<'COMMENT'`) intact, the closing `COMMENT` token
-   on a line by itself with nothing else on it, and a newline
-   immediately before the terminator. Internal blank lines inside
-   the heredoc body are payload, not syntax — this spec
-   intentionally changes some of them. Verification: confirm the
-   opener and the bare-`COMMENT` terminator line are both present
-   and unchanged.
+1. **Diff scope.** Confirm the diff is limited to the move of
+   `**Known gaps / deferred:** …` from the QA Test Plan region to
+   the Review Summary region, plus the surrounding blank-line
+   adjustment needed to preserve the field-and-blank-line cadence
+   at both sites. Any *other* lines in the heredoc — including any
+   QA Test Plan content this ticket doesn't mention — must
+   round-trip unchanged. Lines outside the heredoc (other skill
+   sections, surrounding bash, etc.) must also be unchanged.
+2. **Heredoc integrity.** Bash heredoc syntax requires three things
+   only: the opener line intact (whatever sentinel name it uses),
+   the closing terminator token on a line by itself with nothing
+   else on it, and a newline immediately before the terminator.
+   Internal blank lines inside the heredoc body are payload, not
+   syntax — this spec intentionally rearranges some of them.
+   Verification: confirm the heredoc's opener and terminator lines
+   are both still present and structurally intact.
 3. **`## Review Summary` heading source unchanged.** The heading is
    emitted by the `printf '## Review Summary\n\n'` line above the
    heredoc; that printf call must be byte-identical before and
@@ -240,10 +192,11 @@ The skill is markdown-only — no executable tests. Verification is:
 5. **Field is in the Review Summary region.** Confirm the
    single match sits between `**Surprises during implementation:**`
    and `**Documentation changes:**` in the heredoc body.
-6. **No QA Test Plan residue.** Confirm `## QA Test Plan` no longer
-   contains the Known gaps line by visually inspecting the section.
-   After the change it should contain only `**Golden path:**` and
-   `**Edge cases worth checking:**`.
+6. **No QA Test Plan residue.** Confirm `**Known gaps / deferred:**`
+   no longer appears anywhere inside the QA Test Plan region of the
+   heredoc. Other QA fields that this ticket doesn't mention
+   (whether they were already present or were added independently
+   on another branch) should be left as-is.
 7. **Step 5 semantic intent preserved.** The "**Ambiguous findings**"
    bullet must still direct ambiguous codex findings to Review
    Summary (specifically, into the Surprises during implementation
@@ -272,11 +225,12 @@ The skill is markdown-only — no executable tests. Verification is:
   Two smaller edits are more robust to minor surrounding-whitespace
   drift; one larger edit is simpler if the file matches the spec
   exactly.
-- Net diff size: ~4 lines added, ~2 lines removed (one
-  `**Known gaps / deferred:**` line + one blank line removed from
-  QA Test Plan; one `**Known gaps / deferred:**` line + two blank
-  lines added in Review Summary surrounding it). No other lines in
-  the file change.
+- Expected diff size on the typical happy path is small (roughly
+  one removed `**Known gaps / deferred:**` line + one removed blank
+  line in QA Test Plan; one inserted `**Known gaps / deferred:**`
+  line + the blank lines needed to surround it in Review Summary).
+  Other lines in `SKILL.md` that this ticket does not address must
+  round-trip unchanged.
 - No code changes, no test changes, no companion-skill changes.
 
 ## Acceptance
@@ -297,9 +251,10 @@ nothing else about `SKILL.md` is constrained by this ticket:
 4. The `printf '## Review Summary\n\n'` call above the heredoc is
    byte-identical before and after — it remains the sole emitter
    of the `## Review Summary` heading.
-5. The heredoc opener (`<<'COMMENT'`) and its closing `COMMENT`
-   marker are intact and on their own lines, satisfying bash
-   heredoc syntax.
+5. The heredoc that carries the static template body still parses
+   as valid bash heredoc syntax: opener on its own line, terminator
+   on its own line. Sentinel name is unconstrained — whatever it
+   was before the change, it remains the same after.
 6. Step 5's "**Ambiguous findings**" bullet still semantically
    directs ambiguous findings to Review Summary (see verification
    step 7). It does not need to be byte-identical.
