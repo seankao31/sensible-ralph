@@ -197,11 +197,21 @@ Three deliberate choices preserved from the design dialogue:
 
    Tests extract a child's body via `awk` between markers.
 
+3. Extend the `is_branch_fresh_vs_sha` stub in the fake `lib/branch_ancestry.sh` to log every invocation's `parent_sha` argument. This converts the "SHA-swap" failure mode from manual-only into automated coverage — the test plan can now verify that the helper feeds the pre-merge SHA to the ancestry check, not the integration SHA:
+
+   ```bash
+   export STUB_FRESH_ARG_LOG="$STUB_DIR/fresh_arg_log"
+   : > "$STUB_FRESH_ARG_LOG"
+
+   # Inside the existing is_branch_fresh_vs_sha stub, before the rc return:
+   printf '%s\t%s\n' "$parent_sha" "$branch_ref" >> "$STUB_FRESH_ARG_LOG"
+   ```
+
 **Existing 10 tests — mechanical signature update.** Every `run call_fn close_issue_label_stale_children "ENG-200" "$A_SHA"` becomes `run call_fn close_issue_label_stale_children "ENG-200" "$A_SHA" "$B_SHA"`. The SHAs are opaque to the stubbed `is_branch_fresh_vs_sha`, so no semantic assertions change.
 
 Test #1 (the existing `empty A_SHA → silent no-op` case) is replaced by the two new empty-arg tests below — those provide more specific coverage, one for each guarded SHA.
 
-**Three new tests:**
+**Four new tests:**
 
 1. **Body propagates both short SHAs and expands every interpolation.**
 
@@ -225,9 +235,16 @@ Test #1 (the existing `empty A_SHA → silent no-op` case) is replaced by the tw
    - Call: `run call_fn close_issue_label_stale_children "ENG-200" "$A_SHA" ""`.
    - Same assertions as test 2. Defensive layer for the (improbable) case that the call-site `if` guard in `close-issue/SKILL.md` is bypassed.
 
+4. **Ancestry check receives pre-merge SHA, not integration SHA.**
+
+   - Setup: 1 In-Review child whose freshness rc doesn't matter (use `STUB_FRESH_ENG_100=0` for a clean log — the test inspects `STUB_FRESH_ARG_LOG`, which captures the call regardless of return code).
+   - Call: `run call_fn close_issue_label_stale_children "ENG-200" "$A_SHA" "$B_SHA"`.
+   - Assert: `$STUB_FRESH_ARG_LOG` contains a line whose first column is `$A_SHA` (the pre-merge SHA was passed).
+   - Assert: `$STUB_FRESH_ARG_LOG` does NOT contain a line whose first column is `$B_SHA` (the integration SHA was never fed to the ancestry helper). Catches the "implementer accidentally swapped which SHA goes to `is_branch_fresh_vs_sha`" regression — the core semantic this ticket exists to fix.
+
 ### What bats does NOT cover
 
-The bats harness stubs `is_branch_fresh_vs_sha`, so the SHA-comparison *semantics* (which SHA value gets fed to which check, in real ancestry topology) are not exercised at the unit-test level. Acceptance criteria 1, 2, and 5 are claims about the SKILL.md flow's behavior — which SHA gets passed in, and whether the call site is reached at all — and live in `close-issue/SKILL.md` prose, not in any unit-testable surface.
+The bats harness stubs `is_branch_fresh_vs_sha`, so the SHA-comparison *semantics* against a real ancestry topology are not exercised at the unit-test level. Test 4 above asserts which SHA is *passed* to the ancestry helper (the load-bearing argument), but it cannot verify what `is_branch_fresh_vs_sha` would have returned given a real branch graph. Acceptance criteria 1 and 2 are claims about the close-issue SKILL.md flow's *capture-point* behavior — that the variable being passed at the call site is in fact the parent's worktree HEAD before close-branch ran. AC#5 is similarly a SKILL.md-prose concern (the explicit `if` guard at the call site).
 
 The autonomous implementer's `/prepare-for-review` handoff comment must explicitly call out that the manual block below is pending human-reviewer execution before merge.
 
@@ -260,6 +277,7 @@ These three cases exercise ACs 1, 2, and 5 respectively and complete the testing
 - `prepare-for-review`'s rebase semantics — verified at design time that it does not rebase; the fix's correctness does not depend on prepare-for-review's behavior.
 - `close-branch`'s mechanical-conflict-resolution policy. close-branch's project-local `SKILL.md` permits inline mechanical conflict resolution during its rebase step (`.claude/skills/close-branch/SKILL.md` Step 1). If a resolution materially changes content beyond mechanical, that's a close-branch policy bug, not a stale-parent labeling defect — children are checked against the pre-rebase tip (= the reviewed content), and any divergence introduced during rebase belongs to the close-branch contract. The "content-equivalent amendments, dismiss manually" hint in the comment body covers the residual case if a mechanical resolution does sneak through and trips a label.
 - Enforcing that the parent's HEAD at `/close-issue` time still matches the SHA recorded in `/prepare-for-review`'s Linear handoff comment. That tripwire would close the soft-contract gap described in "Implicit invariant" above, but it's a separate review-integrity feature spanning prepare-for-review and close-issue, not a stale-parent-label fix.
+- Persisting `PARENT_TIP_PRE_MERGE` to a durable artifact for retry recovery. Tracing the close-issue flow: after `close-branch` succeeds, the parent's branch is deleted in `close-branch` Step 6, which means a re-invocation of `/close-issue` cannot resolve the branch in Step 1 and exits before reaching the capture point. So "retry the stale-parent check after close-branch landed but the worktree is gone" is not a reachable code path — it's a manual-recovery scenario governed by the existing "Red Flags / When to Stop" section in `close-issue/SKILL.md`. The capture-point capture is correctly transient: re-runnable on `close-branch`-failure retries (where worktree + branch still exist) and unreachable in completed-merge retries (where the branch is already gone, blocking re-entry).
 
 ## References
 
