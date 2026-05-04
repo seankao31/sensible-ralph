@@ -426,7 +426,7 @@ ralph-output.log
 
 | Entry | Why |
 |---|---|
-| `/.sensible-ralph/` | Orchestrator runtime state — `progress.json`, `ordered_queue.txt`. Per-run, transient, repo-root-only. |
+| `/.sensible-ralph/` | Orchestrator runtime state — `progress.json`, `ordered_queue.txt` (committed-run record with `# run_id:` header), `queue_pending.txt` (transient build artifact from `/sr-start`). Per-run, repo-root-only. |
 | `/.worktrees/` | Default `worktree_base`. Linked worktrees should never appear in the parent repo's tracked tree. If `worktree_base` is overridden, the override path needs the equivalent entry. |
 | `/.sensible-ralph-base-sha` | Per-worktree contract file. Absolute-from-worktree-root, so the entry uses a leading slash to anchor it. Without this, the file would be staged into the session's first feature commit. |
 | `/.sensible-ralph-pending-merges` | Per-worktree marker for conflicts left in place by the parent-merge helpers. Absolute-from-worktree-root anchor. Without this, the file would be staged into the session's resolution commit during the drain loop. |
