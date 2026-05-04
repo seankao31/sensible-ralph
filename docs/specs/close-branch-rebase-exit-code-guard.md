@@ -71,8 +71,10 @@ git -C "$WORKTREE_PATH" fetch origin main
 rebase_rc=0
 git -C "$WORKTREE_PATH" rebase main || rebase_rc=$?
 if [ "$rebase_rc" -ne 0 ]; then
-  echo "close-branch: rebase failed (exit $rebase_rc). Resolve conflicts and re-run, or abort with:" >&2
-  echo "  git -C \"$WORKTREE_PATH\" rebase --abort" >&2
+  echo "close-branch: rebase failed (exit $rebase_rc) in $WORKTREE_PATH." >&2
+  echo "  Inspect the worktree state and resolve before re-invoking /close-issue." >&2
+  echo "  - conflicts (typically exit 1): resolve in the worktree and 'git rebase --continue', or 'git rebase --abort' to discard." >&2
+  echo "  - fatal (typically exit 128, e.g. dirty index, missing main): no rebase is in progress; investigate the underlying issue." >&2
   exit "$rebase_rc"
 fi
 ```
@@ -81,7 +83,11 @@ This is the canonical "capture rc, branch on it, exit with the captured
 code" idiom — preferred over `if ! git rebase main; then ... exit 1;
 fi` because the diagnostic preserves the actual rebase exit code (git's
 rebase emits 1 for content conflicts, 128 for fatal errors, etc.; we
-pass that through to `close-issue`).
+pass that through to `close-issue`). The diagnostic distinguishes
+conflict (rebase started, mid-rebase, abortable) from fatal (rebase
+never started, nothing to abort) so the caller doesn't waste time
+running `git rebase --abort` against a state where it's a no-op or
+secondary error.
 
 ### Edit 2 — Step 1 prose
 
@@ -131,9 +137,16 @@ as rebase fails. Rewrite so the *flow* is explicit, the *taxonomy*
 > *Mechanical conflict — resolve outside close-branch, then re-run.*
 > In the worktree, edit the conflicted files, `git -C "$WORKTREE_PATH"
 > add <files>`, `git -C "$WORKTREE_PATH" rebase --continue`, then
-> re-invoke `/close-issue`. On the second run Step 1's `git rebase
-> main` is a no-op (branch already on top of main), the guard does not
-> fire, and Step 2 proceeds normally.
+> re-invoke `/close-issue`. On the second run, **if local main has
+> not advanced** in the meantime, Step 1's `git rebase main` is a
+> no-op (branch already on top of main), the guard does not fire, and
+> Step 2 proceeds normally. **If local main has advanced** (a new
+> direct-to-main commit landed, or someone ran `git pull` on the main
+> checkout), the second invocation rebases against the new tip and
+> may hit conflicts again — be prepared for the guard to fire a
+> second time and repeat the resolve+continue+re-invoke cycle. close-
+> branch makes no idempotence guarantee here; the rerun is just
+> another close-branch invocation that runs Step 1 from scratch.
 >
 > Mechanical resolutions (the caller can do these without escalation):
 >
