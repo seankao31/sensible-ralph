@@ -74,12 +74,13 @@ SKILL.md text so the agent has a reference:
 The agent's classification rule, applied in this strict order
 (first match wins):
 
-1. **Is the bug fix in code touched by this ticket's commits?** That
-   is, would the fix be a modification to a file/region that this
-   ticket's branch already adds or modifies relative to
-   `$BASE_SHA..HEAD`? If yes — bucket 1 (fix inline; the active spec
-   covers this code by the user-global CLAUDE.md "current task's
-   scope" definition).
+1. **Does the root-cause fix lie *entirely* within code touched by
+   this ticket's commits?** That is, do all required modifications
+   to make the feature meet its acceptance criteria fall inside
+   files/regions this ticket's branch already adds or modifies
+   relative to `$BASE_SHA..HEAD`? If yes — bucket 1 (fix inline;
+   the active spec covers this code by the user-global CLAUDE.md
+   "current task's scope" definition).
 2. **Else, does the finding invalidate the feature's acceptance
    criteria?** I.e. would a reviewer reading the issue description
    conclude the feature does not deliver what was promised? If yes —
@@ -87,6 +88,23 @@ The agent's classification rule, applied in this strict order
 3. **Else** — bucket 2 (advisory: design tradeoff, stylistic concern,
    deferred consideration, non-blocking edge case; capture in
    summary, proceed).
+
+The "*entirely*" qualifier in step 1 is load-bearing for mixed-scope
+findings. A finding can manifest in code the ticket touched (an
+in-ticket test fails, an in-ticket wrapper exposes the bug) while
+the actual fix requires modifying out-of-ticket code (a shared
+helper, a utility function, a config the ticket reads but doesn't
+own). In that mixed case, **the finding is bucket 3, not bucket 1**.
+Rationale: a fix that lands partly out-of-ticket cannot honestly be
+called "in scope," and silently editing the shared helper in a
+ticket's branch hides cross-cutting changes from the reviewer. The
+correct response is to halt, file the helper fix as a follow-up,
+and `blocked-by` it from the parent.
+
+The simplest test for the implementer: write down, in one sentence,
+where the fix has to land. If the answer mentions any path that
+isn't in `git diff $BASE_SHA..HEAD --name-only`, the answer is
+bucket 3.
 
 **When uncertain at any step, escalate to the higher-numbered
 bucket.** Specifically:
@@ -100,14 +118,6 @@ bucket.** Specifically:
   false-negative ship of a broken feature costs more — the DAG
   advances, descendants dispatch onto bad work, and the
   orchestrator's post-dispatch checks have no way to recover.
-
-The location-first ordering (step 1 before step 2) is deliberate. A
-finding can be "the agent could technically fix this" *and* "this
-breaks deliverability" simultaneously when the bug is inside the
-ticket's own code — that's exactly bucket 1, and codex's
-fix-and-re-run loop is the right response. Only when the bug is
-*outside* the ticket's code does the deliverability question route
-to bucket 3 (halt) vs bucket 2 (advisory).
 
 ### Interactive vs autonomous behavior
 
@@ -196,22 +206,51 @@ on retry, reconcile (not duplicate) the existing artifacts.
 
 #### Provenance key (per-finding dedup)
 
-Each bucket-3 finding gets a stable provenance key derived from its
-content. The key MUST be deterministic for the same finding and MUST
-change if the finding text changes. Recommended construction:
+Each bucket-3 finding gets a stable provenance key. The key MUST be
+deterministic for the same finding and MUST distinguish two findings
+that report different problems even when the codex review's
+free-form `body` text happens to be similar. The key is constructed
+from a canonical tuple of identity-bearing fields, not from `body`
+alone:
 
 ```bash
-FINDING_KEY=$(printf '%s' "$finding_body" | shasum -a 256 | cut -c1-12)
+# Codex's review JSON exposes title, file, line_start, line_end, body,
+# and (when present) a stable rule/category id. Build the canonical
+# tuple from the most identity-bearing of these that the agent can
+# read off the finding. file+line_start+line_end+title is the
+# minimum; include rule/category id when present.
+CANONICAL=$(printf '%s|%s|%s|%s|%s' \
+  "${FINDING_FILE:-_}" \
+  "${FINDING_LINE_START:-_}" \
+  "${FINDING_LINE_END:-_}" \
+  "${FINDING_RULE_ID:-_}" \
+  "${FINDING_TITLE:-_}")
+FINDING_KEY=$(printf '%s' "$CANONICAL" | shasum -a 256 | cut -c1-16)
 PROVENANCE_TAG="<!-- halt-finding: ${ISSUE_ID}/${FINDING_KEY} -->"
 ```
 
 `$ISSUE_ID` is the parent (the ticket prepare-for-review is running
-on); `$FINDING_KEY` is the per-finding hash. `$PROVENANCE_TAG` is
-embedded in the follow-up's description (Linear renders HTML
-comments invisibly, per a known Linear behavior — but this spec only
-relies on the substring being searchable, not invisible. If Linear
-ever renders the tag literally, the key is still searchable; UX
-degrades but correctness holds).
+on); `$FINDING_KEY` is the per-finding hash over the canonical tuple.
+The 16-hex truncation gives 64 bits of collision resistance — ample
+for the per-issue scale (single-digit findings).
+
+`$PROVENANCE_TAG` is embedded in the follow-up's description (Linear
+renders HTML comments invisibly, per a known Linear behavior — but
+this spec only relies on the substring being searchable, not
+invisible. If Linear ever renders the tag literally, the key is still
+searchable; UX degrades but correctness holds).
+
+Why a tuple instead of just `body`: codex review formats often emit
+similar prose for similar bug patterns at different
+files/lines/rules. A tuple over file + line span + rule + title
+cannot collapse two distinct findings into one provenance key the
+way a body-only hash can. Using `_` placeholders for missing fields
+keeps the key well-defined when codex omits a field; the present
+fields still distinguish independent findings. If the agent receives
+a finding with NO file/line/rule/title (only body) — vanishingly
+rare in practice — it falls back to hashing the body itself and
+notes the degraded uniqueness in the halt comment so the operator
+can verify by hand.
 
 The marker text choice (`<!--` style) is a recommendation. The
 implementer MAY substitute another searchable marker (e.g. a
@@ -277,23 +316,50 @@ above; on retry, completed steps no-op.
    Output: `$BLOCKER_ISSUE_IDS` populated with one ID per
    bucket-3 finding.
 2. **Reconcile-or-add `blocked-by` relations** (also handled by
-   the loop above).
+   the loop above; the relation add is idempotent on Linear).
 3. **Post the halt-specific comment** (template below) via
    `linear issue comment add --body-file` from a `mktemp`
    tempfile. The halt comment has its own SHA-anchored dedup
    (see "Dedup compatibility" below) — on retry, if the halt
    comment for the current HEAD is already posted, skip.
-4. **Exit clean** with exit code 0. Do NOT run the regular
+4. **Restore `In Progress` post-state.** Read the issue's current
+   state. If it is anything other than
+   `$CLAUDE_PLUGIN_OPTION_IN_PROGRESS_STATE`, transition it back
+   to `In Progress`:
+   ```bash
+   current_state=$(linear issue view "$ISSUE_ID" --json | jq -r '.state.name')
+   if [ "$current_state" != "$CLAUDE_PLUGIN_OPTION_IN_PROGRESS_STATE" ]; then
+     linear issue update "$ISSUE_ID" --state "$CLAUDE_PLUGIN_OPTION_IN_PROGRESS_STATE"
+   fi
+   ```
+   This step exists because the halt path can fire from a re-run
+   of `/prepare-for-review` after the *prior* run had already
+   transitioned the issue to `In Review` (e.g., user demoted
+   bucket-3 findings interactively in the prior run, then changed
+   their mind in this run; or codex review surfaces new findings
+   on a re-invocation at the same SHA). Without this restore, the
+   orchestrator's post-dispatch state read would see `In Review`
+   and classify the run as `in_review` (success), defeating the
+   entire halt mechanism. The restore makes the halt path's
+   post-state contract — `In Progress` — robust to whatever the
+   pre-halt state was. In the common case (Step 5 firing during a
+   first-run prepare-for-review where Step 7 has not run yet) the
+   conditional read shows `In Progress` already and the write is
+   skipped.
+5. **Exit clean** with exit code 0. Do NOT run the regular
    Step 6 (handoff comment) or Step 7 (state transition). The
-   issue stays in `In Progress`. The orchestrator's outcome
-   classification picks this up as `exit_clean_no_review`
-   (existing logic in `docs/design/outcome-model.md`).
+   issue is now in `In Progress` regardless of the prior state.
+   The orchestrator's outcome classification picks this up as
+   `exit_clean_no_review` (existing logic in
+   `docs/design/outcome-model.md`).
 
 The halt path is the skill's terminal path for this invocation. Per
 the existing "Terminal action contract" section, the skill's last
-operation must be a tool call (the halt comment post; or, on a
-fully-reconciled retry where step 3's dedup hits, the search query
-that confirmed the existing comment), not a markdown summary.
+operation must be a tool call (typically the halt comment post or
+the `In Progress` restore; on a fully-reconciled retry where step
+3's dedup hits and step 4's read shows the issue already in
+`In Progress`, the terminal tool call is the state read itself),
+not a markdown summary.
 
 ### Halt comment template
 
@@ -404,37 +470,46 @@ each dedup query matches exactly one comment type.
 
 #### Same-SHA path transition behavior
 
-With disjoint markers, the dedup interaction is well-defined for the
-case where the same SHA sees both decisions across separate
-invocations:
+With disjoint markers AND the halt path's state-restore step
+(execution-order step 4), the dedup interaction is well-defined
+for the case where the same SHA sees both decisions across
+separate invocations:
 
-- **Run A at SHA X posts a regular handoff comment** (e.g., user
-  demoted bucket-3 findings interactively): `REGULAR_MARKER` matches
-  on retry of Step 6, but `HALT_MARKER` does NOT match.
+- **Run A at SHA X posts a regular handoff comment and transitions
+  the issue to `In Review`** (e.g., user demoted bucket-3 findings
+  interactively, full normal Step 6/Step 7 path): `REGULAR_MARKER`
+  matches on retry of Step 6. `HALT_MARKER` does NOT match. Issue
+  state is `In Review`.
 - **Run B at SHA X engages the halt path**: `HALT_MARKER` does not
   match the regular comment, so the halt path proceeds, posts the
-  halt comment, and exits. The issue now carries both comments.
-  Operator sees the halt comment as the most recent and acts on it.
+  halt comment, then runs the state-restore step. The state read
+  shows `In Review`, so the conditional write transitions back to
+  `In Progress`. The issue now carries both comments and is in
+  `In Progress`. Operator sees the halt comment as the most
+  recent. The orchestrator's post-dispatch state read sees
+  `In Progress` and classifies the run as `exit_clean_no_review`.
 - **Run B's earlier reconcile-or-create loop** finds the previously
   filed follow-ups (by provenance key) — even if Run A had filed
   none (because A demoted to advisory), Run B's loop creates them
   cleanly.
 - **Run C at SHA X is another retry of the halt path**:
-  `HALT_MARKER` matches → step 3 skips repost → exit clean. Run C
-  may still execute the reconcile-or-create loop (steps 1–2)
-  idempotently; that's harmless because the loop's existing-issue
-  check finds the already-filed follow-ups and no-ops.
+  `HALT_MARKER` matches → step 3 skips repost. Step 4's state
+  read shows `In Progress` (Run B already restored), so step 4's
+  conditional write is also skipped. Exit clean. The reconcile
+  loop's existing-issue check finds the already-filed follow-ups
+  and no-ops.
 
-The transition from advisory to halt at the same SHA is allowed and
-recorded by both comments existing on the issue. The reverse
-transition (halt → advisory at same SHA) is not supported in
-autonomous mode, because once the halt path has filed follow-ups
-and posted the halt comment, the run is terminal. In interactive
-mode, if the user changes their mind after a halt comment was posted,
-manual cleanup is required (delete the halt comment, cancel the
-follow-up issues, remove the blocked-by relations) — this spec
-considers that flow out of scope; file separately if it becomes a
-real workflow.
+The transition from advisory to halt at the same SHA is allowed,
+recorded by both comments existing on the issue, and the
+post-state contract holds because of the explicit state restore.
+The reverse transition (halt → advisory at same SHA) is not
+supported in autonomous mode, because once the halt path has filed
+follow-ups and posted the halt comment, the run is terminal. In
+interactive mode, if the user changes their mind after a halt
+comment was posted, manual cleanup is required (delete the halt
+comment, cancel the follow-up issues, remove the blocked-by
+relations) — this spec considers that flow out of scope; file
+separately if it becomes a real workflow.
 
 #### Implementation note for SKILL.md
 
@@ -539,10 +614,16 @@ No other files are touched.
 5. **Add the new "Halt path" subsection** under Step 5. Include:
    - The autonomous-mode env-var detection snippet.
    - The interactive-mode prompt block.
-   - The provenance-key construction.
-   - The reconcile-or-create algorithm (issues + relations).
+   - The provenance-key construction over the canonical tuple
+     (file + line span + rule id + title), not body alone.
+   - The reconcile-or-create algorithm (issues + relations; the
+     relation half is unconditional because `relation add` is
+     idempotent on Linear).
    - The halt comment template with `HALT_MARKER`.
    - The halt-path dedup pre-check.
+   - The `In Progress` post-state restore (conditional write,
+     guards against the regular-then-halt same-SHA case where
+     the prior run advanced the issue to `In Review`).
 6. **Update the "Red Flags / When to Stop"** section with the
    clarifying note about halt being a legitimate exit.
 7. **Update the top-of-file checklist** to reflect the new Step 5
@@ -565,12 +646,14 @@ No other files are touched.
   - The autonomous-mode detection contract via
     `SENSIBLE_RALPH_AUTONOMOUS` (or equivalent reused variable).
   - The interactive-mode prompt block.
-  - The per-finding provenance-key construction.
-  - The reconcile-or-create algorithm for both follow-up issues
-    and `blocked-by` relations.
-  - The four-step execution order (reconcile-or-create issues,
-    reconcile-or-add relations, post halt comment with dedup
-    pre-check, exit clean).
+  - The per-finding provenance-key construction over a canonical
+    tuple (file + line span + rule id + title), 16-hex truncated
+    SHA-256.
+  - The reconcile-or-create algorithm for follow-up issues, and
+    unconditional idempotent `blocked-by` relation add.
+  - The five-step execution order (reconcile-or-create issues,
+    add relations, post halt comment with dedup pre-check,
+    restore `In Progress` post-state, exit clean).
 - Step 6's dedup marker is updated to `REGULAR_MARKER`
   (`'Posted by \`/prepare-for-review\` for revision \`%s\`'`).
 - The halt-path dedup snippet uses the disjoint `HALT_MARKER`
@@ -621,6 +704,17 @@ separate follow-ups if/when needed:
   practice. Generalizing the halt to those steps is unused mass.
 - **Manual dogfood test** of the halt path. File a separate ticket
   if the codex review of this spec recommends one.
+- **Concurrent-retry safety** of the reconcile-or-create loop. The
+  spec assumes single-flight execution: one `/prepare-for-review`
+  invocation per issue at a time. The orchestrator processes its
+  queue serially (per `docs/design/orchestrator.md`), so two
+  autonomous dispatches against the same issue cannot race. The
+  user manually invoking `/prepare-for-review` twice in parallel
+  on the same issue is not a known failure mode in this workspace,
+  and adding a server-enforced uniqueness mechanism (a Linear-side
+  lock or atomic check-and-create) is out of proportion to the
+  exposure. If concurrent re-entry becomes a real failure mode
+  later, file separately and revisit.
 
 ## Testing
 
