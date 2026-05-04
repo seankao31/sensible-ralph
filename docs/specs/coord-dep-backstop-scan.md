@@ -546,13 +546,17 @@ SKILL.md prose + design doc land in one commit/PR.
   full bundle; sub-step 3 candidate filter leaves the candidate
   list empty; sub-step 2 fast-path emits the same one-line summary and
   proceeds.
-* **A peer's description is empty (somehow passed Step 1's PRD
-  check at 200 chars).** Reasoning prompt receives an empty
-  description; Claude cannot reason about its file-touch surface.
-  Surface to the operator: `step 2: ENG-A has empty description;
-  cannot scan for overlaps. Skip and continue?` Operator chooses:
-  skip (treat the peer as "no overlaps" for this run, document
-  with a stderr warning that it was skipped) or abort.
+* **A peer's description is structurally thin** (200+ chars but
+  no concrete file-touch information — e.g., headings only, vague
+  prose). Step 1's PRD check has already passed by definition;
+  Step 2 cannot enrich. Reasoning prompt receives the thin
+  content; Claude either reports no overlaps for that peer
+  (correct outcome — the spec doesn't tell the scan what files it
+  touches) or asks for clarification. The skill should treat a
+  reasoning-time "I can't tell what this peer touches" as a
+  no-overlap result for that peer's pairs and continue. The
+  operator's recourse is to amend the spec via `/sr-spec` re-spec
+  if it turns out the peer DOES collide with something.
 * **Linear API failure mid-helper.** Helper exits 1, stderr names
   the offending issue. Operator chooses: retry, skip Step 2
   (proceed to Step 3 — ENG-280 covered most edges already at
