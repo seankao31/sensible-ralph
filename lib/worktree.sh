@@ -36,122 +36,190 @@ worktree_create_at_base() {
 # each parent branch. Callers must source lib/scope.sh before invoking this
 # function so the env var is set; orchestrator.sh and dag_base.sh both do this
 # via the conditional SENSIBLE_RALPH_SCOPE_LOADED gate.
-# Conflict handling depends on parent count:
-#   - Single parent: leaves conflicts in-place — the dispatched agent resolves
-#     them. The `sr-implement` skill tells it to handle conflicts before
-#     implementing the feature.
-#   - Multi-parent: fails fast with `git merge --abort`. After a conflict on
-#     parent N, git refuses subsequent merges (MERGING state). Returning 0
-#     would leave the worktree with parent N's conflicts but parents N+1, N+2,
-#     ... silently NOT merged — the dispatched agent has no signal that those
-#     parents exist, so it would resolve N's conflicts and dispatch against an
-#     incomplete integration. Failing fast forces the operator to resolve the
-#     scope conflict (on the trunk branch, or by re-sequencing parents) before dispatch.
+#
+# Conflict handling: leaves conflicts in-place and returns 0. Writes a marker
+# file at <path>/.sensible-ralph-pending-merges listing the FULL ORIGINAL
+# parent list pinned to commit SHAs. The dispatched session reads the marker,
+# resolves conflicts, completes the in-progress merge, and re-invokes
+# worktree_merge_parents with the marker SHAs to drain remaining parents.
+# See docs/design/worktree-contract.md "Pending parent merges".
+#
+# Each parent arg may be either a ref name (resolved against refs/heads then
+# refs/remotes/origin) or a 40-char hex SHA. The helper resolves each to a
+# (sha, display) tuple before merging; the marker write uses the SHAs so
+# retries merge the same commits even if the named refs advance.
+#
 # $1: path      — absolute path where the worktree should be created
 # $2: branch    — new branch name
-# $3+: parents  — parent branches to merge sequentially
+# $3+: parents  — parent refs (or SHAs) to merge sequentially
 worktree_create_with_integration() {
   local path="$1" branch="$2"
   shift 2
   local parents=("$@")
   local parent_count="${#parents[@]}"
+  local marker_path="$path/.sensible-ralph-pending-merges"
 
-  # Validate all parent refs before creating any state. Accept either a local
-  # head or a remote-tracking ref under origin/ — on a fresh clone, review
-  # branches are typically present only via `git fetch` without a local head.
-  # The resolved ref name (local short-name or "origin/<branch>") is recorded
-  # in parallel so the merge step is unambiguous.
-  local resolved_refs=()
-  local parent
-  for parent in "${parents[@]}"; do
-    if git show-ref --verify --quiet "refs/heads/$parent"; then
-      resolved_refs+=("$parent")
-    elif git show-ref --verify --quiet "refs/remotes/origin/$parent"; then
-      resolved_refs+=("origin/$parent")
+  # Resolve each parent into a (sha, display) tuple. Worktree doesn't exist
+  # yet, so resolution runs against the calling repo's git context — worktrees
+  # share the object store, so the resolved SHAs are reachable from $path
+  # once `git worktree add` runs.
+  local resolved_shas=()
+  local display_refs=()
+  local arg sha display
+  for arg in "${parents[@]}"; do
+    if [[ "$arg" =~ ^[0-9a-f]{40}$ ]] && git cat-file -e "${arg}^{commit}" 2>/dev/null; then
+      sha="$arg"
+      display="$arg"
+    elif git show-ref --verify --quiet "refs/heads/$arg"; then
+      sha="$(git rev-parse "$arg")"
+      display="$arg"
+    elif git show-ref --verify --quiet "refs/remotes/origin/$arg"; then
+      sha="$(git rev-parse "origin/$arg")"
+      display="origin/$arg"
     else
-      printf 'worktree_create_with_integration: parent ref not found locally or under origin/: %s\n' "$parent" >&2
+      printf 'worktree_create_with_integration: parent ref not found: %s\n' "$arg" >&2
       return 1
     fi
+    resolved_shas+=("$sha")
+    display_refs+=("$display")
   done
 
   git worktree add "$path" -b "$branch" "${SENSIBLE_RALPH_DEFAULT_BASE_BRANCH}"
 
-  local i merge_ref
+  local i
   for (( i = 0; i < parent_count; i++ )); do
-    merge_ref="${resolved_refs[$i]}"
-    git -C "$path" merge "$merge_ref" --no-edit && continue
+    sha="${resolved_shas[$i]}"
+    display="${display_refs[$i]}"
+    # Skip if already an ancestor — re-runs after partial drain land here.
+    if git -C "$path" merge-base --is-ancestor "$sha" HEAD 2>/dev/null; then
+      continue
+    fi
+    git -C "$path" merge "$sha" --no-edit && continue
     # Merge exited non-zero. Was it a conflict (expected) or something else (error)?
     local unmerged
     unmerged="$(git -C "$path" diff --name-only --diff-filter=U)"
     if [[ -n "$unmerged" ]]; then
-      if [[ "$parent_count" -eq 1 ]]; then
-        # Single parent: leave conflicts in place for the agent to resolve
-        return 0
-      fi
-      # Multi-parent: abort and fail. Subsequent parents can't be silently dropped.
-      git -C "$path" merge --abort 2>/dev/null || true
-      printf 'worktree_create_with_integration: multi-parent merge conflict on %s — cannot continue (subsequent parents would be silently dropped). Resolve in main or re-sequence parents.\n' "$merge_ref" >&2
-      return 1
+      _worktree_write_pending_marker "$marker_path" resolved_shas display_refs
+      return 0
     else
-      printf 'worktree_create_with_integration: merge failed for parent %s\n' "$merge_ref" >&2
+      printf 'worktree_create_with_integration: merge failed for parent %s\n' "$display" >&2
       return 1
     fi
   done
+
+  # Clean drain — every parent merged or skipped via ancestor check. Remove
+  # any prior marker (rm -f is safe whether the marker existed or not).
+  rm -f "$marker_path"
+  return 0
 }
 
 # Merge a list of parent branches into the current HEAD of $path's worktree,
-# in order. Skips parents already in ancestry (no-op merge). Conflict policy
-# mirrors worktree_create_with_integration:
-#   - single parent: leave conflicts in place for the agent to resolve, return 0
-#   - multi-parent: abort and return non-zero so subsequent parents aren't
-#     silently dropped
-# Accepts either a local head or a remote-tracking ref under origin/ for each
-# parent (matching worktree_create_at_base / _with_integration).
+# in order. Conflict semantics mirror worktree_create_with_integration: leaves
+# conflicts in-place, writes the .sensible-ralph-pending-merges marker, and
+# returns 0. The session resolves and re-invokes; idempotence comes from the
+# in-loop ancestor-skip.
+#
+# Each parent arg may be a ref name (resolved against refs/heads then
+# refs/remotes/origin) or a 40-char hex SHA — the latter is what the marker
+# stores, so re-invocations with marker contents merge the same commits even
+# if the named refs have advanced.
+#
+# Zero-parent invocation:
+#   - marker absent → no-op success (return 0). The post-loop rm -f is a
+#     no-op and the worktree is untouched.
+#   - marker present → REFUSE (return 1). A stale marker from a prior failed
+#     dispatch surfaces as orchestrator setup_failed rather than being
+#     silently obliterated by a cleanup-only rm -f.
+#
 # $1: path     — worktree path (must already exist)
-# $2+: parents — ordered list of parent branch names (zero is a no-op success)
+# $2+: parents — ordered list of parent refs / SHAs (zero-parent shape above)
 worktree_merge_parents() {
   local path="$1"
   shift
   local parents=("$@")
   local parent_count="${#parents[@]}"
-  if [ "$parent_count" -eq 0 ]; then
-    return 0
+  local marker_path="$path/.sensible-ralph-pending-merges"
+
+  # Marker-aware zero-parent guard. Defends against a session that derived
+  # an empty SHA list from a corrupt marker and called the helper with no
+  # args — which would otherwise hit the post-loop rm -f and silently drop
+  # the pending list. Session-side strict marker validation is the primary
+  # check (see /sr-implement Step 2); this is defense in depth.
+  if [ "$parent_count" -eq 0 ] && [ -f "$marker_path" ]; then
+    printf 'worktree_merge_parents: refusing zero-parent invocation while marker exists at %s\n' "$marker_path" >&2
+    return 1
   fi
 
-  local resolved_refs=()
-  local parent
-  for parent in "${parents[@]}"; do
-    if git -C "$path" show-ref --verify --quiet "refs/heads/$parent"; then
-      resolved_refs+=("$parent")
-    elif git -C "$path" show-ref --verify --quiet "refs/remotes/origin/$parent"; then
-      resolved_refs+=("origin/$parent")
+  # Resolve each parent into a (sha, display) tuple.
+  local resolved_shas=()
+  local display_refs=()
+  local arg sha display
+  for arg in "${parents[@]}"; do
+    if [[ "$arg" =~ ^[0-9a-f]{40}$ ]] && git -C "$path" cat-file -e "${arg}^{commit}" 2>/dev/null; then
+      sha="$arg"
+      display="$arg"
+    elif git -C "$path" show-ref --verify --quiet "refs/heads/$arg"; then
+      sha="$(git -C "$path" rev-parse "$arg")"
+      display="$arg"
+    elif git -C "$path" show-ref --verify --quiet "refs/remotes/origin/$arg"; then
+      sha="$(git -C "$path" rev-parse "origin/$arg")"
+      display="origin/$arg"
     else
-      printf 'worktree_merge_parents: parent ref not found locally or under origin/: %s\n' "$parent" >&2
+      printf 'worktree_merge_parents: parent ref not found: %s\n' "$arg" >&2
+      return 1
+    fi
+    resolved_shas+=("$sha")
+    display_refs+=("$display")
+  done
+
+  local i
+  for (( i = 0; i < parent_count; i++ )); do
+    sha="${resolved_shas[$i]}"
+    display="${display_refs[$i]}"
+    if git -C "$path" merge-base --is-ancestor "$sha" HEAD 2>/dev/null; then
+      continue
+    fi
+    git -C "$path" merge "$sha" --no-edit && continue
+    local unmerged
+    unmerged="$(git -C "$path" diff --name-only --diff-filter=U)"
+    if [[ -n "$unmerged" ]]; then
+      _worktree_write_pending_marker "$marker_path" resolved_shas display_refs
+      return 0
+    else
+      printf 'worktree_merge_parents: merge failed for parent %s\n' "$display" >&2
       return 1
     fi
   done
 
-  local i merge_ref
-  for (( i = 0; i < parent_count; i++ )); do
-    merge_ref="${resolved_refs[$i]}"
-    # Skip if already an ancestor — no-op merge.
-    if git -C "$path" merge-base --is-ancestor "$merge_ref" HEAD 2>/dev/null; then
-      continue
-    fi
-    git -C "$path" merge "$merge_ref" --no-edit && continue
-    local unmerged
-    unmerged="$(git -C "$path" diff --name-only --diff-filter=U)"
-    if [[ -n "$unmerged" ]]; then
-      if [[ "$parent_count" -eq 1 ]]; then
-        return 0
-      fi
-      git -C "$path" merge --abort 2>/dev/null || true
-      printf 'worktree_merge_parents: multi-parent merge conflict on %s — cannot continue (subsequent parents would be silently dropped). Resolve in main or re-sequence parents.\n' "$merge_ref" >&2
-      return 1
-    else
-      printf 'worktree_merge_parents: merge failed for parent %s\n' "$merge_ref" >&2
-      return 1
-    fi
+  rm -f "$marker_path"
+  return 0
+}
+
+# Write the .sensible-ralph-pending-merges marker file. Each line is
+# "<sha> <display>" — the SHA is the authoritative pinning, the display ref
+# is informational for log readability. The marker captures the caller's
+# COMPLETE original parent list (including parents already skipped via the
+# ancestor check this run), in original order.
+#
+# Args (all required):
+#   $1               marker file path
+#   $2 (nameref)     name of the resolved-SHAs array
+#   $3 (nameref)     name of the display-refs array
+#
+# Bash 4.3+ namerefs (`local -n`) are not available in bash 3.2 (macOS
+# default), so we eval the array expansions explicitly.
+_worktree_write_pending_marker() {
+  local marker_path="$1"
+  local shas_var="$2"
+  local displays_var="$3"
+  local count
+  eval "count=\${#${shas_var}[@]}"
+  local i sha display
+  : > "$marker_path"
+  for (( i = 0; i < count; i++ )); do
+    eval "sha=\${${shas_var}[\$i]}"
+    eval "display=\${${displays_var}[\$i]}"
+    printf '%s %s\n' "$sha" "$display" >> "$marker_path"
   done
 }
 

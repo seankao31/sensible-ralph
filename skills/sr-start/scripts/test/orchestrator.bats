@@ -1378,8 +1378,152 @@ CLAUDESH
   local current_head; current_head="$(git -C "$wt_path" rev-parse HEAD)"
   [ "$current_head" = "$spec_head" ]
 
+  # ENG-282: marker file present with one SHA line for the conflicting parent.
+  [ -f "$wt_path/.sensible-ralph-pending-merges" ]
+  local marker_lines; marker_lines="$(wc -l < "$wt_path/.sensible-ralph-pending-merges" | tr -d ' ')"
+  [ "$marker_lines" -eq 1 ]
+  local marker_sha; marker_sha="$(awk '{print $1}' "$wt_path/.sensible-ralph-pending-merges")"
+  local parent_sha; parent_sha="$(git -C "$REPO_DIR" rev-parse "eng-281-parent-conflict")"
+  [ "$marker_sha" = "$parent_sha" ]
+
   # Linear: In Progress was set; claude was dispatched once
   grep -qF "set_state ENG-301 In Progress" "$STUB_LINEAR_CALLS_FILE"
+  local invocations; invocations="$(wc -l < "$STUB_CLAUDE_ARGS_FILE" | tr -d ' ')"
+  [ "$invocations" -eq 1 ]
+}
+
+# ---------------------------------------------------------------------------
+# ENG-282: reuse path with TWO conflicting parents. Helper now leaves
+# conflicts in place (was: aborts + setup_failed) and writes the
+# .sensible-ralph-pending-merges marker. Dispatch proceeds; base-sha = spec
+# HEAD (pre-merge). The dispatched session resolves the marker per
+# /sr-implement Step 2.
+# ---------------------------------------------------------------------------
+@test "reuse path multi-parent conflict: MERGING state, marker file written, base-sha = pre-merge spec HEAD, dispatched" {
+  export STUB_CLAUDE_EXIT=0
+
+  # Two parents both conflicting with the worktree's spec commit on
+  # conflict.txt. The branchpoint (main) does NOT add conflict.txt; both
+  # parents add it independently → add/add conflict on each parent merge.
+  git -C "$REPO_DIR" checkout -b eng-282-parent-a -q
+  echo "parent A" > "$REPO_DIR/conflict.txt"
+  git -C "$REPO_DIR" add conflict.txt
+  git -C "$REPO_DIR" commit -m "parent A" -q
+  git -C "$REPO_DIR" checkout main -q
+
+  git -C "$REPO_DIR" checkout -b eng-282-parent-b -q
+  echo "parent B" > "$REPO_DIR/parent-b-only.txt"
+  git -C "$REPO_DIR" add parent-b-only.txt
+  git -C "$REPO_DIR" commit -m "parent B" -q
+  git -C "$REPO_DIR" checkout main -q
+
+  local sha_a; sha_a="$(git -C "$REPO_DIR" rev-parse "eng-282-parent-a")"
+  local sha_b; sha_b="$(git -C "$REPO_DIR" rev-parse "eng-282-parent-b")"
+
+  # Pre-create issue branch+worktree with a conflicting spec commit.
+  local wt_path="$REPO_DIR/.worktrees/eng-302"
+  git -C "$REPO_DIR" worktree add "$wt_path" -b "eng-302" -q
+  echo "spec version" > "$wt_path/conflict.txt"
+  git -C "$wt_path" add conflict.txt
+  git -C "$wt_path" commit -m "spec conflict commit" -q
+  local spec_head; spec_head="$(git -C "$wt_path" rev-parse HEAD)"
+
+  export STUB_DAG_BASE_ENG_302="INTEGRATION eng-282-parent-a eng-282-parent-b"
+  export STUB_CLAUDE_ISSUE_ID="ENG-302"
+
+  local q; q="$(write_queue ENG-302)"
+  run_orch "$q"
+
+  [ "$status" -eq 0 ]
+
+  # Outcome is NOT setup_failed — the helper now returns 0 with the marker.
+  local outcome; outcome="$(jq -r '.[] | select(.issue == "ENG-302" and .event == "end") | .outcome' < "$REPO_DIR/.sensible-ralph/progress.json")"
+  [ "$outcome" != "setup_failed" ]
+
+  # Worktree is in MERGING state — conflict markers from parent A's merge.
+  [ -d "$wt_path" ]
+  run git -C "$wt_path" diff --name-only --diff-filter=U
+  [ -n "$output" ]
+
+  # Marker file present with both SHAs in original order.
+  [ -f "$wt_path/.sensible-ralph-pending-merges" ]
+  local marker_lines; marker_lines="$(wc -l < "$wt_path/.sensible-ralph-pending-merges" | tr -d ' ')"
+  [ "$marker_lines" -eq 2 ]
+  local s1; s1="$(awk 'NR==1 {print $1}' "$wt_path/.sensible-ralph-pending-merges")"
+  local s2; s2="$(awk 'NR==2 {print $1}' "$wt_path/.sensible-ralph-pending-merges")"
+  [ "$s1" = "$sha_a" ]
+  [ "$s2" = "$sha_b" ]
+
+  # Base-sha = pre-merge spec HEAD (HEAD has not advanced).
+  local recorded_sha; recorded_sha="$(cat "$wt_path/.sensible-ralph-base-sha")"
+  [ "$recorded_sha" = "$spec_head" ]
+
+  # Linear: In Progress was set; claude was dispatched once.
+  grep -qF "set_state ENG-302 In Progress" "$STUB_LINEAR_CALLS_FILE"
+  local invocations; invocations="$(wc -l < "$STUB_CLAUDE_ARGS_FILE" | tr -d ' ')"
+  [ "$invocations" -eq 1 ]
+}
+
+# ---------------------------------------------------------------------------
+# ENG-282: create-path INTEGRATION multi-parent conflict — same shape as
+# the reuse-path test above, but with no pre-existing branch+worktree. The
+# orchestrator's create branch (worktree_create_with_integration) creates
+# the worktree at trunk and merges parents; on conflict it leaves the
+# worktree in place with the marker, no setup_failed.
+# ---------------------------------------------------------------------------
+@test "create path INTEGRATION multi-parent conflict: marker written, dispatched" {
+  export STUB_CLAUDE_EXIT=0
+
+  # Parent A conflicts with main on conflict.txt.
+  git -C "$REPO_DIR" checkout -b eng-282-cp-a -q
+  echo "A version" > "$REPO_DIR/conflict.txt"
+  git -C "$REPO_DIR" add conflict.txt
+  git -C "$REPO_DIR" commit -m "A" -q
+  git -C "$REPO_DIR" checkout main -q
+
+  echo "main version" > "$REPO_DIR/conflict.txt"
+  git -C "$REPO_DIR" add conflict.txt
+  git -C "$REPO_DIR" commit -m "main conflict" -q
+
+  # Parent B has unique content; the marker must list both.
+  git -C "$REPO_DIR" checkout -b eng-282-cp-b -q
+  echo "b-only" > "$REPO_DIR/b-only.txt"
+  git -C "$REPO_DIR" add b-only.txt
+  git -C "$REPO_DIR" commit -m "B" -q
+  git -C "$REPO_DIR" checkout main -q
+
+  local sha_a; sha_a="$(git -C "$REPO_DIR" rev-parse "eng-282-cp-a")"
+  local sha_b; sha_b="$(git -C "$REPO_DIR" rev-parse "eng-282-cp-b")"
+
+  export STUB_DAG_BASE_ENG_303="INTEGRATION eng-282-cp-a eng-282-cp-b"
+  export STUB_CLAUDE_ISSUE_ID="ENG-303"
+
+  local q; q="$(write_queue ENG-303)"
+  run_orch "$q"
+
+  [ "$status" -eq 0 ]
+
+  # Outcome is NOT setup_failed.
+  local outcome; outcome="$(jq -r '.[] | select(.issue == "ENG-303" and .event == "end") | .outcome' < "$REPO_DIR/.sensible-ralph/progress.json")"
+  [ "$outcome" != "setup_failed" ]
+
+  local wt_path="$REPO_DIR/.worktrees/eng-303"
+  [ -d "$wt_path" ]
+
+  # Worktree in MERGING state with conflict markers.
+  run git -C "$wt_path" diff --name-only --diff-filter=U
+  [ -n "$output" ]
+
+  # Marker has 2 SHA lines in original order.
+  [ -f "$wt_path/.sensible-ralph-pending-merges" ]
+  local marker_lines; marker_lines="$(wc -l < "$wt_path/.sensible-ralph-pending-merges" | tr -d ' ')"
+  [ "$marker_lines" -eq 2 ]
+  local s1; s1="$(awk 'NR==1 {print $1}' "$wt_path/.sensible-ralph-pending-merges")"
+  local s2; s2="$(awk 'NR==2 {print $1}' "$wt_path/.sensible-ralph-pending-merges")"
+  [ "$s1" = "$sha_a" ]
+  [ "$s2" = "$sha_b" ]
+
+  grep -qF "set_state ENG-303 In Progress" "$STUB_LINEAR_CALLS_FILE"
   local invocations; invocations="$(wc -l < "$STUB_CLAUDE_ARGS_FILE" | tr -d ' ')"
   [ "$invocations" -eq 1 ]
 }
