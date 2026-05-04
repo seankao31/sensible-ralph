@@ -580,12 +580,15 @@ for child in $children; do
 
     # Pre-existing parent (operator added it manually between
     # scan and write loop, OR an earlier-iteration of the gate
-    # already accepted and committed it). Skip silently — no
-    # relation-add needed, no audit-set membership. The
-    # operator's manual edge keeps whatever classification they
-    # gave it (semantic, prior coord-dep, etc.); Step 2 does
-    # NOT overwrite that.
+    # already accepted and committed it). Skip the relation-add
+    # call — no audit-set membership. The operator's manual edge
+    # keeps whatever classification they gave it (semantic,
+    # prior coord-dep, etc.); Step 2 does NOT overwrite that.
+    # Log a WARN line naming the pair so the operator sees the
+    # race occurred — useful for diagnosing why /close-issue's
+    # cleanup later doesn't auto-remove this relation.
     if printf '%s\n' "$INITIAL_BLOCKERS" | grep -qx "$parent"; then
+      echo "step 2: WARN — accepted edge $child blocked-by $parent was added concurrently (pre-existing in INITIAL_BLOCKERS); Step 2 will not claim audit authority over it. The relation stays as-is in Linear with whatever classification the operator gave it." >&2
       continue
     fi
 
@@ -1099,6 +1102,27 @@ Surfaced now and explicitly accepted as v1 trade-offs.
   push leaves the issue in `In Design` (not Approved) and the
   scan never sees it. Future fix: switch both ENG-280 and
   ENG-281 to worktree source if drift is observed.
+* **Concurrent-add race during operator gate.** If between
+  scan-time (sub-step 2's helper invocation) and write-time
+  (sub-step 6's `linear issue relation add`) someone — the
+  operator themselves, a teammate, or another tool — adds the
+  same `blocked-by` relation that the gate accepted, sub-step 6
+  detects the parent already in `INITIAL_BLOCKERS` and skips
+  the relation-add. The accepted edge does NOT make it into the
+  audit comment, does NOT become an orphan, and does NOT get
+  the `ralph-coord-dep` label authority. The relation stays in
+  Linear as the operator's manual edge — keeping whatever
+  classification the operator gave it (semantic, prior coord-
+  dep, anything else). `/close-issue` cleanup won't auto-
+  delete it; the operator can manually delete it if they want.
+  Step 2 emits a stderr WARN line at write time naming the
+  affected pair so the race is observable. Mitigation: rare;
+  the operator gate window is seconds-to-minutes. Future fix:
+  extend ENG-280's `coord-dep-audit` JSON shape with a
+  `newly_added_parents` field so cleanup can distinguish
+  Step 2-claimed authority from operator-manual relations
+  carried in the audit comment for observability — would
+  require coordinated change to `cleanup_coord_dep.sh`.
 * **Audit-comment UI deletion after Step 2 exit produces orphan
   relations.** If the operator deletes a `coord-dep-audit`
   comment via Linear UI later (between Step 2 exit and
