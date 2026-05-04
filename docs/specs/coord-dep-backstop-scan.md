@@ -185,7 +185,7 @@ without needing to inspect directories.
 * Empty Approved set OR singleton Approved set → emit valid JSON
   with the (possibly empty or singleton) `approved` array, exit 0.
   The helper does NOT short-circuit "fewer than 2 peers" itself;
-  the skill prose handles the fast-path message in Step 2 sub-step 2.
+  the skill prose handles the fast-path message in Step 2 sub-step 3.
 
 **Cost note in the script's header comment:** O(N) Linear CLI calls
 per scan, where N = Approved-set size. Each peer is two CLI calls
@@ -201,11 +201,12 @@ prose compute the candidate set as part of constructing the
 reasoning prompt, with the filter visible in the conversation
 transcript.
 
-### 2. Step 2 sub-steps 1–2 — invocation, fast paths
+### 2. Step 2 sub-steps 1–3 — recovery, invocation, fast paths
 
 The new Step 2 of `skills/sr-start/SKILL.md` documents the following
-sub-step sequence in prose. Sub-steps 1–2 are setup; 3–4 are
-reasoning + operator gate; 5–6 are writes + verification.
+sub-step sequence in prose. Sub-step 1 is recovery from any prior
+run's partial-write residue; 2–3 are setup; 4–5 are reasoning +
+operator gate; 6–7 are writes + verification.
 
 No just-in-time label-existence check sits inside Step 2 itself.
 ENG-280's `preflight_labels.sh::preflight_labels_check` already
@@ -213,7 +214,90 @@ includes `CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL` in `required_vars`,
 so Step 1 (`preflight_scan.sh`) is guaranteed to abort the run
 before Step 2 begins if the workspace label is missing.
 
-**Sub-step 1 — run the helper.**
+**Sub-step 1 — orphan-relation recovery from prior runs.**
+
+The recovery file `<repo>/.sensible-ralph/coord-dep-recovery.json`
+records `(child, parent, rationale)` triples whose relation-add
+landed in Linear during a prior `/sr-start` Step 2 but whose audit
+comment did NOT (per-edge abort, per-comment partial-rollback). The
+file is the **durable provenance record** that makes orphan
+recovery survive across runs — without it, the next scan's
+covered-pairs filter (sub-step 4) would see the orphan relation in
+`existing_blockers` and fast-path the pair, leaving the relation
+unauditable for `/close-issue` cleanup forever.
+
+Schema:
+
+```json
+{
+  "orphans": [
+    {
+      "child": "ENG-A",
+      "parent": "ENG-B",
+      "rationale": "<one-line text from the original gate decision>",
+      "added_at": "2026-05-04T12:00:00Z"
+    }
+  ]
+}
+```
+
+Path: `<repo-root>/.sensible-ralph/coord-dep-recovery.json`. The
+`.sensible-ralph/` directory is gitignored repo-wide. It is
+typically created by `orchestrator.sh` (Step 5) and `build_queue.sh`
+(Step 3) via their existing `mkdir -p` calls, but on a first-ever
+`/sr-start` run those scripts haven't executed yet by the time
+sub-step 5/7 might need to write the recovery file. Skill prose
+must `mkdir -p "$REPO_ROOT/.sensible-ralph"` before the first
+write; subsequent runs find the directory already in place.
+
+Recovery flow (run before sub-step 2's helper invocation):
+
+```bash
+RECOVERY_FILE="$REPO_ROOT/.sensible-ralph/coord-dep-recovery.json"
+if [[ -f "$RECOVERY_FILE" ]]; then
+  if ! jq -e 'type == "object" and has("orphans") and (.orphans | type == "array")' \
+       "$RECOVERY_FILE" >/dev/null 2>&1; then
+    echo "step 2: $RECOVERY_FILE is malformed — operator must inspect or remove before re-running" >&2
+    # Operator chooses: abort, or rm the file (acknowledging that
+    # recovery information is lost; manual orphan-inspection
+    # required).
+    exit 1
+  fi
+
+  orphan_count=$(jq '.orphans | length' "$RECOVERY_FILE")
+  if [[ "$orphan_count" -gt 0 ]]; then
+    echo "step 2: $orphan_count orphan relation(s) from prior run(s) need audit-comment repair" >&2
+    # Group orphans by child; for each child, attempt to compose
+    # and post the audit comment now (idempotent — if a comment
+    # already exists from a prior repair attempt, posting another
+    # is harmless; cleanup unions over all matching audit blocks).
+    # On per-child success, remove that child's entries from the
+    # file. On failure, keep entries and surface to operator at
+    # end of recovery sub-step.
+    ...
+  fi
+fi
+```
+
+The repair attempt is the same compose-and-post sequence sub-step
+6 uses for fresh writes, just operating on triples loaded from the
+file rather than from the gate. After repair:
+
+* All orphans for child X repaired → remove X's entries from
+  `$RECOVERY_FILE`. If `$RECOVERY_FILE.orphans` becomes empty,
+  delete the file.
+* Some orphans for child X failed repair (Linear API failure,
+  comment-post error) → keep X's entries; surface to operator;
+  proceed with normal scan (the unrepaired relations are still in
+  `existing_blockers`, sub-step 4 will fast-path them, but the
+  operator now has a visible record they can act on next run).
+* Any operator abort during recovery → exit Step 2; do NOT
+  proceed to Step 3.
+
+Recovery completes BEFORE the helper runs. If the file is empty or
+absent (the common path), recovery is a no-op.
+
+**Sub-step 2 — run the helper.**
 
 ```bash
 SCAN_JSON=$("$SKILL_DIR/scripts/coord_dep_backstop_scan.sh") || {
@@ -223,18 +307,18 @@ SCAN_JSON=$("$SKILL_DIR/scripts/coord_dep_backstop_scan.sh") || {
 }
 ```
 
-**Sub-step 2 — trivial fast paths.**
+**Sub-step 3 — trivial fast paths.**
 
 * If `.approved | length` is 0 or 1 (no pairs possible): emit
   `step 2: No coordination dependencies detected.` and proceed
   directly to Step 3.
-* If after candidate-pair filtering (sub-step 3) every pair is
+* If after candidate-pair filtering (sub-step 4) every pair is
   already covered by `existing_blockers`: emit the same one-line
   summary and proceed.
 
 Both empty-output paths satisfy acceptance criterion 5.
 
-### 3. Step 2 sub-step 3 — reasoning over the bundle
+### 3. Step 2 sub-step 4 — reasoning over the bundle
 
 Skill prose constructs the reasoning prompt from `SCAN_JSON`. The
 prose is responsible for:
@@ -270,37 +354,52 @@ prose is responsible for:
    2. **Interface-before-use, one-sided:** exactly one spec
       introduces an identifier (function, env var, config key,
       label name) the other consumes. The introducer is parent.
-   3. **Mixed signals — both sides have rename or
-      interface-introduction evidence in conflicting directions
-      (mutual rename of different files; both introduce
-      identifiers the other consumes; one-side rename vs. other-
-      side interface):** numeric-suffix tiebreaker — the smaller
-      Linear-ID suffix is parent. The rationale MUST enumerate
-      the conflicting evidence on both sides ("ENG-A renames X
-      while ENG-B introduces interface Y; tied on rename/interface
-      heuristics, smaller suffix wins direction") so the operator
-      sees that the choice was a tiebreak, not an asymmetry.
-   4. **Symmetric same-section collision** (both edit the same
-      section of the same file with no rename/interface
-      evidence): numeric-suffix tiebreaker. Same rationale style
-      as case 3.
+   3. **All other surfaced overlaps:** numeric-suffix tiebreaker
+      — the smaller Linear-ID suffix is parent. This rule is the
+      unconditional final fallback and explicitly covers:
+      * Mutual renames (both rename, of any files).
+      * Mutual interface introductions (both introduce
+        identifiers the other consumes).
+      * Mixed conflicting rename/interface evidence (one side
+        renames, other side introduces).
+      * Same-section path collisions with no rename/interface
+        signal.
+      * **Identifier-only collisions where neither side
+        introduces** (both modify an existing config key, env
+        var, or function contract; both reference a shared
+        identifier without claiming ownership). This subclass
+        deserves a callout because it doesn't fit the rename-or-
+        introduce mental model — when neither spec asserts "I
+        own this," there's no semantic basis for direction at
+        all.
+      * Any other overlap the reasoning prompt surfaces that
+        rules 1 and 2 do not match.
 
-   The numeric-suffix tiebreaker (rules 3 and 4) is the
-   unconditional fallback for any case where rules 1 and 2 do not
-   cleanly apply. Two reasoning passes over identical bundles
-   produce identical proposals because every rule reduces to a
-   deterministic function of the spec content.
+      The rationale MUST enumerate the evidence (rename, interface,
+      identifier-modification, section-collision) on both sides
+      so the operator sees the choice was a tiebreak, not an
+      asymmetry the reasoning failed to detect: e.g., `Both
+      modify CLAUDE_PLUGIN_OPTION_FOO; neither introduces it;
+      numeric-suffix tiebreaker (100 < 200).`
+
+   Two reasoning passes over identical bundles produce identical
+   proposals because every rule reduces to a deterministic
+   function of the spec content. Rule 3 is the catch-all by
+   design; if a future overlap category emerges that is genuinely
+   asymmetric and rule 3 produces an obviously-wrong direction,
+   add a higher-priority rule before rule 3 — never below.
 
    **Example mixed-signal pair** (for the reasoning prompt):
    suppose ENG-100 renames `lib/foo.sh` → `lib/internal/foo.sh`
    and ENG-200 introduces a new function `_foo_helper` in the
    same file's old path. Rule 1 fires for ENG-100 (renamer side);
    rule 2 fires for ENG-200 (interface-introducer side); they
-   point in opposite directions. Rule 3 takes over: smaller
-   suffix wins → ENG-100 is parent, ENG-200 is child. Rationale:
-   `Both restructure lib/foo.sh: ENG-100 renames the file,
-   ENG-200 adds _foo_helper. Heuristics conflict; numeric-suffix
-   tiebreaker (100 < 200).`
+   point in opposite directions. Rule 3 takes over (mixed
+   conflicting evidence is one of its enumerated subclasses):
+   smaller suffix wins → ENG-100 is parent, ENG-200 is child.
+   Rationale: `Both restructure lib/foo.sh: ENG-100 renames the
+   file, ENG-200 adds _foo_helper. Heuristics conflict;
+   numeric-suffix tiebreaker (100 < 200).`
 4. **One candidate per pair, even with multiple overlaps.** If A
    and B share a path AND a referenced identifier AND a rename, the
    proposed edge is **one** `blocked-by` relation with a multi-fact
@@ -316,7 +415,7 @@ ENG-280: "A script can flag that two specs reference the same path;
 only reasoning can judge whether the edits are in disjoint sections
 (safe to run in parallel) or logically coupled."
 
-### 4. Step 2 sub-step 4 — per-candidate operator gate
+### 4. Step 2 sub-step 5 — per-candidate operator gate
 
 Skill prose presents candidates one at a time. Per candidate:
 
@@ -333,14 +432,14 @@ Candidate edge: ENG-A → blocked-by ENG-B  (path-collide)
   always add the relation manually via Linear UI later; the next
   `/sr-start` will see it in `existing_blockers` and not re-prompt.
 * **abort** — stop the gate immediately. No Linear writes have
-  happened yet (writes are sub-step 5, after the gate completes).
+  happened yet (writes are sub-step 6, after the gate completes).
   Exit Step 2 with stderr `step 2: scan aborted by operator —
   dispatch halted`. Do NOT proceed to Step 3.
 
 **No `edit-rationale` option.** ENG-280 has it because finalize
 will commit the rationale to a Linear comment in the same atomic
 transaction; operators want to fix wording before commit. ENG-281's
-audit comment is composed by skill prose at write time (sub-step 5),
+audit comment is composed by skill prose at write time (sub-step 6),
 and the operator can edit the posted comment via Linear UI after
 the fact. Adding edit-rationale here would duplicate that fix-up
 window with no additional safety.
@@ -355,7 +454,7 @@ three-choice gate (accept/reject/edit-rationale ↔
 accept/reject/abort) for now and revisit if it bites in practice.
 See **Known limitations (v1)**.
 
-### 5. Step 2 sub-step 5 — per-child write loop (relations, comment, label)
+### 5. Step 2 sub-step 6 — per-child write loop (relations, comment, label)
 
 Run after the gate completes with non-empty `accepted_edges`. Group
 edges by child; iterate per child. The per-child sequence mirrors
@@ -437,7 +536,7 @@ for child in $children; do
   linear_add_label "$child" "$CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL" \
     || echo "step 2: failed to add coord-dep label to $child — continuing" >&2
 
-  # Per-child verify (sub-step 6).
+  # Per-child verify (sub-step 7).
   EXPECTED=$(printf '%s\n' "$INITIAL_BLOCKERS" "${committed_parents[@]}" \
     | sort -u)
   ACTUAL=$(linear_get_issue_blockers "$child" \
@@ -469,13 +568,22 @@ fails):
   dep (not PREREQS), so skip-this-edge is always safe here.
 * **abort** — stop the loop. Children processed before the failure
   are fully audited (their comments + labels landed). The current
-  child has partial relations without an audit comment — surface
-  the rollback recipe:
+  child has partial relations without an audit comment.
+  **Before exiting**, append each `(child, parent, rationale)`
+  triple in `committed_parents` for the current child to
+  `<repo>/.sensible-ralph/coord-dep-recovery.json` (per sub-step
+  1's schema). The next `/sr-start` reads this file at sub-step 1
+  and attempts repair (compose-and-post the audit comment from
+  the persisted rationale). Also surface the manual recovery
+  recipe inline so the operator knows what state Linear is in
+  right now:
   ```
   linear issue relation delete <child> blocked-by <parent>
   ```
   for each entry in `committed_parents` so far on the current
-  child. Do NOT proceed to Step 3.
+  child. The persisted recovery file is the durable signal; the
+  inline recipe is just for the operator's situational awareness.
+  Do NOT proceed to Step 3.
 
 **Per-comment failure choices** (when `linear issue comment add`
 fails after relations were added):
@@ -483,32 +591,37 @@ fails after relations were added):
 * **retry** — usually transient.
 * **rollback** — best-effort
   `linear issue relation delete "$child" blocked-by "$parent"`
-  for each entry in `committed_parents`; do NOT add label; do NOT
-  proceed to Step 3.
+  for each entry in `committed_parents`. **Re-fetch blockers**
+  after the delete sweep; for each parent still present
+  (delete failed for any reason), append the
+  `(child, parent, rationale)` triple to
+  `<repo>/.sensible-ralph/coord-dep-recovery.json` so the next
+  `/sr-start` can repair. Do NOT add label; do NOT proceed to
+  Step 3.
 
 **No `proceed-anyway` option.** ENG-280's analogous failure point
 offers proceed-anyway because ENG-280 keeps the issue in
 `In Design` with the transport file intact, so the next
 `/sr-spec` reloads and retries the comment-post — the orphan
-window is bounded by the next re-run. ENG-281 has no equivalent
-resume mechanism: once Step 2 exits, the pair is in
-`existing_blockers` and sub-step 3's covered-pairs filter
-fast-paths through it on every subsequent `/sr-start`, **forever**.
-That makes `proceed-anyway` permanently orphan-relation-prone
-specifically in `/sr-start`'s loop semantics. The retry path
-covers the typical transient-API-error case; rollback is the
-clean exit for unrecoverable comment failures. If retry won't
-land and rollback itself partially fails, the operator's manual
-recovery is to delete the orphan relations via Linear UI before
-re-running `/sr-start`.
+window is bounded by the next re-run. ENG-281's resume mechanism
+is the **durable recovery file** (`<repo>/.sensible-ralph/coord-
+dep-recovery.json`, see sub-step 1), but introducing
+`proceed-anyway` on top of recovery would only complicate the
+contract: the operator would have a manual-post step they might
+forget, separate from the auto-repair the next `/sr-start`
+already attempts. The retry path covers the typical transient-
+API-error case; rollback (with recovery-file fallback for
+delete failures) is the clean exit for unrecoverable comment
+failures. The recovery file makes orphan handling auto-repairing
+across runs.
 
 **Label-add failure** is log-and-continue — the comment is the
 load-bearing artifact for cleanup, not the label. The label is
 observational (filter discoverability in Linear UI).
 
-### 6. Step 2 sub-step 6 — per-child verification
+### 6. Step 2 sub-step 7 — per-child verification
 
-Inline at the end of each child's iteration in sub-step 5 (see
+Inline at the end of each child's iteration in sub-step 6 (see
 shell sketch above). On any mismatch, exit Step 2 non-zero and do
 NOT proceed to Step 3.
 
@@ -573,39 +686,56 @@ SKILL.md prose + design doc land in one commit/PR.
 ## Edge cases
 
 * **0 Approved peers in scope.** Helper emits `{"approved": []}`;
-  Step 2 sub-step 2 fast-paths to "No coordination dependencies
+  Step 2 sub-step 3 fast-paths to "No coordination dependencies
   detected" and proceeds to Step 3.
 * **1 Approved peer.** Same fast path — no pairs possible.
 * **N Approved peers, every pair already covered.** Helper emits
-  full bundle; sub-step 3 candidate filter leaves the candidate
-  list empty; sub-step 2 fast-path emits the same one-line summary and
+  full bundle; sub-step 4 candidate filter leaves the candidate
+  list empty; sub-step 3 fast-path emits the same one-line summary and
   proceeds.
 * **A peer's description is structurally thin** (200+ chars but
   no concrete file-touch information — e.g., headings only, vague
   prose). Step 1's PRD check has already passed by definition;
-  Step 2 cannot enrich. **Fail closed:** when the reasoning step
-  cannot determine the file-touch surface for a peer with enough
-  confidence to rule out overlap with any other Approved peer,
-  STOP Step 2 with the diagnostic:
+  Step 2 cannot enrich. **Per-peer operator gate (do NOT halt the
+  whole queue on one weak peer):** when the reasoning step
+  cannot determine the file-touch surface for a peer with
+  enough confidence to rule out overlap with another Approved
+  peer, surface the per-peer choice:
 
   ```
-  step 2: ENG-A description is too thin to scan reliably.
-  The backstop's purpose is catching missed coordination
-  dependencies; treating "I can't tell" as no-overlap would
-  defeat that. Either re-spec ENG-A via /sr-spec to add
-  concrete file-touch detail, or remove ENG-A from the
-  Approved set (cancel / move to In Design) before re-running
-  /sr-start.
+  step 2: ENG-A description is too thin to scan reliably for
+  coord-dep with [ENG-B, ENG-C, ...]. Pairs involving ENG-A
+  cannot be classified.
+
+  Choose:
+  (a) accept-risk — treat ENG-A's pairs as no-overlap, proceed
+      with the rest of the scan and dispatch the queue. The
+      backstop's safety guarantee is suspended for ENG-A's
+      pairs only.
+  (b) abort — stop /sr-start. Operator amends ENG-A via /sr-spec
+      (add concrete file-touch detail) or removes ENG-A from
+      the Approved set (move to In Design / cancel) before
+      re-running.
   ```
 
-  Operator chooses: abort `/sr-start`, fix in Linear, re-run.
-  This is a deliberate tradeoff against silent false-negative
-  scans — the thin-description case is precisely where the
-  backstop is most needed and where reasoning-confidence-based
-  no-overlap calls are least defensible. Future fix: tighten
-  Step 1's `_desc_nonws_chars` heuristic to better correlate
-  with reasoning-readiness, but the threshold is hard to
-  characterize prescriptively.
+  This is a per-peer prompt, not a global halt. Choosing (a)
+  excludes ENG-A's pairs from candidate consideration for this
+  run AND surfaces a stderr summary at end of Step 2: `step 2:
+  ENG-A's pairs were skipped due to thin description (operator
+  accepted risk).` The skill does NOT auto-mutate ENG-A in
+  Linear; the operator's risk-acceptance is a runtime decision,
+  not a state change. Pairs that don't involve thin peers
+  proceed normally — one weak peer cannot block dispatch of
+  unrelated Approved issues.
+
+  Choosing (b) is the fail-closed path. Use when ENG-A's
+  potential overlaps are high-stakes (touches well-known shared
+  surface like `lib/scope.sh`) and the operator wants to triage
+  before dispatch.
+
+  Future fix: tighten Step 1's `_desc_nonws_chars` heuristic to
+  better correlate with reasoning-readiness, but the threshold
+  is hard to characterize prescriptively.
 * **Linear API failure mid-helper.** Helper exits 1, stderr names
   the offending issue. Operator chooses: retry, skip Step 2
   (proceed to Step 3 — ENG-280 covered most edges already at
@@ -678,6 +808,30 @@ already cover the multi-comment-per-child case ENG-281 introduces
 (per the ENG-280 spec's testing section: "Multi-comment dedup
 (same parent in fenced blocks across multiple comments collapses
 to one delete)").
+
+**Recovery-file behavior** is exercised via end-to-end manual
+testing rather than bats — the read-and-repair flow is skill
+prose (no script to invoke standalone), and the failure modes it
+handles (per-edge abort, per-comment partial-rollback) require
+mocked Linear responses that bats wouldn't reach. Test scenarios
+to walk through manually before merge:
+
+* No recovery file present → sub-step 1 is a no-op, scan proceeds
+  normally.
+* Recovery file with one orphan triple → sub-step 1 attempts
+  audit-comment post; on success, file is deleted; scan proceeds.
+* Recovery file with multiple orphans for the same child →
+  sub-step 1 composes one consolidated audit comment per child;
+  on success, all of that child's entries are removed.
+* Recovery file with malformed JSON (operator hand-edited badly)
+  → sub-step 1 surfaces operator choice (abort vs. delete-file-
+  acknowledging-loss).
+* Recovery-attempt failure (Linear API down) → entries kept;
+  warning surfaced; scan proceeds with sub-step 2 normally.
+* Per-edge abort writes recovery entries before exit; verify
+  next `/sr-start` reads them and repairs.
+* Per-comment rollback with one delete-failure writes one
+  recovery entry; verify repair on next run.
 
 End-to-end testing is manual: dispatch a `/sr-start` against an
 Approved set with a known overlap, accept the candidate, verify
@@ -760,16 +914,24 @@ Surfaced now and explicitly accepted as v1 trade-offs.
   resolved direction says so explicitly; the operator sees the
   choice was a tiebreak. Future fix: add `flip-direction` as a
   fourth gate option.
-* **`abort` on per-edge failure leaves audit-less relations on the
-  current child.** Per-edge `abort` exits the loop; children
-  processed before the failure are fully audited; the current
-  child's already-added relations persist without an audit
-  comment. Recovery recipe is printed but operator must execute
-  it manually. (Per-comment failure does NOT have this gap because
-  proceed-anyway has been removed; rollback is best-effort but
-  bounded.) Future fix: persist a durable recovery record (e.g.,
-  `<repo>/.sensible-ralph/coord-dep-recovery.json`) that surfaces
-  on the next `/sr-start` run.
+* **Auto-repair-vs-immediate-cleanup gap on per-edge abort.**
+  Per-edge `abort` exits the loop with the current child holding
+  partial audit-less relations. Sub-step 6's abort path writes
+  these to `coord-dep-recovery.json`, and sub-step 1 of the next
+  `/sr-start` attempts auto-repair (compose-and-post the audit
+  comment from persisted rationales). The gap: between the abort
+  and the next `/sr-start` invocation, the orphan relations exist
+  in Linear without an audit comment. If `/close-issue` runs in
+  that window (extremely unlikely — `/close-issue` requires
+  `In Review`, and a coord-dep child entering review without the
+  audit comment posted means an even more anomalous flow), the
+  cleanup helper won't find the orphan and won't remove it.
+  Mitigation: in practice `/close-issue` on a child that just
+  had a coord-dep abort is days or weeks away (the child needs
+  to dispatch, complete, review). Recovery file repairs first.
+  Future fix: have `/sr-start` sub-step 1's auto-repair also
+  surface a Linear-UI link to the orphan relations so the
+  operator can act sooner if needed.
 * **`EXPECTED == ACTUAL` exact-set verify treats benign
   concurrent UI adds as drift.** Same limitation ENG-280 surfaces.
   Mitigation: rare; operator re-runs and the scan fast-paths
@@ -815,14 +977,17 @@ Surfaced now and explicitly accepted as v1 trade-offs.
 2. `skills/sr-start/SKILL.md` documents a new Step 2 between
    today's Step 1 (preflight) and today's Step 2 (build_queue).
    Today's Steps 2/3/4 are renumbered to 3/4/5. New Step 2
-   covers: helper invocation, fast paths (0/1 peer, all-pairs-
-   covered), label preflight, reasoning checklist, per-candidate
-   operator gate, per-child write loop, per-child verification.
+   covers (in order): orphan-recovery from
+   `<repo>/.sensible-ralph/coord-dep-recovery.json`, helper
+   invocation, fast paths (0/1 peer, all-pairs-covered),
+   reasoning checklist, per-candidate operator gate, per-child
+   write loop, per-child verification.
 3. New Step 2's reasoning prompt structure is documented inline
-   in SKILL.md, including the six-item checklist (path, identifier,
-   rename) and the direction heuristic (rename-before-edit,
-   interface-before-use, Linear-ID tiebreaker for symmetric
-   collisions).
+   in SKILL.md, including the six-item checklist (path,
+   identifier, rename) and the deterministic three-rule
+   direction heuristic (rename-before-edit one-sided →
+   interface-before-use one-sided → numeric-suffix tiebreaker as
+   unconditional final fallback).
 4. The audit comment Step 2 posts uses the `coord-dep-audit`
    fenced-block JSON format defined in ENG-280's spec, verbatim.
    The header text reads `**Coordination dependencies added by
@@ -839,6 +1004,14 @@ Surfaced now and explicitly accepted as v1 trade-offs.
 7. Per-child verification: `EXPECTED == ACTUAL` over
    `INITIAL_BLOCKERS ∪ committed_parents`. On mismatch, abort
    Step 2 with diagnostic; do NOT proceed to Step 3.
+7a. Recovery file `<repo>/.sensible-ralph/coord-dep-recovery.json`
+    is written on per-edge `abort` (orphan triples for the
+    current child) and on per-comment rollback delete-failure
+    (orphan triples for any parent whose delete returned
+    non-zero). Sub-step 1 of the next `/sr-start` reads the file
+    and attempts auto-repair (compose-and-post the audit
+    comment per child, then remove repaired entries from the
+    file). Schema is documented in Component 2.
 8. New bats file `skills/sr-start/scripts/test/coord_dep_backstop_scan.bats`
    covers the helper's data-assembly contract per the **Testing**
    section. Existing bats coverage for `lib/linear.sh`,
