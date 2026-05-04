@@ -19,7 +19,7 @@ Once the parent is rebased, you cannot tell from SHA chains alone whether (a) al
 
 ## Why the post-ENG-279 lifecycle doesn't change the bug
 
-Under ENG-279's per-issue branch lifecycle, the child branch B is created at `/sr-spec` time off `$SENSIBLE_RALPH_DEFAULT_BASE_BRANCH` (`main`). At `/sr-start` dispatch, the orchestrator's reuse path (`skills/sr-start/scripts/orchestrator.sh:417-432`) calls `worktree_merge_parents` to merge any In-Review parent A's branch tip into B. After that merge, B's history contains A's tip-at-dispatch as an ancestor.
+Under ENG-279's per-issue branch lifecycle, the child branch B is created at `/sr-spec` time off `$SENSIBLE_RALPH_DEFAULT_BASE_BRANCH` (`main`). At `/sr-start` dispatch, the orchestrator's reuse path (`skills/sr-start/scripts/orchestrator.sh:417-432`) calls `worktree_merge_parents` to merge any In-Review parent A's branch tip into B. **In the no-conflict case**, B's history immediately contains A's tip-at-dispatch as an ancestor. **In the single-parent conflict case** (orchestrator.sh comment block at the same lines documents this), `worktree_merge_parents` returns 0 with the worktree in `MERGING` state — A's tip is not yet an ancestor of B's HEAD until the agent resolves the conflict during `/sr-implement`. Stale-parent labeling only inspects In-Review children, and `/prepare-for-review`'s clean-tree pre-flight blocks the In-Review transition while the worktree is still in `MERGING`. So by the time stale-parent labeling runs at A's close, every In-Review child of A has already passed through resolution and the parent-as-ancestor invariant is restored.
 
 When A is later closed via `/close-issue`:
 
@@ -197,21 +197,26 @@ Three deliberate choices preserved from the design dialogue:
 
    Tests extract a child's body via `awk` between markers.
 
-3. Extend the `is_branch_fresh_vs_sha` stub in the fake `lib/branch_ancestry.sh` to log every invocation's `parent_sha` argument. This converts the "SHA-swap" failure mode from manual-only into automated coverage — the test plan can now verify that the helper feeds the pre-merge SHA to the ancestry check, not the integration SHA:
+3. Extend BOTH ancestry-helper stubs in the fake `lib/branch_ancestry.sh` (`is_branch_fresh_vs_sha` and `list_commits_ahead`) to log every invocation's `parent_sha` argument. Both helpers must use the pre-merge SHA after the fix; testing only one leaves a parallel regression surface unguarded:
 
    ```bash
    export STUB_FRESH_ARG_LOG="$STUB_DIR/fresh_arg_log"
+   export STUB_COMMITS_ARG_LOG="$STUB_DIR/commits_arg_log"
    : > "$STUB_FRESH_ARG_LOG"
+   : > "$STUB_COMMITS_ARG_LOG"
 
    # Inside the existing is_branch_fresh_vs_sha stub, before the rc return:
    printf '%s\t%s\n' "$parent_sha" "$branch_ref" >> "$STUB_FRESH_ARG_LOG"
+
+   # Inside the existing list_commits_ahead stub, before the printf:
+   printf '%s\t%s\n' "$parent_sha" "$branch_ref" >> "$STUB_COMMITS_ARG_LOG"
    ```
 
 **Existing 10 tests — mechanical signature update.** Every `run call_fn close_issue_label_stale_children "ENG-200" "$A_SHA"` becomes `run call_fn close_issue_label_stale_children "ENG-200" "$A_SHA" "$B_SHA"`. The SHAs are opaque to the stubbed `is_branch_fresh_vs_sha`, so no semantic assertions change.
 
 Test #1 (the existing `empty A_SHA → silent no-op` case) is replaced by the two new empty-arg tests below — those provide more specific coverage, one for each guarded SHA.
 
-**Four new tests:**
+**Five new tests:**
 
 1. **Body propagates both short SHAs and expands every interpolation.**
 
@@ -235,12 +240,19 @@ Test #1 (the existing `empty A_SHA → silent no-op` case) is replaced by the tw
    - Call: `run call_fn close_issue_label_stale_children "ENG-200" "$A_SHA" ""`.
    - Same assertions as test 2. Defensive layer for the (improbable) case that the call-site `if` guard in `close-issue/SKILL.md` is bypassed.
 
-4. **Ancestry check receives pre-merge SHA, not integration SHA.**
+4. **`is_branch_fresh_vs_sha` receives pre-merge SHA, not integration SHA.**
 
    - Setup: 1 In-Review child whose freshness rc doesn't matter (use `STUB_FRESH_ENG_100=0` for a clean log — the test inspects `STUB_FRESH_ARG_LOG`, which captures the call regardless of return code).
    - Call: `run call_fn close_issue_label_stale_children "ENG-200" "$A_SHA" "$B_SHA"`.
    - Assert: `$STUB_FRESH_ARG_LOG` contains a line whose first column is `$A_SHA` (the pre-merge SHA was passed).
    - Assert: `$STUB_FRESH_ARG_LOG` does NOT contain a line whose first column is `$B_SHA` (the integration SHA was never fed to the ancestry helper). Catches the "implementer accidentally swapped which SHA goes to `is_branch_fresh_vs_sha`" regression — the core semantic this ticket exists to fix.
+
+5. **`list_commits_ahead` receives pre-merge SHA, not integration SHA.**
+
+   - Setup: 1 stale child (`STUB_FRESH_ENG_100=1`) so that the helper enters the body-rendering path which calls `list_commits_ahead`.
+   - Call: `run call_fn close_issue_label_stale_children "ENG-200" "$A_SHA" "$B_SHA"`.
+   - Assert: `$STUB_COMMITS_ARG_LOG` contains a line whose first column is `$A_SHA`.
+   - Assert: `$STUB_COMMITS_ARG_LOG` does NOT contain a line whose first column is `$B_SHA`. Catches the parallel regression: an implementation that fixes the freshness check but forgets to update `list_commits_ahead` would generate a comment whose listed commits are computed against the wrong base.
 
 ### What bats does NOT cover
 
@@ -252,7 +264,7 @@ The autonomous implementer's `/prepare-for-review` handoff comment must explicit
 
 The reviewer constructs three close events using a scratch `Sensible Ralph` issue topology and verifies:
 
-1. **Rebase-only parent close** — parent A is in In Review with no review amendments. A's worktree HEAD = A's tip at the child B's dispatch. Run `/close-issue <A>`. **Expected:** B does NOT receive the `stale-parent` label, and Step 6 emits no notes about B.
+1. **Rebase-only parent close** — parent A is in In Review with no review amendments (A's worktree HEAD = A's tip at child B's dispatch). **Critically, advance `main` between B's dispatch and A's close** — e.g., land an unrelated direct-to-main commit on the local checkout — so that close-branch's Step 1 rebase actually rewrites A's commit IDs. Without this, the rebase is a no-op and the broken implementation would also pass. Run `/close-issue <A>`. **Expected:** B does NOT receive the `stale-parent` label, and Step 6 emits no notes about B. This case proves the fix replaces "post-rebase merge SHA" with "pre-rebase parent tip" in the ancestry check; under the broken implementation, the rebase rewrite alone would have flagged B.
 
 2. **Amended parent close** — same A/B setup, then commit one new change directly to A's branch in the worktree (simulating a review amendment). Confirm A's HEAD has advanced past A's dispatch tip. Run `/close-issue <A>`. **Expected:** B receives the `stale-parent` label, and B receives a Linear comment whose body contains both expected short SHAs in the positions specified by Change 5 above.
 
@@ -265,7 +277,7 @@ These three cases exercise ACs 1, 2, and 5 respectively and complete the testing
 1. A child branch dispatched from parent A's tip-at-dispatch, when A is closed without any review amendments, does NOT receive the `stale-parent` label after `/close-issue <A>`.
 2. A child branch dispatched from parent A's tip-at-dispatch, when A receives any commit during review and is then closed, DOES receive the `stale-parent` label, and the Linear comment body contains both A's pre-merge short SHA (in the "Pre-merge branch tip was" line and the ancestor-claim line) and A's integration short SHA (in the lead "closed at" line).
 3. The Linear comment body matches the template in Change 5 above — including the removed "pure rebase, dismiss manually" sentence and the retained "content-equivalent amendments" guidance.
-4. `stale_parent.bats` adds all four new tests described in the test plan — body-propagation, empty-pre-merge-SHA no-op, empty-integration-SHA no-op, and ancestry-receives-pre-merge-SHA — and every existing test that calls `close_issue_label_stale_children` is updated to the 3-arg signature. All bats tests pass. Test 4 (ancestry-receives-pre-merge-SHA) is load-bearing — it is the only automated guard against the SHA-swap regression this ticket exists to fix.
+4. `stale_parent.bats` adds all five new tests described in the test plan — body-propagation, empty-pre-merge-SHA no-op, empty-integration-SHA no-op, `is_branch_fresh_vs_sha`-receives-pre-merge-SHA, and `list_commits_ahead`-receives-pre-merge-SHA — and every existing test that calls `close_issue_label_stale_children` is updated to the 3-arg signature. All bats tests pass. Tests 4 and 5 together are load-bearing: they form the automated guard against the SHA-swap regression this ticket exists to fix, covering both ancestry helpers (`is_branch_fresh_vs_sha` and `list_commits_ahead`) so an implementer cannot fix one and miss the other.
 5. The PR-pending workflow (no `INTEGRATION_SHA` from `close-branch`) skips Step 6 entirely with no behavioral change. The skip is enforced at the SKILL.md call site by an explicit `if [ -n "$INTEGRATION_SHA" ]; then …` guard, defended in depth by the helper's own empty-arg guard on either SHA.
 
 ## Out of scope
@@ -290,6 +302,6 @@ These three cases exercise ACs 1, 2, and 5 respectively and complete the testing
 
 ## Notes for the autonomous implementer
 
-The fix touches two skills and one test file; total change is small (under ~80 lines of code + prose, plus ~70 lines of new test cases including test 4's stub-log extension). Recommended order: (a) update `stale_parent.sh` signatures and body template; (b) update `stale_parent.bats` setup harness (both stub extensions: `STUB_COMMENT_BODY_LOG` and `STUB_FRESH_ARG_LOG`); (c) update existing tests so they pass under the new signature; (d) add all four new bats tests; (e) update `close-issue/SKILL.md` capture point + Step 6 call site + prose. Run `bats skills/close-issue/scripts/test/stale_parent.bats` after each step to catch breakage early.
+The fix touches two skills and one test file; total change is small (under ~80 lines of code + prose, plus ~85 lines of new test cases including the stub-log extensions). Recommended order: (a) update `stale_parent.sh` signatures and body template; (b) update `stale_parent.bats` setup harness (three stub extensions: `STUB_COMMENT_BODY_LOG`, `STUB_FRESH_ARG_LOG`, `STUB_COMMITS_ARG_LOG`); (c) update existing tests so they pass under the new signature; (d) add all five new bats tests; (e) update `close-issue/SKILL.md` capture point + Step 6 call site + prose. Run `bats skills/close-issue/scripts/test/stale_parent.bats` after each step to catch breakage early.
 
 The `/prepare-for-review` skill itself is **not modified by this ticket** — its code, prose, and references stay as they are. The implementer's responsibility is only to *populate* the Linear handoff comment that `/prepare-for-review` posts at session end: under that comment's "Known gaps / deferred" section, include the three-case manual verification block from this spec, marked as "pending human reviewer at PR time." That is a comment-body content choice the implementer makes for this ticket, not a change to the prepare-for-review skill. Do not attempt to manually exercise the close ritual against real Linear state from inside the autonomous session; the manual verification block is reviewer-side.
