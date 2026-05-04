@@ -242,7 +242,6 @@ Schema:
     {
       "child": "ENG-C",
       "newly_added_parents": ["ENG-D", "ENG-E"],
-      "audit_parents": ["ENG-F", "ENG-D", "ENG-E"],
       "expected_blockers": ["ENG-F", "ENG-D", "ENG-E"],
       "actual_blockers": ["ENG-F", "ENG-D", "ENG-E", "ENG-G"],
       "audit_comment_posted": true,
@@ -564,35 +563,33 @@ for child in $children; do
   INITIAL_BLOCKERS=$(linear_get_issue_blockers "$child" \
     | jq -r '.[].id' | sort -u)
 
-  # Two distinct sets, both per-child:
-  #   audit_parents       — union for the audit comment's parents array.
-  #                         Includes both pre-existing INITIAL_BLOCKERS
-  #                         hits and parents we add this run. Cleanup at
-  #                         /close-issue authority is keyed off this list.
-  #   newly_added_parents — the SUBSET this run actually called
-  #                         linear issue relation add for. Rollback and
-  #                         recovery records ONLY touch this subset, never
-  #                         pre-existing relations.
-  audit_parents=()
+  # newly_added_parents — parents this run actually creates via
+  # linear issue relation add. The audit comment lists only this
+  # set; cleanup at /close-issue treats only this set as
+  # delete-authority. Pre-existing parents (already in
+  # INITIAL_BLOCKERS) are NEVER added here — Step 2 cannot
+  # distinguish "operator added this manually for a coord-dep
+  # reason" from "operator added this for a semantic reason that
+  # happens to align with our scan," so claiming audit-trail
+  # authority over them would risk over-claiming cleanup
+  # authority for legitimately-semantic relations.
   newly_added_parents=()
   edge_count=$(printf '%s' "$child_edges_json" | jq 'length')
   for (( i = 0; i < edge_count; i++ )); do
     parent=$(printf '%s' "$child_edges_json" | jq -r ".[$i].parent")
 
-    # Pre-existing parent (operator added it manually between scan
-    # and write loop) — include in audit_parents so the audit
-    # comment lists it, but DO NOT add to newly_added_parents and
-    # DO NOT call linear issue relation add (relation already
-    # exists). Critical: rollback must never touch this parent
-    # because Step 2 didn't create it; deleting it would silently
-    # remove a legitimate operator-set blocker.
+    # Pre-existing parent (operator added it manually between
+    # scan and write loop, OR an earlier-iteration of the gate
+    # already accepted and committed it). Skip silently — no
+    # relation-add needed, no audit-set membership. The
+    # operator's manual edge keeps whatever classification they
+    # gave it (semantic, prior coord-dep, etc.); Step 2 does
+    # NOT overwrite that.
     if printf '%s\n' "$INITIAL_BLOCKERS" | grep -qx "$parent"; then
-      audit_parents+=("$parent")
       continue
     fi
 
     if linear issue relation add "$child" blocked-by "$parent"; then
-      audit_parents+=("$parent")
       newly_added_parents+=("$parent")
     else
       # Per-edge failure: retry / skip-this-edge / abort.
@@ -601,24 +598,25 @@ for child in $children; do
     fi
   done
 
-  # Every accepted parent for this child rejected/skipped → nothing
-  # to audit; skip comment + label.
-  [[ "${#audit_parents[@]}" -eq 0 ]] && continue
+  # No newly-added parents → nothing to audit (operator's manual
+  # adds keep their existing classification); skip comment + label.
+  [[ "${#newly_added_parents[@]}" -eq 0 ]] && continue
 
   # Compose audit comment per ENG-280's contract.
-  # Bullets and JSON parents array both list audit_parents (the
-  # union — pre-existing INITIAL_BLOCKERS hits PLUS newly_added).
+  # Bullets and JSON parents array both list newly_added_parents
+  # (the parents this run actually created via relation add).
+  # Pre-existing parents are deliberately excluded — see the
+  # comment on the loop above.
   body_file=$(mktemp)
   {
     printf '%s\n\n' "**Coordination dependencies added by /sr-start scan**"
     for (( i = 0; i < edge_count; i++ )); do
       parent=$(printf '%s' "$child_edges_json" | jq -r ".[$i].parent")
       rationale=$(printf '%s' "$child_edges_json" | jq -r ".[$i].rationale")
-      # Bullet only for parents in audit_parents (skipped edges drop out).
-      printf '%s\n' "${audit_parents[@]}" | grep -qx "$parent" || continue
+      printf '%s\n' "${newly_added_parents[@]}" | grep -qx "$parent" || continue
       printf -- '- blocked-by %s — %s\n' "$parent" "$rationale"
     done
-    parents_json=$(printf '%s\n' "${audit_parents[@]}" \
+    parents_json=$(printf '%s\n' "${newly_added_parents[@]}" \
       | jq -R . | jq -sc '{parents: .}')
     printf '\n```coord-dep-audit\n%s\n```\n\n' "$parents_json"
     printf '%s\n' "Will be removed automatically on \`/close-issue\`."
@@ -627,10 +625,8 @@ for child in $children; do
   if ! linear issue comment add "$child" --body-file "$body_file"; then
     rm -f "$body_file"
     # Per-comment failure: retry / rollback.
-    # See "Per-comment failure choices" below for semantics.
-    # IMPORTANT: rollback iterates newly_added_parents only,
-    # NEVER audit_parents — pre-existing relations must not be
-    # deleted by Step 2.
+    # Rollback iterates newly_added_parents (the only relations
+    # this run created); pre-existing relations are never touched.
     :
   fi
   rm -f "$body_file"
@@ -640,11 +636,9 @@ for child in $children; do
     || echo "step 2: failed to add coord-dep label to $child — continuing" >&2
 
   # Per-child verify (sub-step 7).
-  # EXPECTED uses audit_parents (the full audit set) because every
-  # parent in audit_parents must be present in Linear after the
-  # write loop completes — both the ones we just added and the
-  # ones that were already there.
-  EXPECTED=$(printf '%s\n' "$INITIAL_BLOCKERS" "${audit_parents[@]}" \
+  # EXPECTED is INITIAL_BLOCKERS plus newly_added_parents — what
+  # we expect Linear to look like after this run's writes.
+  EXPECTED=$(printf '%s\n' "$INITIAL_BLOCKERS" "${newly_added_parents[@]}" \
     | sort -u)
   ACTUAL=$(linear_get_issue_blockers "$child" \
     | jq -r '.[].id' | sort -u)
@@ -654,9 +648,9 @@ for child in $children; do
     echo "  actual:   $ACTUAL" >&2
     echo "step 2: aborting before Step 3 — investigate manually" >&2
     # Persist verify_drift entry per the recovery-file schema
-    # (Component 2). Use newly_added_parents (not audit_parents)
-    # for the drift record's committed_parents field — recovery
-    # is scoped to what THIS run created.
+    # (Component 2). The drift record's newly_added_parents
+    # field is exactly the variable above; expected_blockers
+    # and actual_blockers are the two sets compared.
     return 1   # surfaces as Step 2 abort in skill prose
   fi
 done
@@ -671,40 +665,35 @@ without duplicating the branch logic in two places.
 **Per-edge failure choices** (when `linear issue relation add`
 fails — applies only to parents not already in
 `INITIAL_BLOCKERS`; pre-existing parents skip the relation-add
-call entirely):
+call entirely and never reach this branch):
 
 * **retry** — re-attempt the same parent.
-* **skip-this-edge** — drop this parent from BOTH `audit_parents`
-  and `newly_added_parents` (since neither was populated for it
-  yet). The audit comment will not list it. Operator can re-add
+* **skip-this-edge** — drop this parent from `newly_added_parents`
+  (it was never appended in the first place since the relation-add
+  failed). The audit comment will not list it. Operator can re-add
   manually via Linear UI; next `/sr-start` will see it in
-  `existing_blockers`. Unlike ENG-280, all skipped edges are
-  coord-dep (not PREREQS), so skip-this-edge is always safe here.
+  `existing_blockers` and skip it silently. Unlike ENG-280, all
+  skipped edges are coord-dep (not PREREQS), so skip-this-edge is
+  always safe here.
 * **abort** — stop the loop. Children processed before the failure
   are fully audited (their comments + labels landed). The current
   child has partial relations without an audit comment.
   **Before exiting**, append each `(child, parent, rationale)`
-  triple from `newly_added_parents` (NOT `audit_parents`) for the
-  current child to `<repo>/.sensible-ralph/coord-dep-recovery.json`
-  (per sub-step 1's `orphans` schema). Pre-existing parents in
-  `audit_parents` are NOT orphans — they were already in Linear
-  with their own audit trail (or as legitimate semantic blockers
-  needing none) before this run started. The next `/sr-start`
-  reads the file at sub-step 1 and attempts repair (compose-and-
-  post the audit comment from the persisted rationale; the audit
-  block lists ONLY the orphan parents because that's all the
-  recovery file knows about — pre-existing parents are not in
-  scope for this rerun's audit comment).
+  triple from `newly_added_parents` for the current child to
+  `<repo>/.sensible-ralph/coord-dep-recovery.json`'s `orphans`
+  array. The next `/sr-start` reads the file at sub-step 1 and
+  attempts repair (compose-and-post the audit comment from the
+  persisted rationale).
 
   Surface the manual recovery recipe inline so the operator knows
   what state Linear is in right now:
   ```
   linear issue relation delete <child> blocked-by <parent>
   ```
-  for each entry in `newly_added_parents` (NOT `audit_parents`)
-  so far on the current child. The persisted recovery file is
-  the durable signal; the inline recipe is just for the
-  operator's situational awareness. Do NOT proceed to Step 3.
+  for each entry in `newly_added_parents` so far on the current
+  child. The persisted recovery file is the durable signal; the
+  inline recipe is just for the operator's situational awareness.
+  Do NOT proceed to Step 3.
 
 **Per-comment failure choices** (when `linear issue comment add`
 fails after relations were added):
@@ -712,13 +701,11 @@ fails after relations were added):
 * **retry** — usually transient.
 * **rollback** — best-effort
   `linear issue relation delete "$child" blocked-by "$parent"`
-  for each entry in `newly_added_parents` (NOT `audit_parents`).
-  **Critical:** rollback NEVER touches pre-existing parents (the
-  ones that were in `INITIAL_BLOCKERS` and never had a relation-
-  add called for them) — those represent legitimate operator-set
-  blockers (or prior coord-dep edges from a previous run) that
-  Step 2 didn't create and must not delete. Deleting them would
-  silently corrupt the operator's dependency graph.
+  for each entry in `newly_added_parents`. By construction
+  (see the loop above) `newly_added_parents` contains only
+  relations Step 2 actually created via `linear issue relation
+  add` — pre-existing operator-set blockers were never added
+  here and cannot appear in the rollback sweep.
 
   **Re-fetch blockers** after the delete sweep; for each parent
   in `newly_added_parents` still present (delete failed for any
@@ -1172,30 +1159,33 @@ Surfaced now and explicitly accepted as v1 trade-offs.
 7a. Recovery file `<repo>/.sensible-ralph/coord-dep-recovery.json`
     holds two arrays: `orphans` (audit-less relations Step 2
     created) and `verify_drift` (relations whose verify check
-    disagreed with Linear's reported blockers). Writes to the
-    file use temp-file + rename for atomicity. The `orphans`
-    array is populated ONLY from `newly_added_parents` — never
-    from pre-existing `INITIAL_BLOCKERS` parents that Step 2
-    didn't create. Per-edge `abort` writes orphan triples for
-    the current child; per-comment rollback delete-failure
-    writes triples for any newly-added parent whose delete
-    returned non-zero. The `verify_drift` array is populated on
-    sub-step 7 verify failure with `{child, newly_added_parents,
-    audit_parents, expected_blockers, actual_blockers,
-    audit_comment_posted, label_added, drifted_at}`. Sub-step 1
-    of the next `/sr-start` reads both arrays: orphans get
-    auto-repair (compose-and-post audit comment, prune on
-    success); drift entries are surfaced to the operator as
-    informational output (no auto-action). Malformed file MUST
-    be hand-repaired or rebuilt by the operator — auto-deletion
-    is NOT offered. Schema is documented in Component 2.
+    disagreed with Linear's reported blockers). Writes use
+    temp-file + rename for atomicity. The `orphans` array
+    contains ONLY parents from `newly_added_parents` — pre-
+    existing parents are never claimed as Step 2 authority.
+    Per-edge `abort` writes orphan triples for the current
+    child; per-comment rollback delete-failure writes triples
+    for any newly-added parent whose delete returned non-zero.
+    The `verify_drift` array is populated on sub-step 7 verify
+    failure with `{child, newly_added_parents,
+    expected_blockers, actual_blockers, audit_comment_posted,
+    label_added, drifted_at}`. Sub-step 1 of the next
+    `/sr-start` reads both arrays: orphans get auto-repair
+    (compose-and-post audit comment, prune on success); drift
+    entries are surfaced to the operator as informational
+    output (no auto-action). Malformed file MUST be hand-
+    repaired or rebuilt by the operator — auto-deletion is NOT
+    offered. Schema is documented in Component 2.
 
-    **Critical invariant:** rollback (per-comment failure path)
-    iterates ONLY over `newly_added_parents`, never
-    `audit_parents`. Pre-existing relations must not be deleted
-    by Step 2 — doing so would silently remove a legitimate
-    operator-set blocker (or a prior coord-dep edge from another
-    run that's still load-bearing).
+    **Critical invariant:** Step 2 only ever claims audit
+    authority over relations it directly created via
+    `linear issue relation add`. Pre-existing parents (already
+    in `INITIAL_BLOCKERS` at write time) keep whatever
+    classification the operator gave them — semantic, prior
+    coord-dep, or anything else. Step 2 does not list them in
+    audit comments, does not include them in `orphans`, and
+    does not delete them on rollback. This avoids over-claiming
+    cleanup authority over legitimately-semantic edges.
 8. New bats file `skills/sr-start/scripts/test/coord_dep_backstop_scan.bats`
    covers the helper's data-assembly contract per the **Testing**
    section. Existing bats coverage for `lib/linear.sh`,
