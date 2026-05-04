@@ -50,12 +50,33 @@ header + issues to `ordered_queue.txt` (tempfile + same-directory
 `mv`), then writes the first `progress.json` record. `/sr-status`
 reads `run_id` directly from the header.
 
-The race closes by construction: `ordered_queue.txt` is *only*
-written when a run is committed for dispatch. There is no window
-where `/sr-status` could see a new queue file with a stale run_id —
-the queue file does not change until the orchestrator commits.
-Aborted previews and failed builds leave `ordered_queue.txt` intact
-(showing the last actual run), so they cannot create phantom runs.
+The original ENG-287 bug — `/sr-status` rendering the new queue
+against the *previous* run's `run_id` — closes by construction:
+`ordered_queue.txt` is only written when a run is committed for
+dispatch, and the header it carries is the same `run_id` that flows
+into every `progress.json` record. Mixed-state rendering becomes
+structurally impossible. Aborted previews and failed builds leave
+`ordered_queue.txt` intact (showing the last actual run), so they
+cannot create phantom runs.
+
+A *different* transient remains and is documented honestly under
+Failure modes: between the orchestrator publishing the header and
+writing the first `start` record for issue 1, `/sr-status` renders
+`Done (0) / Running (0) / Queued (N)` with the new `run_id`. This
+window equals the orchestrator's per-issue setup time for the first
+issue (branch lookup, worktree create/merge, base-SHA write, Linear
+`In Progress` transition, Claude session setup — `orchestrator.sh:599`
+context). It is bounded by today's per-issue setup duration (seconds
+to minutes for the first issue) and inherits from today's
+orchestrator: today's operator sees the same setup-time gap, just
+with the *additional* mixed-state confusion that this spec resolves.
+Under Option β the operator sees an honest "new run committed, no
+issues running yet" rendering instead of the misleading mixed state.
+Codex round-3 finding 1 surfaces this; the recommendation to publish
+the header after the first `start` record is rejected because it
+inverts the UX (operator who just `/sr-start`ed sees no visible
+change until the first issue actually transitions, which feels
+broken). See Failure modes below.
 
 ## Design
 
@@ -222,23 +243,36 @@ The renderer reads `ordered_queue.txt` only. It does *not* read
 
 ### Backwards-compat
 
-None. The header is required. There is no production use of an older
-plugin version that would have written a header-less queue file. The
-fail-loud branches above (orchestrator and renderer) are correct
-strict-contract enforcement, not deprecation paths.
+None. The header is required. The fail-loud branches above
+(orchestrator and renderer) are correct strict-contract enforcement,
+not deprecation paths.
 
-**Operator-facing upgrade behavior.** A repo that has a header-less
-`.sensible-ralph/ordered_queue.txt` left over from a prior plugin
-version will have `/sr-status` exit non-zero with the missing-header
-error message until the next `/sr-start` runs. The next `/sr-start`'s
-atomic publish writes a header-bearing file, restoring `/sr-status`.
-Operators who want immediate restoration without dispatching can
-either (a) `rm .sensible-ralph/ordered_queue.txt` to fall into the
-"no current run" path, or (b) re-run `/sr-start` to regenerate. Both
-are one-step recoveries. This trade-off is explicitly accepted —
-weighing one-time post-upgrade friction against indefinite
-dead-code maintenance of a fallback path. Documented per codex
-finding 4.
+**The plugin's existing user (this repo plus the operator's other
+sensible-ralph repos) has header-less `ordered_queue.txt` files on
+disk from prior plugin versions.** Codex round-3 finding 2 correctly
+calls out that this is "production use" in the literal sense —
+earlier wording in this spec that called the older format "no
+production use" was inaccurate. The operator-facing upgrade
+behavior is unchanged from the prior section, just honestly
+labeled:
+
+A repo with a header-less `.sensible-ralph/ordered_queue.txt` left
+over from a prior plugin version will have `/sr-status` exit
+non-zero with the missing-header error message until the next
+`/sr-start` runs. The next `/sr-start`'s commitment publish writes
+a header-bearing file, restoring `/sr-status`. Operators who want
+immediate restoration without dispatching can either
+(a) `rm .sensible-ralph/ordered_queue.txt` to fall into the "no
+current run" path, or (b) re-run `/sr-start` to regenerate. Both
+are one-step recoveries.
+
+This trade-off is explicitly accepted — weighing one-time
+post-upgrade friction (one operator, one-step recovery, no
+dispatch needed) against indefinite dead-code maintenance of a
+fallback path. The contract simplification (`ordered_queue.txt`
+*always* has a header by construction once the upgrade is past)
+is worth the single recovery step. If at some future point the
+operator population expands beyond Sean's repos, revisit.
 
 ## File-by-file changes
 
@@ -447,20 +481,42 @@ codex rounds.
   this spec — widening the identifier (nanoseconds, PID-suffixed,
   random) is out of scope; see Out of scope below.
 
-- **Orchestrator crash between header publish and first
-  `progress.json` record.** The atomic publish of
-  `ordered_queue.txt` happens before the orchestrator writes its
-  first `start` record. If the orchestrator crashes in the
-  microsecond gap (process killed, signal, etc.), `ordered_queue.txt`
-  has the new header but `progress.json` has no records for the new
-  `run_id`. `/sr-status` would render this as an active run with
-  empty Done/Running and the full queue as Queued. The operator
-  could mistake this for "dispatch in progress" when nothing is
-  actually running. **Mitigation:** acceptable as-is — the next
-  `/sr-start` invocation rewrites `ordered_queue.txt` with a fresh
-  header, self-correcting. The window is microseconds and a true
-  hard crash there is extremely unlikely given the trivial
-  surrounding work (file write + jq invocation).
+- **Setup-time gap between header publish and first `start` record**
+  (codex round-3 finding 1). The orchestrator atomically publishes
+  `ordered_queue.txt` near the top of its run, then enters the
+  per-issue dispatch loop. The first `start` record lands at
+  `orchestrator.sh:599`, *after* per-issue setup work (branch
+  lookup, dag_base resolution, worktree create/merge, base-SHA
+  write, Linear `In Progress` transition, Claude session setup).
+  Between header publish and that first append, `/sr-status` renders
+  `Done (0) / Running (0) / Queued (N)` with the new `run_id` —
+  even though the orchestrator IS doing real work for the first
+  issue. The window can be seconds to a minute or two, depending on
+  worktree-create cost, network latency to Linear, and Claude
+  startup. **This inherits today's behavior:** today's orchestrator
+  also has the same setup window before the first `start` record;
+  today's operator sees the additional ENG-287 mixed-state confusion
+  on top of it, which Option β eliminates. Net: Option β reduces
+  operator confusion, doesn't widen the setup window.
+  Additionally, `_progress_append` for the first start record is
+  best-effort (`|| true` at the call site); a write failure leaves
+  the issue invisible to `/sr-status` until the end record lands.
+  Same behavior as today.
+  **Mitigation:** none in this spec — restructuring to publish the
+  header after the first `start` record would invert the operator
+  UX (no visible change after `/sr-start` until the first issue
+  actually transitions). Acknowledged limitation; revisit only if
+  operator confusion is observed in practice.
+
+- **Orchestrator hard crash between header publish and first
+  `start` record.** Subset of the setup-time-gap case above with
+  permanent rather than self-correcting effect. If the orchestrator
+  is killed (signal, OOM) during per-issue setup, `ordered_queue.txt`
+  retains the new header but `progress.json` has no records for the
+  new `run_id`. `/sr-status` continues to show empty Done/Running
+  with full Queued. **Mitigation:** the next `/sr-start` invocation
+  rewrites `ordered_queue.txt` with a fresh header, self-correcting.
+  Hard crashes during per-issue setup are operationally rare.
 
 - **Operator hand-edits `ordered_queue.txt`.** If an operator opens
   the queue file and edits issue IDs without preserving the header,
