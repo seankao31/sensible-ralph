@@ -101,13 +101,18 @@ the heredoc is out of scope and must round-trip unchanged.
 Before any edit, check whether the acceptance criteria already
 hold:
 
-1. The file contains exactly one `**Known gaps / deferred:**` line.
-2. That line is in the Review Summary region of the heredoc, after
+1. The static template heredoc contains exactly one
+   `**Known gaps / deferred:**` line.
+2. That line is in the Review Summary region of the heredoc
+   (before the `## QA Test Plan` heading), immediately after
    `**Surprises during implementation:**`.
 3. No `**Known gaps / deferred:**` line is present in the QA Test
    Plan region of the heredoc.
+4. Step 5's "**Ambiguous findings**" bullet (in `SKILL.md` outside
+   the heredoc) still mentions "Review Summary" as the target for
+   ambiguous findings.
 
-If all three hold, the work is already done. Declare success and
+If all four hold, the work is already done. Declare success and
 make no edits — this is the intended end state, regardless of how
 the file got there (rebase, cherry-pick, prior partial run, manual
 edit). Do not stop or re-spec.
@@ -141,13 +146,18 @@ safely:
   newly-added intervening fields after it) — that's still
   consistent with "after Surprises" placement; do not stop.
 
-The Step 5 "**Ambiguous findings**" bullet is **not** a drift gate.
-Read it as an alignment cross-reference: it should still point at
-Review Summary as the home for ambiguous findings, but if it has
-been edited in a way that contradicts that, file a follow-up issue
-and proceed with this ticket. The Step 5 prose is conceptually
-related to this change but operationally independent — fixing it is
-out of scope here.
+- **Step 5 cross-reference contradicted.** Step 5's "**Ambiguous
+  findings**" bullet (in `SKILL.md` outside the heredoc) no longer
+  contains the substring "Review Summary" *and* still references
+  the Known gaps field. The whole point of this ticket is to
+  resolve the cross-reference inconsistency between Step 5 and the
+  Step 6 template; if Step 5 has drifted to a different
+  destination, moving the template field would just create a
+  different inconsistency. The check is mechanical: search the
+  bullet for the literal substring "Review Summary." Wording
+  changes that preserve that substring (typo fixes, clarifications,
+  punctuation) are fine; wording changes that remove it require
+  re-spec.
 
 In any drift case above, do not guess. Surface the situation and
 let a human re-evaluate.
@@ -155,10 +165,11 @@ let a human re-evaluate.
 ## What this ticket does NOT touch
 
 - **Step 5's "**Ambiguous findings**" bullet.** This ticket does not
-  edit Step 5. (Step 5 should be re-read after the change for
-  alignment — it should still direct ambiguous findings to Review
-  Summary — but if it doesn't, file a follow-up issue rather than
-  expanding scope here.)
+  edit Step 5. (Step 5 alignment is checked as a precondition by
+  the drift rule — the bullet must still mention "Review Summary"
+  as the destination for ambiguous findings. If it doesn't, the
+  cross-reference premise of this ticket is gone and the implementer
+  stops and re-specs.)
 - **The `printf '## Review Summary\n\n'` call** above the heredoc.
   The Review Summary heading is emitted there, not inside the
   heredoc; this ticket does not modify that line.
@@ -199,13 +210,13 @@ The skill is markdown-only — no executable tests. Verification is:
    emitted by the `printf '## Review Summary\n\n'` line above the
    heredoc; that printf call must be byte-identical before and
    after.
-4. **No duplicate field.** Grep the file for the literal string
-   `**Known gaps / deferred:**` — exactly one match must remain.
-
-   ```bash
-   grep -c '\*\*Known gaps / deferred:\*\*' skills/prepare-for-review/SKILL.md
-   # Must print: 1
-   ```
+4. **No duplicate field inside the heredoc.** Inside the static
+   template heredoc, the literal string `**Known gaps / deferred:**`
+   must appear exactly once. (Mentions outside the heredoc — for
+   example, in Step 5's prose, in code comments, or in this spec
+   filename — are unrelated and should NOT be counted or modified.)
+   Verification is a visual / scoped grep against the heredoc body,
+   not a whole-file count.
 
 5. **Field is in the Review Summary region.** Confirm the single
    match sits inside the heredoc body, in the Review Summary region
@@ -220,10 +231,13 @@ The skill is markdown-only — no executable tests. Verification is:
 6. **No QA Test Plan residue.** Confirm `**Known gaps / deferred:**`
    no longer appears anywhere inside the QA Test Plan region of the
    heredoc.
-7. **Step 5 alignment (informational).** Re-read Step 5's
-   "**Ambiguous findings**" bullet. It should still direct ambiguous
-   findings to Review Summary. If it does not, that is a separate
-   follow-up issue, not a blocker for this ticket.
+7. **Step 5 cross-reference still aligned.** Step 5's
+   "**Ambiguous findings**" bullet (in `SKILL.md` outside the
+   heredoc) still contains the substring "Review Summary" with
+   reference to where ambiguous findings / Known gaps go. The
+   drift-handling rule already gates on this before any edits;
+   this verification step is a final post-edit re-check that the
+   alignment hasn't been broken in the meantime.
 
 ## Out of scope
 
@@ -258,8 +272,11 @@ The skill is markdown-only — no executable tests. Verification is:
 The change is accepted when all of the following invariants hold;
 nothing else about `SKILL.md` is constrained by this ticket:
 
-1. `skills/prepare-for-review/SKILL.md` contains exactly one
-   `**Known gaps / deferred:**` line.
+1. The static template heredoc inside
+   `skills/prepare-for-review/SKILL.md` contains exactly one
+   `**Known gaps / deferred:**` line. (Mentions of the same string
+   elsewhere in the file — Step 5 prose, comments, etc. — are not
+   constrained.)
 2. That single line sits inside the heredoc body, in the Review
    Summary region (before the `## QA Test Plan` heading),
    immediately after `**Surprises during implementation:**` (with
@@ -273,7 +290,9 @@ nothing else about `SKILL.md` is constrained by this ticket:
 5. The heredoc that carries the static template body still parses
    as valid bash heredoc syntax: opener on its own line, terminator
    on its own line. Sentinel name is unconstrained.
-6. Step 5's "**Ambiguous findings**" bullet is not edited by this
-   ticket. (Verification step 7 checks for alignment with the new
-   placement, but a misalignment does not fail acceptance — it
-   becomes a follow-up issue.)
+6. Step 5's "**Ambiguous findings**" bullet still contains the
+   substring "Review Summary" as the home for ambiguous findings.
+   (This ticket does not edit Step 5; the bullet is verified
+   pre-edit by the drift rule and post-edit by verification step 7
+   to ensure the cross-reference inconsistency the Problem section
+   describes is actually resolved.)
