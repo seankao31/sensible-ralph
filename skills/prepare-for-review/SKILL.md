@@ -39,7 +39,8 @@ with whatever exit code those handlers specify (currently `exit
    - Trunk-base detection failure (`Cannot determine trunk` exit 1 path).
    - Post-comment state-transition failure (line 232–237 in the current skill body).
    - Tests failing — do NOT run this skill at all (the skill itself rejects this case before any step runs; included here for completeness so the agent has no doubt that "tests failed → exit per the existing handler" is legal).
-   Exit code per those handlers, typically `exit 1`. **Soft content-level cases do NOT belong in this bucket:** codex-review actionable findings must be fixed and re-run per Step 5; codex-review ambiguous findings and substantial PRD deviations must still produce the Step 6 handoff comment so the reviewer sees them; an "In Review" preflight state proceeds with idempotent rerun (legal final action 2). The carve-out is for objective preconditions that block the comment-or-transition path itself, not for content-level review states.
+   Exit code per those handlers, typically `exit 1`. **Soft content-level cases do NOT belong in this bucket:** codex-review actionable findings must be fixed and re-run per Step 5; codex-review advisory findings and substantial PRD deviations must still produce the Step 6 handoff comment so the reviewer sees them; codex-review **deliverability-blocking** findings engage the halt path (legal final action 4); an "In Review" preflight state proceeds with idempotent rerun (legal final action 2). The carve-out is for objective preconditions that block the comment-or-transition path itself, not for content-level review states.
+4. **Halt path (Step 5 deliverability-blocking finding)** — the full sequence of: reconcile-or-create follow-up Linear issues with provenance keys, idempotent `linear issue relation add ... blocked-by` writes, halt comment post (`linear issue comment add`, gated by the halt-marker dedup which skips the post but never exits the path), and a `linear issue view` state read followed by a conditional `linear issue update --state` that undoes any stale `In Review` left by a prior run. The terminal tool call is whichever of these runs last in the actual execution: on a first-run halt that finds the issue in `In Review` from a prior partial run, the terminal call is the `linear issue update` write; on a first-run halt where the state read shows `In Progress` (the common case), the terminal call is the `linear issue view` read; on a halt-comment-already-posted retry where the state is also already `In Progress`, the terminal call is still the `linear issue view` read. In all cases the issue ends up in `$CLAUDE_PLUGIN_OPTION_IN_PROGRESS_STATE` *or* in whatever operator-set state the halt path declines to override (see the Halt path execution-order step 4 below for the narrow guard). Exit code is 0; the orchestrator classifies the run as `exit_clean_no_review` when the post-state is `In Progress` and applies `ralph-failed` — that label is the operator triage signal, consistent with the existing classification in `docs/design/outcome-model.md`.
 
 **The illegal final action is: writing a markdown summary**
 ("Implementation complete", "All steps done", etc.) **as the
@@ -159,9 +160,17 @@ You MUST create a task for each of these items and complete them in order:
 6. **Capture decisions** — invoke the `capture-decisions` skill.
 7. **Prune completed docs** — invoke the `prune-completed-docs` skill.
 8. **Commit doc/decisions changes** — stage and commit any new files or edits from items 5–7.
-9. **Codex review gate** — invoke `codex-review-gate` with `--base "$BASE_SHA"`; address actionable findings inline, capture ambiguous ones for item 10's handoff comment.
-10. **Post Linear handoff comment** — write Review Summary + QA Test Plan to a tempfile and post via `linear issue comment add`.
-11. **Transition Linear issue to In Review** — `linear issue update "$ISSUE_ID" --state "$CLAUDE_PLUGIN_OPTION_REVIEW_STATE"` (skip if already in that state).
+9. **Codex review gate** — invoke `codex-review-gate` with `--base "$BASE_SHA"`. Classify each finding into one of three buckets per the location-first rule:
+   1. **Actionable** (root-cause fix entirely within touched-code set) — fix inline, commit, re-run gate.
+   2. **Advisory** (need human judgment, deliverable still works) — capture in item 10's handoff comment.
+   3. **Deliverability-blocking** (root-cause fix lands outside touched-code set AND the finding invalidates acceptance criteria) — engage the halt path:
+      - Detect autonomous mode via `${SENSIBLE_RALPH_AUTONOMOUS:-}` (no prompt) vs interactive mode (single Y/n prompt over all bucket-3 findings).
+      - For each finding: compute provenance key, reconcile-or-create a follow-up issue, idempotent `blocked-by` relation add.
+      - Post the halt-specific comment (gated by `HALT_MARKER` dedup; gate skips post but does NOT exit the path).
+      - State-restore step: read current state; only if `In Review`, transition back to `In Progress`.
+      - Exit clean (exit 0). Skip items 10 and 11.
+10. **Post Linear handoff comment** — write Review Summary + QA Test Plan to a tempfile and post via `linear issue comment add`. Skipped on the halt path.
+11. **Transition Linear issue to In Review** — `linear issue update "$ISSUE_ID" --state "$CLAUDE_PLUGIN_OPTION_REVIEW_STATE"` (skip if already in that state). Skipped on the halt path.
 
 ## The Sequence (run in order)
 
@@ -203,14 +212,221 @@ The pre-flight required a clean working tree, so all untracked files staged here
 
 Invoke the `codex-review-gate` skill, passing `--base "$BASE_SHA"` (computed above) so the review is scoped to this branch's commits (code + docs).
 
-**Handle findings here, not by escalating to the user mid-flow:**
+**Handle findings here, not by escalating to the user mid-flow.** Each finding falls into exactly one of three buckets:
 
-- **Actionable findings** (clear defect, missing edge case, anything you can address with confidence) — fix them, commit, and re-run the gate. Repeat until no actionable findings remain.
-- **Ambiguous findings** (need human judgment — design tradeoff, deferred scope question, anything where the right call isn't obvious) — do NOT ask mid-flow and do NOT block the loop on them. Capture them in Step 6's `## Review Summary` (under "Surprises during implementation" or "Known gaps / deferred" as fits) so the human reviewer sees them with full context. The loop exits once no actionable findings remain; ambiguous ones are expected to persist until Step 6.
+1. **Actionable** — a clear defect within scope, where the root-cause fix lies *entirely* within files in the touched-code set. Fix inline, commit, and re-run the gate. Repeat until no actionable findings remain.
+2. **Advisory** — needs human judgment but the deliverable still works (design tradeoff, deferred scope question, stylistic concern, non-blocking edge case). Do NOT ask mid-flow and do NOT block the loop on them. Capture them in Step 6's `## Review Summary` (under "Surprises during implementation" or "Known gaps / deferred" as fits) so the human reviewer sees them with full context. The loop exits once no actionable findings remain; advisory ones are expected to persist until Step 6.
+3. **Deliverability-blocking** — the finding's root-cause fix requires editing a file *outside* the touched-code set, AND a reviewer reading the issue description would conclude the feature does not deliver what was promised. **Halt path engages** (see "Step 5 halt path" below). Concrete examples:
+   - Codex shows the new endpoint silently returns the wrong shape because of a bug in a shared serializer this ticket didn't touch.
+   - Codex shows the new feature relies on a config flag that's never set anywhere — code reads it but no caller writes it.
+   - The spec promised behavior X but X requires a missing helper that this ticket's scope didn't add.
+
+**The classification rule.** Apply the steps in order; the *first* match wins:
+
+1. **Does the root-cause fix lie *entirely* within files in the touched-code set?** That is, would all required modifications to make the feature meet its acceptance criteria edit only files already in `git diff --name-only $BASE_SHA..HEAD`? If yes — bucket 1 (actionable; fix inline, the active spec covers these files by the user-global `CLAUDE.md` "current task's scope" definition).
+2. **Else, does the finding invalidate the feature's acceptance criteria?** I.e. would a reviewer reading the issue description conclude the feature does not deliver what was promised? If yes — bucket 3 (deliverability-blocking; halt).
+3. **Else** — bucket 2 (advisory; capture in Step 6 summary, proceed).
+
+**Scope is defined at file granularity.** The touched-code set is the file paths returned by `git diff --name-only $BASE_SHA..HEAD`. Region-level distinctions (which lines of `foo.ts` were touched vs which weren't) are out of scope for this rule.
+
+The "*entirely*" qualifier in step 1 is load-bearing for mixed-scope findings. A finding can manifest in a touched file (an in-ticket test fails, an in-ticket wrapper exposes the bug) while the actual fix requires editing an *additional* file the ticket did not touch (a shared helper outside the touched set). In that mixed case, **the finding is bucket 3 (halt), not bucket 1**, because some required edit lands outside the touched-code set. A fix that lands partly out-of-ticket cannot honestly be called "in scope," and silently editing the shared helper in a ticket's branch hides cross-cutting changes from the reviewer.
+
+The same-file caveat: if a finding requires editing a different *region* of a file the ticket already touched, the file is in the touched set, so step 1 says bucket 1. That is intentional. A ticket's branch "owns" the files it touches at the file-path level. If the ticket genuinely should not be touching that file at all, the reviewer can flag it at PR time.
+
+The simplest implementer test: write down, in one sentence, the file paths the fix has to edit. If any of those paths is NOT in `git diff $BASE_SHA..HEAD --name-only`, the answer is bucket 3.
+
+**When uncertain at any step, escalate to the higher-numbered bucket.** Specifically:
+
+- Uncertain between bucket 1 and bucket 3 — default to bucket 3. This matches the user-global `CLAUDE.md` rule "when uncertain, treat as out of scope," and silently fixing off-ticket code conflates in-scope and out-of-scope work in a single commit, which the reviewer cannot easily separate.
+- Uncertain between bucket 2 and bucket 3 — default to bucket 3. A false-positive halt costs operator triage time. A false-negative ship of a broken feature costs more — the DAG advances, descendants dispatch onto bad work, and the orchestrator's post-dispatch checks have no way to recover.
 
 **Known limitation:** If the codex fix loop results in behavioral code changes, the doc/decision captures from Steps 1–3 may be slightly stale. For minor fixes (style, error handling) this is acceptable. For behavioral changes, re-run `/prepare-for-review` from the top on the updated branch.
 
 If the `codex-review-gate` skill isn't installed, skip with a note. **Important:** in autonomous sensible-ralph sessions where review-before-merge is load-bearing, operators should install codex-review-gate before relying on the orchestrator; skipping this step silently weakens the safety pillar.
+
+#### Step 5 halt path
+
+The halt path engages once per run if any finding from the current codex pass is classified bucket 3. It files each blocking finding as a follow-up Linear issue, sets `blocked-by` relations on the parent, posts a halt-specific comment, and exits clean — skipping Step 6's regular handoff comment and Step 7's `In Review` transition. The orchestrator's existing classifier sees `exit 0 + In Progress` and treats the run as `exit_clean_no_review` (label `ralph-failed`, taint downstream); no new outcome class is introduced.
+
+The halt path is a small idempotent state machine. A run that completes brings the parent issue from "halt decided" to "halt fully recorded" via three durable artifacts: (A) one follow-up issue per bucket-3 finding with a per-finding **provenance key** in its description; (B) one `blocked-by` relation per follow-up; (C) exactly one halt comment on the parent. A run that interrupts after some subset of A/B/C reconciles (does not duplicate) the existing artifacts on retry.
+
+##### Autonomous-mode detection
+
+The skill detects autonomous mode via the `SENSIBLE_RALPH_AUTONOMOUS` env var the orchestrator exports at dispatch time (see `docs/design/autonomous-mode.md`):
+
+```bash
+if [ "${SENSIBLE_RALPH_AUTONOMOUS:-}" = "1" ]; then
+  AUTONOMOUS=1
+else
+  AUTONOMOUS=0
+fi
+```
+
+This is a hard contract, not an inferred behavior. The agent does NOT infer autonomous-vs-interactive from preamble presence in context — that inference can fail silently: the agent might prompt anyway, the autonomous session has no stdin to receive an answer, the prompt sits as the session's last text without a tool call, and the orchestrator classifies the run as `exit_clean_no_review` (same final classification as a clean halt, but without the halt comment having posted). The env var collapses that failure mode to a deterministic branch.
+
+##### Autonomous mode (`AUTONOMOUS=1`)
+
+No prompt. The agent's bucket-3 judgment is final and the halt path engages immediately. This matches the autonomous preamble's escape-hatch pattern (`docs/design/autonomous-mode.md`): when human input would normally be required, the autonomous session takes the deterministic exit path.
+
+##### Interactive mode (`AUTONOMOUS=0`)
+
+Collect all bucket-3 findings from the current codex pass, present them together, and ask once:
+
+> I'm classifying the following codex finding(s) as
+> deliverability-blocking:
+>
+> - *<one-sentence why for finding 1>*
+> - *<one-sentence why for finding N>*
+>
+> Halt? `[Y/n]`
+
+Default Y. If the user answers `n`, all listed findings move to bucket 2 (advisory) and Step 5 continues. If the user answers `y` (or default), the halt path engages once with all listed findings folded into the single halt comment's "Blocking discoveries" section.
+
+##### Provenance key (per-finding dedup)
+
+Each bucket-3 finding gets a stable provenance key derived from a canonical tuple of identity-bearing fields. The body component is mandatory in the tuple (it's the *tail*, not a fallback): when codex emits structured metadata (file, line, rule id, title) those disambiguate near-collisions cheaply; when those fields are absent and the placeholders match across findings, the body component still distinguishes independent findings.
+
+```bash
+# Codex's review JSON exposes title, file, line_start, line_end, body,
+# and (when present) a stable rule/category id. Body is normalized
+# (whitespace collapsed, leading/trailing whitespace trimmed) before
+# hashing so trivial reformatting doesn't change the key.
+FINDING_BODY_NORMALIZED=$(printf '%s' "$FINDING_BODY" \
+  | tr -s '[:space:]' ' ' \
+  | sed -e 's/^ *//' -e 's/ *$//')
+CANONICAL=$(printf '%s|%s|%s|%s|%s|%s' \
+  "${FINDING_FILE:-_}" \
+  "${FINDING_LINE_START:-_}" \
+  "${FINDING_LINE_END:-_}" \
+  "${FINDING_RULE_ID:-_}" \
+  "${FINDING_TITLE:-_}" \
+  "$FINDING_BODY_NORMALIZED")
+FINDING_KEY=$(printf '%s' "$CANONICAL" | shasum -a 256 | cut -c1-16)
+PROVENANCE_TAG="<!-- halt-finding: ${ISSUE_ID}/${FINDING_KEY} -->"
+```
+
+`$ISSUE_ID` is the parent (the ticket prepare-for-review is running on); `$FINDING_KEY` is the per-finding 16-hex truncated SHA-256 (64 bits of collision resistance — ample for the per-issue scale of single-digit findings). `$PROVENANCE_TAG` is embedded in the follow-up's description; this spec relies only on the substring being searchable via Linear's API, not on the HTML-comment rendering. If Linear ever renders the tag literally, UX degrades but correctness holds.
+
+##### Reconcile-or-create algorithm (run for each bucket-3 finding)
+
+```text
+For each bucket-3 finding:
+  Compute FINDING_KEY and PROVENANCE_TAG.
+  Search for an existing follow-up issue whose description contains
+    PROVENANCE_TAG.
+  If found:
+    Capture its issue ID as $blocker_id.
+    Skip create.
+  Else:
+    Create the follow-up. Capture the new ID as $blocker_id.
+    Embed PROVENANCE_TAG in the description (and the body the agent
+    wrote per linear-workflow conventions).
+  Append $blocker_id to $BLOCKER_ISSUE_IDS.
+  linear issue relation add "$ISSUE_ID" blocked-by "$blocker_id"
+```
+
+The `relation add` call is idempotent on the Linear side: re-adding an existing `blocked-by` relation does not create a duplicate and exits 0. (The CLI prints "Created" on both first-add and re-add — misleading if you treat output as a truthful signal — but the underlying state is correct either way. Trust the post-condition, not the CLI's return surface; if a separate verification is needed elsewhere, query `linear_get_issue_blockers "$ISSUE_ID"`.) The relation step needs no pre-check for partial-failure retry.
+
+Linear API search query for the existing-follow-up check:
+
+```bash
+linear api 'query($q: String!) { issues(filter: { description: { contains: $q } }, first: 5) { nodes { identifier } } }' \
+  --variable "q=$PROVENANCE_TAG" \
+  | jq -r '.data.issues.nodes[].identifier' | head -1
+```
+
+Reconciling existing follow-ups is what makes the halt path safely re-runnable. A retry after partial-failure re-discovers the already-filed issues by their provenance keys, fills in missing relations idempotently, and proceeds without duplicating Linear state.
+
+##### Halt path execution order
+
+Run these in order. Each step is idempotent per the algorithm above; on retry, completed steps no-op.
+
+1. **Reconcile-or-create the follow-up issues** (loop above). Output: `$BLOCKER_ISSUE_IDS` populated with one ID per bucket-3 finding.
+2. **Reconcile-or-add `blocked-by` relations** (also handled by the loop above; the relation add is idempotent on Linear).
+3. **Post the halt-specific comment** (template below) via `linear issue comment add --body-file` from a `mktemp` tempfile, gated by the halt-marker dedup:
+
+   ```bash
+   HALT_MARKER=$(printf 'Posted by `/prepare-for-review` halt path for revision `%s`' "$CURRENT_SHA")
+   HALT_ALREADY_POSTED=$(linear api 'query($issueId: String!, $marker: String!) { issue(id: $issueId) { comments(filter: { body: { contains: $marker } }, first: 1) { nodes { id } } } }' \
+     --variable "issueId=$ISSUE_ID" \
+     --variable "marker=$HALT_MARKER" 2>/dev/null \
+     | jq '((.data.issue.comments.nodes) // []) | length > 0')
+   if [ "$HALT_ALREADY_POSTED" = "true" ]; then
+     echo "halt comment for $CURRENT_SHA already posted; skipping repost" >&2
+     # Fall through to step 4. Do NOT exit — see below.
+   else
+     linear issue comment add "$ISSUE_ID" --body-file "$COMMENT_FILE"
+   fi
+   ```
+
+   **The halt-path dedup gates the comment post only. It MUST NOT short-circuit the halt path's exit.** Step 4 must run on every halt-path execution, including retries where the halt comment was already posted in a prior run that died before step 4 ran. An early `exit 0` here would skip step 4, leaving the issue in whatever state the prior partial-failure left it in (potentially `In Review` from a regular Step 7 that fired before the halt was decided), and the orchestrator's post-dispatch state read would misclassify the run as `in_review` (success).
+4. **Undo a stale `In Review` post-state, if present.** Read the issue's current state. If — and *only if* — it is `$CLAUDE_PLUGIN_OPTION_REVIEW_STATE`, transition it back to `$CLAUDE_PLUGIN_OPTION_IN_PROGRESS_STATE`:
+
+   ```bash
+   current_state=$(linear issue view "$ISSUE_ID" --json | jq -r '.state.name')
+   if [ "$current_state" = "$CLAUDE_PLUGIN_OPTION_REVIEW_STATE" ]; then
+     linear issue update "$ISSUE_ID" --state "$CLAUDE_PLUGIN_OPTION_IN_PROGRESS_STATE"
+   fi
+   ```
+
+   This step exists for one specific case: the halt path fires from a re-run of `/prepare-for-review` after the *prior* run had already transitioned the issue to `In Review` (e.g., user demoted bucket-3 findings interactively in the prior run, then changed their mind in this run; or codex review surfaces new findings on a re-invocation at the same SHA). Without this undo, the orchestrator's post-dispatch state read would see `In Review` and classify the run as `in_review` (success), defeating the halt mechanism.
+
+   The guard is narrow on purpose: only `In Review` is undone. If an operator manually moved the issue to a different state (`Canceled`, `Done`, a custom holding state, etc.) between the two runs, the halt path leaves it alone — operator state wins. The orchestrator's classification will then read whatever state the operator chose; outside of `In Review`, the `exit_clean_no_review` outcome won't fire, but the halt comment and follow-ups have still been recorded for the operator to see. In the common case (Step 5 firing during a first-run prepare-for-review where Step 7 has not run yet) the read shows `In Progress` and the conditional skips entirely.
+5. **Exit clean** with exit code 0. Do NOT run the regular Step 6 (handoff comment) or Step 7 (state transition). The issue's post-state depends on what the conditional in step 4 found:
+   - If the read showed `In Review` → step 4 wrote `In Progress`. Orchestrator classifies as `exit_clean_no_review` (the intended outcome).
+   - If the read showed `In Progress` → step 4 was a no-op. Orchestrator still classifies as `exit_clean_no_review`.
+   - If the read showed any other state (operator manually moved to `Canceled`/`Done`/holding state between runs) → step 4 was a no-op, the operator's state is preserved, and the orchestrator's classification follows from that state per `docs/design/outcome-model.md` rather than necessarily reading as `exit_clean_no_review`. The halt comment and follow-up issues have been recorded regardless, so the operator still sees the halt context on the issue.
+
+The halt path is the skill's terminal path for this invocation. Per the "Terminal action contract" section, the skill's last operation must be a tool call (typically the halt comment post or the `In Progress` restore; on a fully-reconciled retry where step 3's dedup hits and step 4's read shows the issue already in `In Progress`, the terminal tool call is the state read itself), not a markdown summary.
+
+##### Halt comment template
+
+Posted via `linear issue comment add --body-file`. Body:
+
+```markdown
+## Halt — deliverability blocked
+
+`/prepare-for-review` halted because a discovery during the codex
+review indicates the feature does not meet its acceptance criteria.
+The issue remains in `In Progress`; do NOT merge.
+
+**Blocking discoveries:**
+
+- *<one-paragraph description of finding 1>* — filed as
+  [ENG-AAA](<linear url>) (`blocked-by` set on this issue)
+- *<one-paragraph description of finding N>* — filed as
+  [ENG-NNN](<linear url>) (`blocked-by` set on this issue)
+
+**Why these block deliverability:** <one-paragraph reasoning the
+agent applied to classify the finding(s) as bucket 3 — one
+paragraph total, not one per finding>
+
+**Resume conditions:** <what needs to land before this ticket can
+be re-attempted — typically "all listed follow-ups merged" but may
+include caveats>
+
+## Commits in this branch
+
+<git log --oneline $BASE_SHA..HEAD output>
+
+---
+_Posted by `/prepare-for-review` halt path for revision `<SHA>`_
+```
+
+For the single-finding case, the "Blocking discoveries" list still renders correctly with one bullet — no separate single-finding template variant.
+
+The footer `` _Posted by `/prepare-for-review` halt path for revision `<SHA>`_ `` is the dedup marker for the halt comment, disjoint from the regular handoff comment's `` _Posted by `/prepare-for-review` for revision `<SHA>`_ ``. Neither is a substring of the other, so each dedup query matches exactly one comment type.
+
+##### Same-SHA path transition behavior
+
+With disjoint markers AND the halt path's state-restore step (execution-order step 4), the dedup interaction is well-defined for the case where the same SHA sees both decisions across separate invocations:
+
+- **Run A at SHA X posts a regular handoff comment and transitions the issue to `In Review`** (e.g., user demoted bucket-3 findings interactively; full normal Step 6/Step 7 path): `REGULAR_MARKER` matches on retry of Step 6. `HALT_MARKER` does NOT match. Issue state is `In Review`.
+- **Run B at SHA X engages the halt path:** `HALT_MARKER` does not match the regular comment, so the halt path proceeds, posts the halt comment, then runs the state-restore step. The state read shows `In Review`, so the conditional write transitions back to `In Progress`. The issue now carries both comments and is in `In Progress`. Operator sees the halt comment as the most recent. The orchestrator's post-dispatch state read sees `In Progress` and classifies the run as `exit_clean_no_review`.
+- **Run B's earlier reconcile-or-create loop** finds the previously filed follow-ups (by provenance key) — even if Run A had filed none (because A demoted to advisory), Run B's loop creates them cleanly.
+- **Run C at SHA X is another retry of the halt path:** `HALT_MARKER` matches → step 3 skips repost. Step 4's state read shows `In Progress` (Run B already restored), so step 4's conditional write is also skipped. Exit clean. The reconcile loop's existing-issue check finds the already-filed follow-ups and no-ops.
+
+The transition from advisory to halt at the same SHA is allowed, recorded by both comments existing on the issue, and the post-state contract holds because of the explicit state restore. The reverse transition (halt → advisory at the same SHA) is not supported in autonomous mode, because once the halt path has filed follow-ups and posted the halt comment, the run is terminal. In interactive mode, if the user changes their mind after a halt comment was posted, manual cleanup is required (delete the halt comment, cancel the follow-up issues, remove the `blocked-by` relations) — out of scope for this skill; file separately if it becomes a real workflow.
 
 ### Step 6: Post Linear handoff comment
 
@@ -218,14 +434,14 @@ First check whether a handoff comment for this specific revision was already pos
 
 ```bash
 CURRENT_SHA=$(git rev-parse HEAD)
-MARKER=$(printf 'revision `%s`' "$CURRENT_SHA")
+REGULAR_MARKER=$(printf 'Posted by `/prepare-for-review` for revision `%s`' "$CURRENT_SHA")
 ALREADY_POSTED=$(linear api 'query($issueId: String!, $marker: String!) { issue(id: $issueId) { comments(filter: { body: { contains: $marker } }, first: 1) { nodes { id } } } }' \
   --variable "issueId=$ISSUE_ID" \
-  --variable "marker=$MARKER" 2>/dev/null \
+  --variable "marker=$REGULAR_MARKER" 2>/dev/null \
   | jq '((.data.issue.comments.nodes) // []) | length > 0')
 ```
 
-The `` revision `<SHA>` `` marker (the literal word `revision`, a space, and the backtick-wrapped revision hash) is unique per HEAD, so the server-side `body.contains` filter returns at most one match regardless of how many comments the issue has. `linear issue comment list` isn't suitable here — it returns only the first ~50 comments with no cursor flag exposed, so a prior handoff comment on a long-running issue could sit on a later page and go undetected.
+The marker (the regular handoff comment's footer substring) is unique per HEAD AND disjoint from the halt path's footer (see "Halt path" below — its marker contains the extra `halt path` token), so the server-side `body.contains` filter returns at most one match for the regular handoff comment regardless of how many comments the issue has. `linear issue comment list` isn't suitable here — it returns only the first ~50 comments with no cursor flag exposed, so a prior handoff comment on a long-running issue could sit on a later page and go undetected.
 
 If `ALREADY_POSTED` is `true`, skip to Step 7.
 
@@ -302,7 +518,8 @@ Direct `linear` CLI call. The `--json`-then-branch pattern preserves the "don't 
 ## Red Flags / When to Stop
 
 - **Tests are failing.** Do NOT run this skill. Fix tests first.
-- **`codex-review-gate` returns blocking findings.** Fix them, re-run the gate. Do not move to In Review with known blocking issues unsurfaced.
+- **`codex-review-gate` returns actionable findings.** Fix them, re-run the gate. Do not move to In Review with known blocking issues unsurfaced.
+- **`codex-review-gate` returns deliverability-blocking findings.** Engage the halt path (legal final action 4) — this is a *legitimate* exit, distinct from the precondition failures listed here. The terminal tool call is whichever of comment-post / state-read / state-update ran last for the invocation (see "Terminal action contract" → action 4 and the "Step 5 halt path" subsection). Exit code is 0; the orchestrator's post-dispatch state read typically sees the issue in `In Progress` and classifies the run as `exit_clean_no_review` — same operator triage path as a hard failure, but reached deliberately. If an operator manually moved the issue to a state other than `In Review` between runs, the halt path preserves that state (step 4 of the halt path is `In Review`-only) and the classification follows from whatever state the operator chose.
 - **The QA test plan is empty or generic.** Stop and actually think about what a reviewer needs to verify — the agent that wrote the code knows the risky paths, and capturing them at handoff is the cheap moment.
 - **Deviations from the PRD are substantial enough they need discussion.** Post the comment anyway (the reviewer will see it), but flag loudly in the Review Summary section.
 - **Linear state is unexpected** (not `$CLAUDE_PLUGIN_OPTION_IN_PROGRESS_STATE` and not `$CLAUDE_PLUGIN_OPTION_REVIEW_STATE`). Something is off with the dispatch lifecycle — stop and surface to the reviewer.

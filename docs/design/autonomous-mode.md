@@ -43,6 +43,30 @@ Two mechanics are deliberate:
   is ephemeral — it exists only inside the dispatched subprocess's
   prompt.
 
+## Autonomous-mode signal
+
+The orchestrator also exports `SENSIBLE_RALPH_AUTONOMOUS=1` into the
+dispatched `claude -p` subprocess's environment, alongside the
+prepended preamble. The export lives at the dispatch site in
+`skills/sr-start/scripts/orchestrator.sh` as an inline env-var prefix
+on the `claude -p` invocation; the variable is scoped to that single
+subprocess and never leaks to the parent shell.
+
+The env var exists because the preamble alone is not a reliable
+autonomous-vs-interactive discriminator for skills that need a
+deterministic branch. A skill that infers "autonomous" from preamble
+presence in context can fail silently — the model might prompt
+anyway, the autonomous session has no stdin to receive an answer,
+the prompt sits as the session's last text without a tool call, and
+the orchestrator misclassifies the run. Reading
+`SENSIBLE_RALPH_AUTONOMOUS` collapses that failure mode to a hard
+contract: present and `1` ⇒ autonomous; otherwise ⇒ interactive.
+
+`/prepare-for-review`'s halt path (ENG-245) is the first
+load-bearing consumer of this signal: in autonomous mode a
+deliverability-blocking classification engages the halt without
+prompting; in interactive mode it asks the user once before halting.
+
 ## What the preamble overrides
 
 The umbrella substitution covers every `CLAUDE.md` rule that requires
