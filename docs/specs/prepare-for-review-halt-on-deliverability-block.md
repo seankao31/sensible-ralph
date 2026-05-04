@@ -71,35 +71,98 @@ SKILL.md text so the agent has a reference:
 - The spec promised behavior X but X requires a missing helper that
   this ticket's scope didn't add.
 
-The agent's classification rule:
+The agent's classification rule, applied in this strict order
+(first match wins):
 
-- If the finding describes a missing piece, broken contract, or
-  unsatisfied precondition that the feature *requires* to deliver
-  its acceptance criteria — bucket 3.
-- If the finding describes a design tradeoff, a stylistic concern, a
-  deferred consideration, or a non-blocking edge case — bucket 2.
-- If the finding describes something the agent could fix in this
-  ticket's scope — bucket 1 (the existing fix-and-re-run path).
+1. **Is the bug fix in code touched by this ticket's commits?** That
+   is, would the fix be a modification to a file/region that this
+   ticket's branch already adds or modifies relative to
+   `$BASE_SHA..HEAD`? If yes — bucket 1 (fix inline; the active spec
+   covers this code by the user-global CLAUDE.md "current task's
+   scope" definition).
+2. **Else, does the finding invalidate the feature's acceptance
+   criteria?** I.e. would a reviewer reading the issue description
+   conclude the feature does not deliver what was promised? If yes —
+   bucket 3 (halt).
+3. **Else** — bucket 2 (advisory: design tradeoff, stylistic concern,
+   deferred consideration, non-blocking edge case; capture in
+   summary, proceed).
 
-**When uncertain between bucket 2 and bucket 3, default to bucket 3
-(halt).** Rationale: a false-positive halt costs operator triage
-time. A false-negative ship of a broken feature costs more — the DAG
-advances, descendants dispatch onto bad work, and the orchestrator's
-post-dispatch checks have no way to recover.
+**When uncertain at any step, escalate to the higher-numbered
+bucket.** Specifically:
+- Uncertain between bucket 1 and bucket 3 — default to bucket 3.
+  This matches the user-global CLAUDE.md rule "when uncertain, treat
+  as out of scope," and silently fixing off-ticket code conflates
+  in-scope and out-of-scope work in a single commit, which the
+  reviewer cannot easily separate.
+- Uncertain between bucket 2 and bucket 3 — default to bucket 3.
+  Rationale: a false-positive halt costs operator triage time. A
+  false-negative ship of a broken feature costs more — the DAG
+  advances, descendants dispatch onto bad work, and the
+  orchestrator's post-dispatch checks have no way to recover.
+
+The location-first ordering (step 1 before step 2) is deliberate. A
+finding can be "the agent could technically fix this" *and* "this
+breaks deliverability" simultaneously when the bug is inside the
+ticket's own code — that's exactly bucket 1, and codex's
+fix-and-re-run loop is the right response. Only when the bug is
+*outside* the ticket's code does the deliverability question route
+to bucket 3 (halt) vs bucket 2 (advisory).
 
 ### Interactive vs autonomous behavior
 
-**Autonomous mode** (the orchestrator-prepended preamble is loaded
-into the session): no prompt. The agent's bucket-3 judgment is final
-and the halt path engages immediately. This matches the autonomous
-preamble's escape-hatch pattern documented in
-`docs/design/autonomous-mode.md`: when human input would normally be
-required, the autonomous session takes the deterministic exit path.
+The halt path is binary — if any finding is classified bucket 3,
+halt fires once for the run. The interactive-mode prompt is the only
+behavioral difference between modes; the rest of the halt path is
+identical.
 
-**Interactive mode** (no preamble; user at the keyboard): the halt
-path is binary — if any finding is classified bucket 3, halt fires
-once for the run. The agent collects all bucket-3 findings from the
-current codex pass, presents them together, and asks once:
+#### Autonomous-mode detection
+
+The skill detects autonomous mode by checking for the autonomous
+preamble's environment marker. The orchestrator MUST export
+`SENSIBLE_RALPH_AUTONOMOUS=1` into the dispatched `claude -p`
+process's environment when prepending the autonomous preamble.
+Implementation surface: a one-line addition to
+`skills/sr-start/scripts/orchestrator.sh` at the dispatch site,
+before the `claude -p` invocation. (If the orchestrator already
+exports a different name, use that — the implementer should grep
+for an existing autonomous flag before adding a new one. If found,
+this spec's `SENSIBLE_RALPH_AUTONOMOUS` reference becomes that
+existing variable name; if not found, add `SENSIBLE_RALPH_AUTONOMOUS`
+to the orchestrator and to the autonomous-mode design doc.)
+
+The skill's halt-path logic branches on:
+
+```bash
+if [ "${SENSIBLE_RALPH_AUTONOMOUS:-}" = "1" ]; then
+  AUTONOMOUS=1
+else
+  AUTONOMOUS=0
+fi
+```
+
+This is a hard contract, not an inferred behavior. The agent does
+NOT infer autonomous-vs-interactive from preamble presence in
+context, because that inference can fail silently: the agent might
+prompt anyway, the autonomous session has no stdin to receive an
+answer, the prompt sits as the session's last text without a tool
+call, and the orchestrator classifies the run as
+`exit_clean_no_review` — same final classification as a clean halt,
+but without the halt comment having posted. The env var collapses
+that failure mode to a deterministic branch.
+
+#### Autonomous mode (`AUTONOMOUS=1`)
+
+No prompt. The agent's bucket-3 judgment is final and the halt path
+engages immediately. This matches the autonomous preamble's
+escape-hatch pattern documented in `docs/design/autonomous-mode.md`:
+when human input would normally be required, the autonomous session
+takes the deterministic exit path.
+
+#### Interactive mode (`AUTONOMOUS=0`)
+
+The agent collects all bucket-3 findings from the current codex
+pass, presents them together, and asks once:
 
 > I'm classifying the following codex finding(s) as
 > deliverability-blocking:
@@ -111,59 +174,124 @@ current codex pass, presents them together, and asks once:
 Default Y. If the user answers `n`, all listed findings move to
 bucket 2 (advisory) and Step 5 continues. If the user answers `y`
 (or default), the halt path engages once with all listed findings
-folded into the single halt comment's "Blocking discovery" section.
-
-This branch must not deadlock the autonomous session — the autonomous
-preamble already converts "STOP and ask" patterns to the escape
-hatch, and the halt path *is* the escape hatch in this case. The
-interactive prompt only fires when the preamble is not loaded.
+folded into the single halt comment's "Blocking discoveries"
+section.
 
 ### Halt path mechanics
 
-When the halt fires, run these in order. The mechanics are
-count-agnostic: if a single bucket-3 finding triggers the halt, the
-loops below execute once. If multiple bucket-3 findings are present,
-each finding gets its own follow-up issue and its own blocked-by
-relation, and the halt comment lists all of them.
+The halt path is a small idempotent state machine. Each execution
+brings the issue from "halt decided" toward "halt fully recorded."
+The state machine has three durable artifacts on the parent issue:
 
-1. **For each bucket-3 finding, file a follow-up issue.** The act
-   of filing is required by ENG-240's CLAUDE.md rule (out-of-scope
-   bugs → file a ticket). The follow-up's *format* follows the
-   global `linear-workflow` skill's "Creating Issues" / "Follow-ups"
-   conventions: provenance prefix
-   `**Discovered during ENG-XXX prepare-for-review.**` (where
-   `ENG-XXX` is the ticket prepare-for-review is running on, not
-   the new follow-up); state `Todo` (the discovery is a concrete
-   actionable bug, not vague backlog material); priority `Urgent`
-   if the discovery is a bug, `Medium` otherwise; no assignee. If
-   the linear-workflow skill is updated, follow whatever it says
-   at invocation time — this spec does not duplicate the full rule
-   set. Collect each new issue ID in shell as
-   `$BLOCKER_ISSUE_IDS` (a list).
-2. **For each follow-up, set a `blocked-by` relation** on the
-   current ticket:
-   ```bash
-   for blocker in "${BLOCKER_ISSUE_IDS[@]}"; do
-     linear issue relation add "$ISSUE_ID" blocked-by "$blocker"
-   done
-   ```
-   These are the durable records of why the parent halted. They
-   survive across sessions and are what `/sr-start`'s queue logic
-   will see.
+- **A** — one follow-up Linear issue per bucket-3 finding, each
+  carrying a per-finding **provenance key** in its description.
+- **B** — one `blocked-by` relation per follow-up, on the parent
+  issue.
+- **C** — exactly one halt comment on the parent issue, identified
+  by its halt-specific revision footer.
+
+A run that completes all three has fully recorded the halt. A run
+that interrupts after some subset of A/B/C has been written must,
+on retry, reconcile (not duplicate) the existing artifacts.
+
+#### Provenance key (per-finding dedup)
+
+Each bucket-3 finding gets a stable provenance key derived from its
+content. The key MUST be deterministic for the same finding and MUST
+change if the finding text changes. Recommended construction:
+
+```bash
+FINDING_KEY=$(printf '%s' "$finding_body" | shasum -a 256 | cut -c1-12)
+PROVENANCE_TAG="<!-- halt-finding: ${ISSUE_ID}/${FINDING_KEY} -->"
+```
+
+`$ISSUE_ID` is the parent (the ticket prepare-for-review is running
+on); `$FINDING_KEY` is the per-finding hash. `$PROVENANCE_TAG` is
+embedded in the follow-up's description (Linear renders HTML
+comments invisibly, per a known Linear behavior — but this spec only
+relies on the substring being searchable, not invisible. If Linear
+ever renders the tag literally, the key is still searchable; UX
+degrades but correctness holds).
+
+The marker text choice (`<!--` style) is a recommendation. The
+implementer MAY substitute another searchable marker (e.g. a
+fenced code block, a footer line) as long as it satisfies: (1)
+unique enough to not match unrelated comments, (2) survives Linear's
+markdown rendering, (3) queryable via the Linear API's `body.contains`
+filter.
+
+#### Reconcile-or-create algorithm (run for each bucket-3 finding)
+
+```text
+For each bucket-3 finding:
+  Compute FINDING_KEY and PROVENANCE_TAG.
+  Search for an existing follow-up issue whose description contains
+    PROVENANCE_TAG.
+  If found:
+    Capture its issue ID as $blocker_id.
+    Skip create.
+  Else:
+    Create the follow-up. Capture the new ID as $blocker_id.
+    Embed PROVENANCE_TAG in the description (and the body the agent
+    wrote per linear-workflow conventions).
+  Append $blocker_id to $BLOCKER_ISSUE_IDS.
+  Search for an existing blocked-by relation $ISSUE_ID -> $blocker_id.
+  If absent:
+    linear issue relation add "$ISSUE_ID" blocked-by "$blocker_id"
+  Else:
+    Skip add.
+```
+
+Reconciling existing follow-ups is what makes the halt path safely
+re-runnable. A retry after partial-failure re-discovers the
+already-filed issues by their provenance keys, fills in missing
+relations, and proceeds to step 3 below — without duplicating any
+Linear state.
+
+Linear API search query for the existing-follow-up check:
+
+```bash
+linear api 'query($q: String!) { issues(filter: { description: { contains: $q } }, first: 5) { nodes { identifier } } }' \
+  --variable "q=$PROVENANCE_TAG" \
+  | jq -r '.data.issues.nodes[].identifier' | head -1
+```
+
+For the existing-relation check, query the parent's relations:
+
+```bash
+linear_get_issue_blockers "$ISSUE_ID" \
+  | jq -r --arg b "$blocker_id" '.[] | select(.id == $b) | .id'
+```
+
+Both queries run via the Linear CLI / API surface already used
+elsewhere in the plugin's `lib/linear.sh`.
+
+#### Halt path execution order
+
+Run these in order. Each step is idempotent per the algorithm
+above; on retry, completed steps no-op.
+
+1. **Reconcile-or-create the follow-up issues** (loop above).
+   Output: `$BLOCKER_ISSUE_IDS` populated with one ID per
+   bucket-3 finding.
+2. **Reconcile-or-add `blocked-by` relations** (also handled by
+   the loop above).
 3. **Post the halt-specific comment** (template below) via
-   `linear issue comment add --body-file` from a `mktemp` tempfile.
-   Reuses Step 6's tempfile pattern. The comment lists all
-   bucket-3 findings and their follow-up issue IDs.
-4. **Exit clean.** Do NOT run the regular Step 6 (handoff comment)
-   or Step 7 (state transition). The issue stays in
-   `In Progress`. The orchestrator's outcome classification picks
-   this up as `exit_clean_no_review` (existing logic in
-   `docs/design/outcome-model.md`).
+   `linear issue comment add --body-file` from a `mktemp`
+   tempfile. The halt comment has its own SHA-anchored dedup
+   (see "Dedup compatibility" below) — on retry, if the halt
+   comment for the current HEAD is already posted, skip.
+4. **Exit clean** with exit code 0. Do NOT run the regular
+   Step 6 (handoff comment) or Step 7 (state transition). The
+   issue stays in `In Progress`. The orchestrator's outcome
+   classification picks this up as `exit_clean_no_review`
+   (existing logic in `docs/design/outcome-model.md`).
 
 The halt path is the skill's terminal path for this invocation. Per
 the existing "Terminal action contract" section, the skill's last
-operation must be a tool call (the halt comment post or the relation
-write), not a markdown summary.
+operation must be a tool call (the halt comment post; or, on a
+fully-reconciled retry where step 3's dedup hits, the search query
+that confirmed the existing comment), not a markdown summary.
 
 ### Halt comment template
 
@@ -211,54 +339,110 @@ below).
 
 ### Dedup compatibility
 
-Step 6 currently has SHA-based dedup:
+Step 6's existing dedup uses a SHA-based substring marker that
+unintentionally matches BOTH the regular handoff comment and the
+new halt comment, because both footers contain `` revision `<SHA>` ``.
+That is a real correctness bug for the same-SHA retry case once the
+halt path exists, AND for the case where one invocation at SHA X
+posts a regular handoff comment (e.g., user demoted bucket-3
+findings interactively) and a later invocation at the same SHA
+classifies the same findings as bucket 3 and engages the halt path.
+Both can happen, despite the previous version of this spec assuming
+they couldn't.
+
+**Resolution:** make the two markers disjoint by anchoring on the
+comment-type substring, not on `revision`. Update both Step 6 and
+the halt path to use markers that do not overlap.
+
+#### Step 6 marker (REGULAR)
+
+Update Step 6's dedup snippet from:
 
 ```bash
 MARKER=$(printf 'revision `%s`' "$CURRENT_SHA")
-ALREADY_POSTED=$(linear api ... \
-  --variable "marker=$MARKER" ...)
 ```
 
-The marker `` revision `<SHA>` `` matches both the regular handoff
-comment and the new halt comment, since both include that substring
-in their footer. That's a problem on retry: if a halt comment is
-already posted at HEAD and the agent re-runs (e.g., after a transient
-failure), the regular Step 6 dedup would incorrectly conclude "we
-already posted at this SHA" and skip — but the regular handoff isn't
-the right comment to skip-into; the issue should remain halted.
-
-**Resolution:** the halt path uses its own dedup marker:
-`` halt path for revision `<SHA>` ``. The halt-path entry runs its
-own dedup pre-check with this distinct marker before posting:
+to:
 
 ```bash
-HALT_MARKER=$(printf 'halt path for revision `%s`' "$CURRENT_SHA")
-HALT_ALREADY_POSTED=$(linear api ... --variable "marker=$HALT_MARKER" ...)
+REGULAR_MARKER=$(printf 'Posted by `/prepare-for-review` for revision `%s`' "$CURRENT_SHA")
+```
+
+Step 6's existing footer line — `` _Posted by `/prepare-for-review`
+for revision `<SHA>`_ `` — already contains this substring, so no
+footer change is needed; only the dedup query's `marker` variable
+narrows.
+
+#### Halt path marker (HALT)
+
+Halt comment footer (already specified):
+
+```
+_Posted by `/prepare-for-review` halt path for revision `<SHA>`_
+```
+
+Halt-path dedup snippet (run before posting in halt path step 3):
+
+```bash
+HALT_MARKER=$(printf 'Posted by `/prepare-for-review` halt path for revision `%s`' "$CURRENT_SHA")
+HALT_ALREADY_POSTED=$(linear api 'query($issueId: String!, $marker: String!) { issue(id: $issueId) { comments(filter: { body: { contains: $marker } }, first: 1) { nodes { id } } } }' \
+  --variable "issueId=$ISSUE_ID" \
+  --variable "marker=$HALT_MARKER" 2>/dev/null \
+  | jq '((.data.issue.comments.nodes) // []) | length > 0')
 if [ "$HALT_ALREADY_POSTED" = "true" ]; then
   echo "halt comment for $CURRENT_SHA already posted; skipping repost" >&2
   exit 0
 fi
 ```
 
-The regular Step 6 dedup is unchanged — it continues to match
-`` revision `<SHA>` ``, which matches both comment types. The
-asymmetry is deliberate:
+The two markers are disjoint: `Posted by /prepare-for-review for
+revision <SHA>` (regular) vs `Posted by /prepare-for-review halt path
+for revision <SHA>` (halt). Neither is a substring of the other, so
+each dedup query matches exactly one comment type.
 
-- A halt comment at SHA X having been posted does NOT suppress a
-  later halt comment at the same SHA (the halt-path dedup catches
-  that), AND does NOT suppress the regular Step 6 path (because the
-  halt path exits before Step 6 runs at all — Step 6 never sees the
-  halt comment).
-- A regular handoff comment at SHA X having been posted DOES match
-  Step 6's dedup. That's correct: if Step 6 already ran, we don't
-  need to re-post.
+#### Same-SHA path transition behavior
 
-In practice the regular and halt paths are mutually exclusive within
-a single Step 5 invocation, so the dedup interaction matters only on
-retry across separate invocations on the same HEAD. The halt path's
-own dedup handles the halt-retry case; the regular Step 6 dedup
-handles the regular-retry case. The two paths cannot both have run
-on the same HEAD.
+With disjoint markers, the dedup interaction is well-defined for the
+case where the same SHA sees both decisions across separate
+invocations:
+
+- **Run A at SHA X posts a regular handoff comment** (e.g., user
+  demoted bucket-3 findings interactively): `REGULAR_MARKER` matches
+  on retry of Step 6, but `HALT_MARKER` does NOT match.
+- **Run B at SHA X engages the halt path**: `HALT_MARKER` does not
+  match the regular comment, so the halt path proceeds, posts the
+  halt comment, and exits. The issue now carries both comments.
+  Operator sees the halt comment as the most recent and acts on it.
+- **Run B's earlier reconcile-or-create loop** finds the previously
+  filed follow-ups (by provenance key) — even if Run A had filed
+  none (because A demoted to advisory), Run B's loop creates them
+  cleanly.
+- **Run C at SHA X is another retry of the halt path**:
+  `HALT_MARKER` matches → step 3 skips repost → exit clean. Run C
+  may still execute the reconcile-or-create loop (steps 1–2)
+  idempotently; that's harmless because the loop's existing-issue
+  check finds the already-filed follow-ups and no-ops.
+
+The transition from advisory to halt at the same SHA is allowed and
+recorded by both comments existing on the issue. The reverse
+transition (halt → advisory at same SHA) is not supported in
+autonomous mode, because once the halt path has filed follow-ups
+and posted the halt comment, the run is terminal. In interactive
+mode, if the user changes their mind after a halt comment was posted,
+manual cleanup is required (delete the halt comment, cancel the
+follow-up issues, remove the blocked-by relations) — this spec
+considers that flow out of scope; file separately if it becomes a
+real workflow.
+
+#### Implementation note for SKILL.md
+
+The SKILL.md edit must update Step 6's `MARKER` line to the new
+`REGULAR_MARKER` value. This is a behavioral change to existing
+dedup logic (it narrows the match), and it is correct: today's
+broader marker matches halt comments that don't yet exist, and
+once they do, the existing logic would be wrong. The narrowing is
+forward-compatible — comments posted before this change still match
+because their footers contain the new marker substring verbatim.
 
 ### Terminal action contract update
 
