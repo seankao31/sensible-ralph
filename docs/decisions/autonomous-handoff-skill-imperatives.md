@@ -147,6 +147,29 @@ guarantee.
   separate maintenance task, filed as a follow-up issue when the
   harness changes. The retrieval recipe is `git log --grep='Ref:
   ENG-307'` against `main` to find the implementing commits.
+
+  **Subsequent learning (ENG-326):** the "harness-version-coupled"
+  framing above is *incomplete*. The allowlist is **mode-coupled**,
+  not version-coupled — the harness exposes different task-tool
+  names depending on session mode at the same point in time:
+
+    - non-interactive (`claude -p`) and Agent SDK: `TodoWrite`
+    - interactive sessions: `TaskCreate` / `TaskGet` / `TaskList` /
+      `TaskUpdate`
+
+  A *dual-use* skill — invoked from both autonomous and interactive
+  sessions — needs both name sets in its allowlist concurrently.
+  ENG-307 landed only the autonomous-mode name because the failure
+  shape it targeted fired only in autonomous sessions; ENG-326
+  widens `prepare-for-review/SKILL.md` to add the interactive-mode
+  names. Autonomous-only skills (`sr-implement`, `close-issue`)
+  keep their narrower allowlists — `disable-model-invocation: true`
+  confines them to dispatch contexts where the harness uses the
+  autonomous-mode name.
+
+  Maintenance recipe correction: re-edit the allowlist when (a) the
+  harness renames *either* set, **or** (b) a new dual-use skill
+  adopts the Checklist imperative.
 - When upstream
   [anthropics/claude-code#17351](https://github.com/anthropics/claude-code/issues/17351)
   lands, the imperatives become redundant text but stay correct

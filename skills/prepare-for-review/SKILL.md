@@ -2,7 +2,7 @@
 name: prepare-for-review
 description: Use when implementation is complete and tests pass, before handing off for human review. Runs doc/decision updates, codex review (all in one pass), posts a Linear comment with a review summary and QA plan, and moves the issue to In Review. Useful at the tail of autonomous sensible-ralph sessions AND interactive "I just finished this feature" handoffs.
 model: sonnet
-allowed-tools: Skill, Bash, Read, Glob, Grep, Write, Edit, TodoWrite
+allowed-tools: Skill, Bash, Read, Glob, Grep, Write, Edit, TodoWrite, TaskCreate, TaskGet, TaskList, TaskUpdate
 ---
 
 # Prepare for Review
