@@ -235,18 +235,27 @@ For each bucket-3 finding:
     Embed PROVENANCE_TAG in the description (and the body the agent
     wrote per linear-workflow conventions).
   Append $blocker_id to $BLOCKER_ISSUE_IDS.
-  Search for an existing blocked-by relation $ISSUE_ID -> $blocker_id.
-  If absent:
-    linear issue relation add "$ISSUE_ID" blocked-by "$blocker_id"
-  Else:
-    Skip add.
+  linear issue relation add "$ISSUE_ID" blocked-by "$blocker_id"
 ```
+
+The `relation add` call is idempotent on the Linear side: re-adding
+an existing `blocked-by` relation does not create a duplicate and
+exits 0. (The CLI does print "Created" on both first-add and re-add,
+which is misleading if you treat output as a truthful signal — but
+the underlying state is correct either way. Trust the post-condition,
+not the CLI's return surface; if a separate verification is needed
+elsewhere, query `linear_get_issue_blockers "$ISSUE_ID"`.)
+
+So the relation step needs no pre-check for partial-failure retry.
+Only the follow-up issue creation needs the provenance-key dedup,
+because Linear *will* let you create a second issue with identical
+content if you call `issue create` twice.
 
 Reconciling existing follow-ups is what makes the halt path safely
 re-runnable. A retry after partial-failure re-discovers the
 already-filed issues by their provenance keys, fills in missing
-relations, and proceeds to step 3 below — without duplicating any
-Linear state.
+relations idempotently, and proceeds to step 3 below — without
+duplicating any Linear state.
 
 Linear API search query for the existing-follow-up check:
 
@@ -256,15 +265,8 @@ linear api 'query($q: String!) { issues(filter: { description: { contains: $q } 
   | jq -r '.data.issues.nodes[].identifier' | head -1
 ```
 
-For the existing-relation check, query the parent's relations:
-
-```bash
-linear_get_issue_blockers "$ISSUE_ID" \
-  | jq -r --arg b "$blocker_id" '.[] | select(.id == $b) | .id'
-```
-
-Both queries run via the Linear CLI / API surface already used
-elsewhere in the plugin's `lib/linear.sh`.
+This query runs via the Linear API surface used elsewhere in the
+plugin's `lib/linear.sh`.
 
 #### Halt path execution order
 
