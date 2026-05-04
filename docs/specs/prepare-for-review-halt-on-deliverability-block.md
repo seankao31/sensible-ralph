@@ -802,6 +802,23 @@ separate follow-ups if/when needed:
   lock or atomic check-and-create) is out of proportion to the
   exposure. If concurrent re-entry becomes a real failure mode
   later, file separately and revisit.
+- **Halt comment refresh on same-SHA reruns when the bucket-3
+  finding set changes.** Tracked as `ENG-336` (related). When a
+  same-SHA rerun classifies a different set of bucket-3 findings,
+  the reconcile-or-create loop updates issues and relations
+  correctly, but the halt-comment dedup hits the existing comment
+  and skips reposting — leaving the operator-facing comment stale
+  while the underlying Linear state is current. Filed as a
+  separate low-priority follow-up because the data invariants
+  hold under this bug; only the comment text goes stale, and a
+  careful operator can reconstruct via the relations panel.
+- **Reconcile reuse of canceled blockers.** If a prior follow-up
+  issue was canceled and the same finding re-emerges, the
+  reconcile loop will reuse the canceled issue and add a
+  `blocked-by` relation pointing at it. Operator sees a halt
+  comment linking to a Canceled ticket and can manually un-cancel
+  or file fresh. Not separately tracked; deferred unless the
+  scenario shows up in practice.
 
 ## Testing
 
