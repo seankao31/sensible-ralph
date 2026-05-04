@@ -242,6 +242,8 @@ _apply_failed_label_verified() {
       "$issue_id" >&2
     return 1
   fi
+  # -Fx: fixed-string + exact-line match. -F alone would false-positive on a
+  # label whose name contains FAILED_LABEL as a prefix (e.g. "ralph-failed-v2").
   if printf '%s\n' "$labels" | grep -qFx "$CLAUDE_PLUGIN_OPTION_FAILED_LABEL"; then
     return 0
   fi
