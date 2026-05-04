@@ -254,16 +254,16 @@ After the edits, all of the following must pass:
    → zero matches. (Anchored to start-of-line so it doesn't match the
    inside-the-`||` form `git ... rebase main || rebase_rc=$?`.)
 
-3. **Prose flow update lands** (uniquely identifies the new
-   Interactive-vs-Autonomous differentiation):
+3. **Prose flow update lands** (two complementary markers for the
+   Interactive-vs-Autonomous differentiation, each chosen to fit on
+   a single line in any reasonable prose wrapping):
 
    ```bash
-   grep -nF 'No ad-hoc resolve+continue is permitted' .claude/skills/close-branch/SKILL.md
+   grep -nF '(operator at the keyboard)' .claude/skills/close-branch/SKILL.md
+   grep -nF 'session dispatched by the orchestrator' .claude/skills/close-branch/SKILL.md
    ```
 
-   → exactly one match, inside Step 1's autonomous flow paragraph.
-   The exact phrase is short enough to fit on one line regardless of
-   how the implementer wraps surrounding prose.
+   → each grep returns exactly one match, inside Step 1.
 
 4. **Red Flags update lands:**
 
