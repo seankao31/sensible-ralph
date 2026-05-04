@@ -385,10 +385,21 @@ above; on retry, completed steps no-op.
    `In Progress` and the conditional skips entirely.
 5. **Exit clean** with exit code 0. Do NOT run the regular
    Step 6 (handoff comment) or Step 7 (state transition). The
-   issue is now in `In Progress` regardless of the prior state.
-   The orchestrator's outcome classification picks this up as
-   `exit_clean_no_review` (existing logic in
-   `docs/design/outcome-model.md`).
+   issue's post-state depends on what the conditional in step 4
+   found:
+   - If the read showed `In Review` → step 4 wrote
+     `In Progress`. Orchestrator classifies as
+     `exit_clean_no_review` (the intended outcome).
+   - If the read showed `In Progress` → step 4 was a no-op.
+     Orchestrator still classifies as `exit_clean_no_review`.
+   - If the read showed any other state (operator manually moved
+     to `Canceled`/`Done`/holding state between runs) → step 4
+     was a no-op, the operator's state is preserved, and the
+     orchestrator's classification follows from that state per
+     `docs/design/outcome-model.md` rather than necessarily
+     reading as `exit_clean_no_review`. The halt comment and
+     follow-up issues have been recorded regardless, so the
+     operator still sees the halt context on the issue.
 
 The halt path is the skill's terminal path for this invocation. Per
 the existing "Terminal action contract" section, the skill's last
@@ -621,11 +632,16 @@ Add a clarifying note to the Red Flags section:
 
 > The halt path (Step 5 bucket-3 finding) is a *legitimate* exit,
 > distinct from the precondition failures listed above. Its
-> terminal action is the halt comment post, and its exit code is
-> 0. The orchestrator's post-dispatch state read sees the issue
-> still in `In Progress` and classifies the run as
-> `exit_clean_no_review` — same operator triage path as a
-> hard failure, but reached deliberately.
+> terminal tool call is whichever of comment-post / state-read /
+> state-update ran last for the invocation (see "Terminal action
+> contract update"). Exit code is 0. The orchestrator's
+> post-dispatch state read typically sees the issue in
+> `In Progress` and classifies the run as `exit_clean_no_review` —
+> same operator triage path as a hard failure, but reached
+> deliberately. If an operator manually moved the issue to a state
+> other than `In Review` between runs, the halt path preserves
+> that state (step 4 is `In Review`-only) and the classification
+> follows from whatever state the operator chose.
 
 ## Implementation
 
