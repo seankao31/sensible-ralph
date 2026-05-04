@@ -71,16 +71,25 @@ SKILL.md text so the agent has a reference:
 - The spec promised behavior X but X requires a missing helper that
   this ticket's scope didn't add.
 
+**Scope is defined at file granularity.** The "touched code" set is
+the file paths returned by
+`git diff --name-only $BASE_SHA..HEAD` in the ticket's branch.
+Region-level distinctions (which lines of `foo.ts` were touched vs
+which weren't) are explicitly out of scope for this rule. File
+granularity is what the implementer can compute with one shell
+command; region-level scoping requires per-file diff parsing the
+agent would have to do per finding, with little practical
+correctness gain.
+
 The agent's classification rule, applied in this strict order
 (first match wins):
 
-1. **Does the root-cause fix lie *entirely* within code touched by
-   this ticket's commits?** That is, do all required modifications
-   to make the feature meet its acceptance criteria fall inside
-   files/regions this ticket's branch already adds or modifies
-   relative to `$BASE_SHA..HEAD`? If yes — bucket 1 (fix inline;
-   the active spec covers this code by the user-global CLAUDE.md
-   "current task's scope" definition).
+1. **Does the root-cause fix lie *entirely* within files in the
+   touched-code set?** That is, would all required modifications to
+   make the feature meet its acceptance criteria edit only files
+   already in `git diff --name-only $BASE_SHA..HEAD`? If yes —
+   bucket 1 (fix inline; the active spec covers these files by the
+   user-global CLAUDE.md "current task's scope" definition).
 2. **Else, does the finding invalidate the feature's acceptance
    criteria?** I.e. would a reviewer reading the issue description
    conclude the feature does not deliver what was promised? If yes —
@@ -90,21 +99,29 @@ The agent's classification rule, applied in this strict order
    summary, proceed).
 
 The "*entirely*" qualifier in step 1 is load-bearing for mixed-scope
-findings. A finding can manifest in code the ticket touched (an
-in-ticket test fails, an in-ticket wrapper exposes the bug) while
-the actual fix requires modifying out-of-ticket code (a shared
-helper, a utility function, a config the ticket reads but doesn't
-own). In that mixed case, **the finding is bucket 3, not bucket 1**.
-Rationale: a fix that lands partly out-of-ticket cannot honestly be
-called "in scope," and silently editing the shared helper in a
-ticket's branch hides cross-cutting changes from the reviewer. The
-correct response is to halt, file the helper fix as a follow-up,
-and `blocked-by` it from the parent.
+findings. A finding can manifest in a touched file (an in-ticket
+test fails, an in-ticket wrapper exposes the bug) while the actual
+fix requires editing an *additional* file the ticket did not touch
+(a shared helper outside the touched set). In that mixed case,
+**the finding is bucket 3, not bucket 1**, because some required
+edit lands outside the touched-code set. Rationale: a fix that
+lands partly out-of-ticket cannot honestly be called "in scope,"
+and silently editing the shared helper in a ticket's branch hides
+cross-cutting changes from the reviewer.
 
-The simplest test for the implementer: write down, in one sentence,
-where the fix has to land. If the answer mentions any path that
-isn't in `git diff $BASE_SHA..HEAD --name-only`, the answer is
-bucket 3.
+The same-file caveat: if a finding requires editing a different
+*region* of a file the ticket already touched (e.g., the ticket
+modified one function in `foo.ts` and the bug is in another
+function in the same `foo.ts`), the file is in the touched set, so
+step 1 says bucket 1. This is intentional. A ticket's branch
+"owns" the files it touches at the file-path level, and editing
+another region of the same file is a normal in-ticket operation.
+If the ticket genuinely should not be touching that file at all,
+that's a different problem the reviewer can flag at PR time.
+
+The simplest implementer test: write down, in one sentence, the
+file paths the fix has to edit. If any of those paths is NOT in
+`git diff $BASE_SHA..HEAD --name-only`, the answer is bucket 3.
 
 **When uncertain at any step, escalate to the higher-numbered
 bucket.** Specifically:
@@ -215,16 +232,22 @@ alone:
 
 ```bash
 # Codex's review JSON exposes title, file, line_start, line_end, body,
-# and (when present) a stable rule/category id. Build the canonical
-# tuple from the most identity-bearing of these that the agent can
-# read off the finding. file+line_start+line_end+title is the
-# minimum; include rule/category id when present.
-CANONICAL=$(printf '%s|%s|%s|%s|%s' \
+# and (when present) a stable rule/category id. The canonical tuple
+# always includes a body component as a tail, so the key remains
+# distinguishing even when all metadata fields are absent. Body is
+# normalized (whitespace collapsed, leading/trailing whitespace
+# trimmed) before hashing so trivial reformatting doesn't change the
+# key.
+FINDING_BODY_NORMALIZED=$(printf '%s' "$FINDING_BODY" \
+  | tr -s '[:space:]' ' ' \
+  | sed -e 's/^ *//' -e 's/ *$//')
+CANONICAL=$(printf '%s|%s|%s|%s|%s|%s' \
   "${FINDING_FILE:-_}" \
   "${FINDING_LINE_START:-_}" \
   "${FINDING_LINE_END:-_}" \
   "${FINDING_RULE_ID:-_}" \
-  "${FINDING_TITLE:-_}")
+  "${FINDING_TITLE:-_}" \
+  "$FINDING_BODY_NORMALIZED")
 FINDING_KEY=$(printf '%s' "$CANONICAL" | shasum -a 256 | cut -c1-16)
 PROVENANCE_TAG="<!-- halt-finding: ${ISSUE_ID}/${FINDING_KEY} -->"
 ```
@@ -234,23 +257,28 @@ on); `$FINDING_KEY` is the per-finding hash over the canonical tuple.
 The 16-hex truncation gives 64 bits of collision resistance — ample
 for the per-issue scale (single-digit findings).
 
+The body is the *tail* of the canonical tuple, not a fallback. When
+metadata fields (file, line, rule, title) are populated they
+disambiguate the key cheaply; when they're absent and the
+placeholders match across findings, the body component still
+distinguishes independent findings. There is no separate fallback
+branch — the same hash construction handles both metadata-rich and
+metadata-thin findings. The single algorithm makes the snippet and
+the prose describe one thing.
+
 `$PROVENANCE_TAG` is embedded in the follow-up's description (Linear
 renders HTML comments invisibly, per a known Linear behavior — but
 this spec only relies on the substring being searchable, not
 invisible. If Linear ever renders the tag literally, the key is still
 searchable; UX degrades but correctness holds).
 
-Why a tuple instead of just `body`: codex review formats often emit
-similar prose for similar bug patterns at different
-files/lines/rules. A tuple over file + line span + rule + title
-cannot collapse two distinct findings into one provenance key the
-way a body-only hash can. Using `_` placeholders for missing fields
-keeps the key well-defined when codex omits a field; the present
-fields still distinguish independent findings. If the agent receives
-a finding with NO file/line/rule/title (only body) — vanishingly
-rare in practice — it falls back to hashing the body itself and
-notes the degraded uniqueness in the halt comment so the operator
-can verify by hand.
+Why include metadata at all if the body is always present: codex
+review formats often emit similar prose for similar bug patterns at
+different files/lines/rules, and the metadata fields disambiguate
+those near-collisions cleanly. The body-only hash worked for
+metadata-thin findings but risked collapsing two distinct findings
+with identical-but-applied-elsewhere bodies; the combined-tuple
+hash holds in both regimes.
 
 The marker text choice (`<!--` style) is a recommendation. The
 implementer MAY substitute another searchable marker (e.g. a
@@ -320,8 +348,10 @@ above; on retry, completed steps no-op.
 3. **Post the halt-specific comment** (template below) via
    `linear issue comment add --body-file` from a `mktemp`
    tempfile. The halt comment has its own SHA-anchored dedup
-   (see "Dedup compatibility" below) — on retry, if the halt
-   comment for the current HEAD is already posted, skip.
+   (see "Dedup compatibility" below): on retry, if the halt
+   comment for the current HEAD is already posted, the dedup
+   gate skips *the post itself* but the halt path continues to
+   step 4. The dedup never short-circuits the path's exit.
 4. **Restore `In Progress` post-state.** Read the issue's current
    state. If it is anything other than
    `$CLAUDE_PLUGIN_OPTION_IN_PROGRESS_STATE`, transition it back
@@ -449,7 +479,8 @@ Halt comment footer (already specified):
 _Posted by `/prepare-for-review` halt path for revision `<SHA>`_
 ```
 
-Halt-path dedup snippet (run before posting in halt path step 3):
+Halt-path dedup snippet (run *inside* halt path step 3, gating only
+the post; never exits the halt path):
 
 ```bash
 HALT_MARKER=$(printf 'Posted by `/prepare-for-review` halt path for revision `%s`' "$CURRENT_SHA")
@@ -459,9 +490,21 @@ HALT_ALREADY_POSTED=$(linear api 'query($issueId: String!, $marker: String!) { i
   | jq '((.data.issue.comments.nodes) // []) | length > 0')
 if [ "$HALT_ALREADY_POSTED" = "true" ]; then
   echo "halt comment for $CURRENT_SHA already posted; skipping repost" >&2
-  exit 0
+  # Fall through to step 4. Do NOT exit — see below.
+else
+  linear issue comment add "$ISSUE_ID" --body-file "$COMMENT_FILE"
 fi
 ```
+
+The halt-path dedup gates the *comment post* only. It MUST NOT
+short-circuit the halt path's exit. The state-restore step (step 4)
+must run on every halt-path execution, including retries where the
+halt comment was already posted in a prior run that died before
+step 4 ran. An early `exit 0` here would skip step 4, leaving the
+issue in whatever state the prior partial-failure left it in
+(potentially `In Review` from a regular Step 7 that fired before
+the halt was decided), and the orchestrator's post-dispatch state
+read would misclassify the run as `in_review` (success).
 
 The two markers are disjoint: `Posted by /prepare-for-review for
 revision <SHA>` (regular) vs `Posted by /prepare-for-review halt path
