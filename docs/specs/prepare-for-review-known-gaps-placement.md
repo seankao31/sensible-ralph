@@ -170,24 +170,28 @@ forcing a literal block replacement**:
 - The Edit-2 anchor — the contiguous "Edge cases worth checking"
   → blank line → `**Known gaps / deferred:**` → `COMMENT`
   terminator pattern — does not match exactly once.
-- Step 5's prose (currently "Capture them in Step 6's `## Review
-  Summary` (under 'Surprises during implementation' or 'Known gaps
-  / deferred' as fits)") has been edited away from referencing
-  Review Summary as the home of the Known gaps field. If Step 5
-  no longer designates Review Summary as the canonical location,
-  the conceptual fix this spec rests on no longer applies — stop
-  and re-spec.
+- Step 5's "**Ambiguous findings**" bullet no longer semantically
+  designates Review Summary as the home for ambiguous findings /
+  Known gaps. Harmless copy edits to that bullet (typos,
+  punctuation, clarifications that still point at Review Summary)
+  are fine and do not block. The drift case is specifically when
+  Step 5 has been changed to redirect ambiguous findings to QA Test
+  Plan or some other section — i.e., when the conceptual premise
+  this spec rests on no longer holds. If you can read the current
+  Step 5 and confirm "ambiguous findings still go in Review
+  Summary," proceed; otherwise stop and re-spec.
 
 In any drift case, do not guess. Surface the situation and let a
 human re-evaluate.
 
 ## What does NOT change
 
-- **Step 5's prose** (the bullet that begins "**Ambiguous findings**"
-  and instructs the agent to "Capture them in Step 6's `## Review
-  Summary` …") stays byte-identical. It already names Review
-  Summary as the canonical location for Known gaps; the point of
-  this ticket is to make the template match.
+- **Step 5's "**Ambiguous findings**" bullet** keeps its semantic
+  meaning — it must still direct ambiguous findings to Review
+  Summary (where this ticket places the Known gaps field). Step 5's
+  exact wording is not what this ticket changes; the template is.
+  This spec does not require Step 5 to be byte-identical, only
+  semantically intact.
 - **The `printf '## Review Summary\n\n'` call** above the heredoc
   stays unchanged. The heading is emitted there, not inside the
   heredoc.
@@ -213,10 +217,14 @@ The skill is markdown-only — no executable tests. Verification is:
    from the QA Test Plan region of the heredoc, and inserting the
    same line (with one blank line above and one below) into the
    Review Summary region of the heredoc. No other characters change.
-2. **Heredoc integrity.** Both the opener (`<<'COMMENT'`) and the
-   closing `COMMENT` marker on its own line must be preserved
-   exactly. Any change to either, or to the heredoc's structural
-   whitespace, would break the bash heredoc syntax.
+2. **Heredoc integrity.** Bash heredoc syntax requires exactly:
+   the opener (`<<'COMMENT'`) intact, the closing `COMMENT` token
+   on a line by itself with nothing else on it, and a newline
+   immediately before the terminator. Internal blank lines inside
+   the heredoc body are payload, not syntax — this spec
+   intentionally changes some of them. Verification: confirm the
+   opener and the bare-`COMMENT` terminator line are both present
+   and unchanged.
 3. **`## Review Summary` heading source unchanged.** The heading is
    emitted by the `printf '## Review Summary\n\n'` line above the
    heredoc; that printf call must be byte-identical before and
@@ -236,9 +244,13 @@ The skill is markdown-only — no executable tests. Verification is:
    contains the Known gaps line by visually inspecting the section.
    After the change it should contain only `**Golden path:**` and
    `**Edge cases worth checking:**`.
-7. **Step 5 prose unchanged.** Confirm the "**Ambiguous findings**"
-   bullet (the one referencing "Review Summary" and "Known gaps /
-   deferred") reads identically before and after the change.
+7. **Step 5 semantic intent preserved.** The "**Ambiguous findings**"
+   bullet must still direct ambiguous codex findings to Review
+   Summary (specifically, into the Surprises during implementation
+   or Known gaps / deferred field). Confirm by re-reading the bullet
+   after the change. Byte-identical wording is not required —
+   harmless copy edits are fine; what matters is that ambiguous
+   findings are not redirected to QA Test Plan or anywhere else.
 
 ## Out of scope
 
@@ -269,21 +281,25 @@ The skill is markdown-only — no executable tests. Verification is:
 
 ## Acceptance
 
-The change is accepted when:
+The change is accepted when all of the following invariants hold;
+nothing else about `SKILL.md` is constrained by this ticket:
 
 1. `skills/prepare-for-review/SKILL.md` contains exactly one
-   `**Known gaps / deferred:**` line, inside the heredoc body and
-   between `**Surprises during implementation:**` and
-   `**Documentation changes:**`.
-2. The `## QA Test Plan` heading inside the heredoc body is
-   immediately followed (after surrounding blanks) by only the
-   `**Golden path:**` and `**Edge cases worth checking:**` fields,
-   in that order, with the heredoc terminator (`COMMENT` on its own
-   line) coming next.
-3. The `printf '## Review Summary\n\n'` line above the heredoc is
-   byte-identical before and after.
-4. The heredoc opener (`<<'COMMENT'`) and its closing `COMMENT`
-   marker are intact and on their own lines.
-5. The "**Ambiguous findings**" bullet in Step 5 (the one
-   referencing "Review Summary" and "Known gaps / deferred") is
-   byte-identical before and after.
+   `**Known gaps / deferred:**` line.
+2. That single line sits inside the heredoc body, between
+   `**Surprises during implementation:**` and
+   `**Documentation changes:**`, with one blank line above and one
+   blank line below it.
+3. `**Known gaps / deferred:**` is **not** present anywhere in the
+   `## QA Test Plan` region of the heredoc. (The QA Test Plan
+   region may continue to evolve independently — this ticket does
+   not constrain whether other QA fields exist or are added.)
+4. The `printf '## Review Summary\n\n'` call above the heredoc is
+   byte-identical before and after — it remains the sole emitter
+   of the `## Review Summary` heading.
+5. The heredoc opener (`<<'COMMENT'`) and its closing `COMMENT`
+   marker are intact and on their own lines, satisfying bash
+   heredoc syntax.
+6. Step 5's "**Ambiguous findings**" bullet still semantically
+   directs ambiguous findings to Review Summary (see verification
+   step 7). It does not need to be byte-identical.
