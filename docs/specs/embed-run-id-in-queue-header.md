@@ -232,14 +232,27 @@ The renderer reads `ordered_queue.txt` only. It does *not* read
 - The downstream queue-file read at `render_status.sh:104–110` (the
   while-loop building `queued_issues`) needs a `#`-comment skip so
   the header line doesn't show up as a queued issue ID.
-- The existing "no progress.json" early-exit (`render_status.sh:38–41`)
-  is folded into the restructured logic above. If the queue header
-  yields a `run_id` but `progress.json` is missing or has no records
-  for that `run_id` yet, the renderer naturally produces empty Done /
-  empty Running / full Queued — which is the exact race-fix rendering
-  for the orchestrator-just-published-header micro-window. (Today, the
-  early-exit short-circuits this case to "no runs recorded" because
-  the derivation has nothing to find.)
+- **No-progress.json contract** (codex round-4 finding 1).
+  `render_status.sh` runs under `set -euo pipefail`. The existing
+  early-exit at `render_status.sh:38–41` (which short-circuits to
+  `_no_runs_message` when `progress.json` is missing) **moves but
+  does not disappear**: under the new design, when the queue header
+  is present but `progress.json` is missing or unreadable, the
+  renderer must initialize `run_records='[]'` and continue with the
+  partitioning logic on that empty array. This produces empty Done,
+  empty Running, and full Queued — the correct rendering for the
+  setup-time gap before the first `start` record lands. Specifically:
+  ```bash
+  if [[ -f "$progress_file" ]]; then
+    run_records="$(jq --arg run "$latest_run_id" '[.[] | select(.run_id == $run)]' < "$progress_file")"
+  else
+    run_records='[]'
+  fi
+  ```
+  All downstream jq reads partition `$run_records`, not `$progress_file`,
+  so they are safe under `[]`. Without this explicit handling, `set -e`
+  would crash the renderer on the first jq read of a missing
+  `$progress_file`.
 
 ### Backwards-compat
 
@@ -260,11 +273,13 @@ A repo with a header-less `.sensible-ralph/ordered_queue.txt` left
 over from a prior plugin version will have `/sr-status` exit
 non-zero with the missing-header error message until the next
 `/sr-start` runs. The next `/sr-start`'s commitment publish writes
-a header-bearing file, restoring `/sr-status`. Operators who want
-immediate restoration without dispatching can either
-(a) `rm .sensible-ralph/ordered_queue.txt` to fall into the "no
-current run" path, or (b) re-run `/sr-start` to regenerate. Both
-are one-step recoveries.
+a header-bearing file, restoring `/sr-status`. **Recovery:** re-run
+`/sr-start`. (Codex round-4 finding 3 correctly noted that
+`rm ordered_queue.txt` was a misleading recovery suggestion: while
+it does silence the missing-header error, it makes `/sr-status`
+report `No ralph runs recorded` even when `progress.json` has run
+history — suppressing real visibility. Recovery is a single
+`/sr-start` invocation.)
 
 This trade-off is explicitly accepted — weighing one-time
 post-upgrade friction (one operator, one-step recovery, no
@@ -425,6 +440,15 @@ operator population expands beyond Sean's repos, revisit.
   exit non-zero" — write queue file with no header, assert non-zero
   status, assert stderr contains
   `missing '# run_id: <id>' header line`.
+- **New (no-progress.json contract — codex round-4 finding 1):**
+  "queue header present, progress.json missing: renders empty
+  Done/Running, full Queued, exit 0" — write `ordered_queue.txt`
+  with header `RID` and two issue IDs, do *not* create
+  `progress.json`, run renderer, assert exit 0, assert
+  `Run started: RID`, `=== Done (0) ===`, `=== Running (0) ===`,
+  `=== Queued (2) ===` listing both issues. This guards against
+  the `set -e` crash that would result if the renderer naively
+  jq-reads a missing `progress.json`.
 - **Existing:** "no progress.json: friendly hint" (line 54) — keep,
   but verify it still passes given the restructured early-exit
   logic. The fixture has no queue file either, so the new
@@ -508,15 +532,25 @@ codex rounds.
   actually transitions). Acknowledged limitation; revisit only if
   operator confusion is observed in practice.
 
-- **Orchestrator hard crash between header publish and first
-  `start` record.** Subset of the setup-time-gap case above with
-  permanent rather than self-correcting effect. If the orchestrator
-  is killed (signal, OOM) during per-issue setup, `ordered_queue.txt`
-  retains the new header but `progress.json` has no records for the
-  new `run_id`. `/sr-status` continues to show empty Done/Running
-  with full Queued. **Mitigation:** the next `/sr-start` invocation
-  rewrites `ordered_queue.txt` with a fresh header, self-correcting.
-  Hard crashes during per-issue setup are operationally rare.
+- **Orchestrator hard crash between Linear `In Progress` transition
+  and first `start` record** (codex round-4 finding 2). The
+  orchestrator transitions the first issue's Linear state to
+  `In Progress` *before* appending the start record (see
+  `orchestrator.sh:599` context). If the orchestrator is killed
+  (signal, OOM) in this gap, the issue is left in `In Progress` in
+  Linear with no `progress.json` record under the new `run_id`. The
+  next `/sr-start`'s `build_queue.sh` will not pick the issue back
+  up (it's no longer Approved), so the new `ordered_queue.txt` will
+  not include it. `/sr-status` loses visibility into the stranded
+  issue entirely. **This is NOT self-correcting** — earlier wording
+  in this spec was wrong. **This inherits from today's
+  orchestrator** — today the same crash leaves the same stranded
+  state (just with the additional ENG-287 mixed-state confusion that
+  this spec resolves on top of it). **Recovery:** operator manually
+  transitions the stranded issue back to `Approved` (and labels it
+  `ralph-failed` if appropriate per the orchestrator's existing
+  outcome model). Operationally rare; pre-existing gap not
+  introduced or widened by this spec.
 
 - **Operator hand-edits `ordered_queue.txt`.** If an operator opens
   the queue file and edits issue IDs without preserving the header,
