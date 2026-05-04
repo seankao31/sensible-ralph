@@ -487,62 +487,114 @@ Add a clarifying note to the Red Flags section:
 
 ### Files touched
 
-- `skills/prepare-for-review/SKILL.md` — primary edit. All changes
-  in one file:
-  - Step 5 narrative — split the ambiguous bucket as described in
-    "Trigger detection".
+- `skills/prepare-for-review/SKILL.md` — primary edit. Changes:
+  - Step 5 narrative — split the ambiguous bucket per "Trigger
+    detection" and document the location-first precedence rule.
   - New "Halt path" subsection under Step 5 — implements the
-    mechanics in "Halt path mechanics" and "Halt comment template".
+    mechanics in "Halt path mechanics", the reconcile-or-create
+    algorithm, the autonomous-mode env-var detection, and the
+    "Halt comment template".
+  - Step 6 dedup marker — change `MARKER` from `'revision \`%s\`'`
+    to the `REGULAR_MARKER` form per "Dedup compatibility".
   - "Terminal action contract" — add legal final action 4.
   - "Red Flags / When to Stop" — add the clarifying note.
-  - Top-of-file checklist — update Step 5's checklist entry to
-    mention the bucket split, and add a new checklist entry (or
-    sub-bullet) for the halt path's tool calls.
+  - Top-of-file checklist — update Step 5's entry to mention the
+    bucket split and add the halt-path sub-checklist.
+- `skills/sr-start/scripts/orchestrator.sh` — one-line addition at
+  the dispatch site to export `SENSIBLE_RALPH_AUTONOMOUS=1` (or the
+  equivalent existing variable, if one is already exported and the
+  implementer prefers reuse) into the `claude -p` subprocess
+  environment.
+- `docs/design/autonomous-mode.md` — reference the env-var contract
+  in a one-paragraph addition under "How the preamble is delivered"
+  (or a new "Autonomous-mode signal" subsection). Keep the existing
+  description of the preamble itself unchanged. Skip this update if
+  the implementer reused an existing variable already documented in
+  this design doc.
 
-No other files are touched. No code changes outside SKILL.md.
+No other files are touched.
 
 ### Step-by-step implementation order
 
-1. Update the "Terminal action contract" section first — it's the
-   contract every other change must comply with, and it's the
-   reference the agent will look up if uncertain.
-2. Update Step 5's narrative to introduce the three-bucket
-   classification. Keep the actionable-bucket flow (fix and
-   re-run) verbatim.
-3. Add the new "Halt path" subsection under Step 5. Include the
-   exact halt comment template with the dedup marker.
-4. Add the dedup pre-check snippet at the top of the halt path
-   (mirroring Step 6's existing dedup pattern).
-5. Update the "Red Flags / When to Stop" section.
-6. Update the top-of-file checklist to reflect the new Step 5
-   structure.
-7. Read the updated SKILL.md end-to-end. Verify: the three buckets
-   are unambiguous, the halt path is reachable, the terminal
-   contract enumerates exactly four legal final actions and no
-   path produces an illegal terminal summary.
+1. **Confirm or add the autonomous-mode signal.** Grep
+   `skills/sr-start/scripts/orchestrator.sh` for an existing
+   autonomous flag. If found, treat that as the signal name and
+   skip the orchestrator edit. If not found, add the
+   `SENSIBLE_RALPH_AUTONOMOUS=1` export at the dispatch site.
+   Update `docs/design/autonomous-mode.md` to reference the chosen
+   variable.
+2. **Update Step 6's dedup marker** in
+   `skills/prepare-for-review/SKILL.md` to `REGULAR_MARKER` per
+   "Dedup compatibility". Verify the existing footer line already
+   contains the new marker substring (it does; this is a no-op for
+   pre-existing comments).
+3. **Update the "Terminal action contract"** to add legal final
+   action 4. This is the contract every other change must comply
+   with.
+4. **Update Step 5's narrative** to introduce the three-bucket
+   classification with the location-first precedence rule. Keep
+   the actionable-bucket flow (fix and re-run) verbatim.
+5. **Add the new "Halt path" subsection** under Step 5. Include:
+   - The autonomous-mode env-var detection snippet.
+   - The interactive-mode prompt block.
+   - The provenance-key construction.
+   - The reconcile-or-create algorithm (issues + relations).
+   - The halt comment template with `HALT_MARKER`.
+   - The halt-path dedup pre-check.
+6. **Update the "Red Flags / When to Stop"** section with the
+   clarifying note about halt being a legitimate exit.
+7. **Update the top-of-file checklist** to reflect the new Step 5
+   structure (bucket split + halt-path sub-checklist).
+8. **Read the updated SKILL.md end-to-end.** Verify: the three
+   buckets are unambiguous, the halt path is reachable in both
+   autonomous and interactive modes, the reconcile-or-create
+   algorithm covers the partial-failure retry, the dedup markers
+   are disjoint, the terminal contract enumerates exactly four
+   legal final actions, and no path produces an illegal terminal
+   summary.
 
 ### Acceptance criteria
 
 - `skills/prepare-for-review/SKILL.md` describes a three-bucket
-  finding classification in Step 5.
-- The "Halt path" subsection specifies the four-step mechanics
-  (file follow-up, set blocked-by, post halt comment, exit clean).
-- The halt comment template is verbatim in the SKILL.md, with the
-  distinct revision-footer marker.
-- The halt-path dedup snippet is present and uses
-  `halt path for revision \`<SHA>\`` as its marker.
+  finding classification in Step 5, with the location-first
+  precedence rule documented (in-ticket-code → bucket 1; else
+  deliverability check → bucket 3 vs 2).
+- The "Halt path" subsection specifies:
+  - The autonomous-mode detection contract via
+    `SENSIBLE_RALPH_AUTONOMOUS` (or equivalent reused variable).
+  - The interactive-mode prompt block.
+  - The per-finding provenance-key construction.
+  - The reconcile-or-create algorithm for both follow-up issues
+    and `blocked-by` relations.
+  - The four-step execution order (reconcile-or-create issues,
+    reconcile-or-add relations, post halt comment with dedup
+    pre-check, exit clean).
+- Step 6's dedup marker is updated to `REGULAR_MARKER`
+  (`'Posted by \`/prepare-for-review\` for revision \`%s\`'`).
+- The halt-path dedup snippet uses the disjoint `HALT_MARKER`
+  (`'Posted by \`/prepare-for-review\` halt path for revision \`%s\`'`).
+- The halt comment template is verbatim in the SKILL.md, including
+  the multi-finding "Blocking discoveries" list and the halt-path
+  revision footer.
 - The "Terminal action contract" enumerates legal final actions
   1–4, with the halt path as #4.
 - The top-of-file checklist reflects the bucket split and the
   halt-path sub-checklist entry.
 - The "Red Flags / When to Stop" section clarifies that the halt
   path is a legitimate exit, not a precondition failure.
+- `skills/sr-start/scripts/orchestrator.sh` exports the autonomous
+  signal (or already does — implementer's call).
+- `docs/design/autonomous-mode.md` references the autonomous signal
+  variable name (or already does).
 
 The work is done when an autonomous session reading SKILL.md can,
 without further human input:
 
-- Classify a codex finding into one of the three buckets.
-- Engage the halt path correctly when bucket 3 fires.
+- Classify a codex finding into one of the three buckets via the
+  location-first rule.
+- Detect autonomous-vs-interactive via the env-var signal.
+- Engage the halt path correctly when bucket 3 fires, including
+  partial-failure retry safety.
 - Produce one of the four legal terminal actions.
 
 ## Out of scope
