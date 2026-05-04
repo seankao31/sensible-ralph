@@ -216,9 +216,10 @@ encodes a real failure-mode constraint.
 
 ## Removal
 
-`/close-issue` is the **normal remover** — it runs Step 8 after the
-Linear `Done` transition so the high-value state mutations (merge, push,
-branch delete, Linear Done) are already committed if removal fails. The
+`/close-issue` is the **normal remover** — it runs Step 9 after the
+Linear `Done` transition (and after the Step 8 coord-dep cleanup) so
+the high-value state mutations (merge, push, branch delete, Linear
+Done) are already committed if removal fails. The
 orchestrator's `_cleanup_worktree` helper is the **setup-failure remover**:
 it rolls back worktrees this invocation *created* when a pre-dispatch
 setup step fails, using `--force` because `.sensible-ralph-base-sha`
@@ -302,6 +303,7 @@ canonical list is copy-pasteable:
 ralph-output.log
 /.close-branch-inputs
 /.close-branch-result
+/.sensible-ralph-coord-dep.json
 ```
 
 | Entry | Why |
@@ -312,6 +314,7 @@ ralph-output.log
 | `ralph-output.log` | Default `stdout_log_filename`. Per-worktree session log; no leading slash so it matches anywhere. If `stdout_log_filename` is overridden, the override needs its own entry. |
 | `/.close-branch-inputs` | Handoff file written by `/close-issue` before invoking `close-branch`. Written at the start of each close ritual, deleted by `close-branch` on entry. Presence between runs signals an interrupted `/close-issue`. |
 | `/.close-branch-result` | Result file written by `close-branch`, read and deleted by `/close-issue`. Same lifecycle as `/.close-branch-inputs`. |
+| `/.sensible-ralph-coord-dep.json` | Per-worktree transport file written by `/sr-spec` step 11 (coord-dep scan) and consumed at step 12 (finalize). Successful finalize deletes it; presence between runs means the prior `/sr-spec` aborted between scan and finalize and the next `/sr-spec` re-loads the staged edges. |
 
 The two `userConfig`-driven names (`worktree_base`, `stdout_log_filename`)
 mean the gitignore list is technically convention-dependent, not
