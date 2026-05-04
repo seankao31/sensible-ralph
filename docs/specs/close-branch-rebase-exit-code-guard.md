@@ -240,17 +240,28 @@ close-branch — it's a Skill (markdown), not a script.
 This is a documentation-only edit to a skill file. No code changes, no
 tests to add or update. TDD does not apply.
 
-The acceptance criterion "When `git rebase` exits non-zero, the skill
-prints a diagnostic and exits non-zero without touching the main
-checkout" is verified by reading the snippet, not by running a test.
-The codex adversarial review at `/prepare-for-review` time is the
-backstop that catches snippet-level defects (e.g. wrong shell quoting,
-wrong exit propagation, accidental `set -e` interactions).
+**Verification is structural, not behavioral.** close-branch is a
+Skill (markdown executed by an LLM at runtime), so the verification
+greps prove the snippet *text* changed — not that a dispatched
+`/close-issue` session will literally halt instead of continuing past
+the failed bash block. Behavioral verification at this skill's
+architecture would require either (a) an end-to-end run against a
+deliberately-conflicted fixture, or (b) extracting the bash into a
+real script with bats coverage (Alternative #4, rejected as out of
+scope). The codex adversarial review at `/prepare-for-review` is
+this fix's structural backstop — it re-reads the diff against the
+bug's reproduction trace and flags snippet-level defects (wrong
+quoting, wrong exit propagation, accidental `set -e` interactions,
+missing guard). The repo-wide convention for skill-edit specs treats
+this as sufficient (see `docs/specs/fix-ralph-spec-echo-pipe-jq.md`'s
+verification section for the precedent).
 
 Manual end-to-end verification (running `/close-issue` against a
-deliberately-conflicted branch and confirming clean exit) is *not
-required* for this fix to ship. If a future incident shows the guard
-itself misbehaves, that's a separate spec.
+deliberately-conflicted branch and confirming clean exit) is
+*encouraged but not required*. If the implementer has a fixture
+handy or wants to construct one, doing so adds confidence; if not,
+ship on grep + codex review. If a future incident shows the guard
+itself misbehaves at runtime, that's a separate spec.
 
 ## Out of scope
 
