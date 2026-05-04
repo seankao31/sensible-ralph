@@ -33,6 +33,8 @@ The same property holds in the legacy create path (`worktree_create_at_base "$pa
 
 `/close-issue` captures `PARENT_TIP_PRE_MERGE` from the parent's worktree HEAD just before invoking `close-branch`, and passes both that SHA and `INTEGRATION_SHA` to a 3-arg form of `close_issue_label_stale_children`. The PR-pending skip (no `INTEGRATION_SHA`) moves to the call site as an explicit `if` guard, because `PARENT_TIP_PRE_MERGE` will be non-empty whenever the parent worktree exists.
 
+**Implicit invariant the fix relies on.** The captured SHA — the parent's worktree HEAD just before `close-branch` runs — is asserted to be the SHA that the human reviewer signed off on. `/prepare-for-review` is the only step in the lifecycle that runs *during review* and writes commits, and it doesn't move the branch tip beyond what the reviewer can see; the In-Review state means review is complete. Any commit that `close-branch` itself appends (generated-file commits, fixups, integration normalization in a hypothetical project-local implementation) is post-review and is therefore correctly excluded from the freshness check — the child not having those commits is not a review-integrity gap. This invariant lets the global skill capture the right SHA without widening the project-local `close-branch` contract; if a future project-local `close-branch` ever wants to mutate the parent branch *during* review (rather than at integration time), this invariant breaks and the contract has to be revisited.
+
 ### Change 1 — capture in `close-issue/SKILL.md`
 
 Insert a new sub-section **between Step 3 (Preserve untracked files) and Step 4 (Invoke close-branch)** titled "Capture parent tip pre-merge". Body:
@@ -123,7 +125,28 @@ Inside, `list_commits_ahead "$parent_pre_merge_sha" "refs/heads/$child_branch"` 
 
 ### Change 5 — comment body template
 
-Replace the existing body in `_close_issue_stale_label_and_comment` with the template below. Note the four-backtick outer fence — the inner code block uses three backticks, so the outer fence is escalated to four to render correctly in Linear and on GitHub.
+Replace the existing body in `_close_issue_stale_label_and_comment`. **Note on fences:** the four-backtick outer fence below is a markdown-rendering device used in *this spec doc* to display a template that itself contains a three-backtick block. The actual Linear comment body is **not** wrapped in any outer fence — it's raw markdown that includes one nested triple-backtick code block (for the commits list). The implementer must produce a comment body that opens with `**Stale-parent check**` and ends with the "rebasing here cascades to them." paragraph, with no outer fence.
+
+The current implementation builds the body via an unquoted heredoc in `stale_parent.sh:41-54`, escaping every literal backtick with `\`` so the shell doesn't interpret them as command substitution. Keep that exact mechanism — the new body must use an unquoted heredoc so `${parent_id}`, `${parent_pre_merge_sha}`, `${parent_pre_merge_short}`, `${parent_integration_short}`, `${child_branch}`, `${commits}`, and `${truncated}` all interpolate. Concrete shape:
+
+```bash
+body=$(cat <<COMMENT
+**Stale-parent check** — parent \`${parent_id}\` closed at \`${parent_integration_short}\`. Pre-merge branch tip was \`${parent_pre_merge_short}\`.
+
+This branch (\`${child_branch}\`) does not have \`${parent_pre_merge_short}\` as an ancestor: \`${parent_id}\` received commits during review that this branch was not rebased onto, so the reviewer signed off on content against an older base.
+
+Commits on the parent not present on this branch:
+
+\`\`\`
+${commits}${truncated}
+\`\`\`
+
+Recommended: rebase this branch onto the landed parent and re-review. If the diverging commits are content-equivalent to what was already reviewed (e.g. mechanical fixups, amended commit messages), dismiss the label manually. If this branch has its own In-Progress/In-Review descendants, rebasing here cascades to them.
+COMMENT
+)
+```
+
+Rendered template, for visual reference:
 
 ````
 **Stale-parent check** — parent `${parent_id}` closed at `${parent_integration_short}`. Pre-merge branch tip was `${parent_pre_merge_short}`.
@@ -178,14 +201,17 @@ Test #1 (the existing `empty A_SHA → silent no-op` case) is replaced by the tw
 
 **Three new tests:**
 
-1. **Body propagates both short SHAs.**
+1. **Body propagates both short SHAs and expands every interpolation.**
 
-   - Setup: 1 stale child (`STUB_FRESH_ENG_100=1`), distinct `A_SHA` (pre-merge) and `B_SHA` (integration).
+   - Setup: 1 stale child (`STUB_FRESH_ENG_100=1`), distinct `A_SHA` (pre-merge) and `B_SHA` (integration). Set `STUB_COMMITS_ENG_100="abc1234 sentinel commit"` so the test has a known string to look for in the expanded `${commits}` slot.
    - Compute the expected shorts via `git rev-parse --short` against the test repo.
    - Extract ENG-100's body block from `STUB_COMMENT_BODY_LOG` between `=== ENG-100 ===` / `=== /ENG-100 ===`.
    - Assert: body contains the literal substring `closed at \`<integration_short>\``.
    - Assert: body contains the literal substring `Pre-merge branch tip was \`<pre_merge_short>\``.
    - Assert: body contains `does not have \`<pre_merge_short>\` as an ancestor` — the ancestor-claim line uses the pre-merge short, not the integration short.
+   - Assert: body contains the literal substring `abc1234 sentinel commit` — proves `${commits}` expanded.
+   - Assert: body does NOT contain any literal `${...}` placeholder. Any leftover `$\{` substring would mean the heredoc rewrite suppressed expansion (e.g., implementer accidentally quoted the heredoc tag or escaped a `$`). Implementation: `! grep -q '\${' <body-tempfile>`.
+   - Assert: body contains the literal three-backtick fence lines bracketing the commits block (i.e., a line whose content is exactly ``` ``` ``` followed later by another such line). Catches a malformed rewrite that drops the inner fence.
 
 2. **Empty pre-merge SHA → silent no-op.**
 
@@ -227,7 +253,7 @@ These three cases exercise ACs 1, 2, and 5 respectively and complete the testing
 
 - `close-branch`'s rebase-failure handling (covered by ENG-288).
 - Any change to `INTEGRATION_SUMMARY` text or the `.close-branch-result` file format.
-- Project-local `close-branch` implementations that don't rebase — they automatically get correct behavior because their pre-merge tip equals the post-merge HEAD; no implementation update required.
+- Project-local `close-branch` implementations of any flavor (rebase + no-ff merge, fast-forward only, PR-pending, multi-step cascade) — none need to expose a new value or modify their implementation. The capture happens in `close-issue` *before* delegation, so the global skill always has the parent's worktree HEAD at handoff regardless of what `close-branch` does internally afterwards. Earlier wording in this spec is precise: the captured SHA is "the parent's worktree HEAD just before `close-branch` runs", not "the post-merge HEAD".
 - The `TODO(ENG-236)` malformed-SHA hardening at `stale_parent.sh:73` — same comment extends to the second SHA, but the hardening itself is signposted to ENG-236 and not in this ticket.
 - `prepare-for-review`'s rebase semantics — verified at design time that it does not rebase; the fix's correctness does not depend on prepare-for-review's behavior.
 
