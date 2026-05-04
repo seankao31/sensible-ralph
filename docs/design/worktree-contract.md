@@ -192,11 +192,14 @@ post-dispatch Linear state to classify the outcome (a successful tee on
 top of a failed claude must not collapse to "success").
 
 The log is the operator entry point for debugging `failed` and
-`exit_clean_no_review` outcomes — `/sr-status` points at
-`<worktree>/$CLAUDE_PLUGIN_OPTION_STDOUT_LOG_FILENAME` for post-mortem
-reading. For `setup_failed` outcomes, the log does not exist (the
-dispatch block never ran); inspect the `failed_step` field in
-`.sensible-ralph/progress.json` and the orchestrator stderr instead.
+`exit_clean_no_review` outcomes. ENG-308: the orchestrator persists
+the dispatch-time `worktree_log_path` into `progress.json`, and
+`/sr-status` renders it as `transcript: <path>` in the diagnostic
+sub-block under each non-success Done row, alongside the JSONL session
+transcript pointer (`session: <path>`). For `setup_failed` outcomes,
+the log does not exist (the dispatch block never ran); inspect the
+`failed_step` field in `.sensible-ralph/progress.json` and the
+orchestrator stderr instead.
 
 ## CWD convention
 

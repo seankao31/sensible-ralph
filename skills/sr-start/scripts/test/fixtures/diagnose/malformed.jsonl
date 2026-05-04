@@ -1,0 +1,2 @@
+{"type":"user","message":{"role":"user","content":"start"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Looking up the skill."},{"type":"tool_use","id":"toolu_02","name":"Skill","input":{"skill":"using-supe

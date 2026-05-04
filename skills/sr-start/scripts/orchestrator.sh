@@ -267,6 +267,10 @@ _record_local_residue() {
 # or stopped short — collapsing to exit_clean_no_review on a degraded read
 # would falsely label a real success as failed and taint its descendants.
 # Operator inspects progress.json and the Linear UI to disambiguate.
+#
+# Carries the session-diagnostics fields (session_id, transcript_path,
+# worktree_log_path, hint) so /sr-status can render the diagnostic sub-block
+# for unknown_post_state rows the same as for failed/exit_clean_no_review.
 _record_unknown_post_state() {
   local issue_id="$1"
   local branch="$2"
@@ -274,6 +278,10 @@ _record_unknown_post_state() {
   local exit_code="$4"
   local duration="$5"
   local timestamp="$6"
+  local session_id="$7"
+  local transcript_path="$8"
+  local worktree_log_path="$9"
+  local hint="${10}"
   local record
   record="$(jq -n \
     --arg issue "$issue_id" \
@@ -284,7 +292,15 @@ _record_unknown_post_state() {
     --argjson duration "$duration" \
     --arg ts "$timestamp" \
     --arg run "$run_id" \
-    '{event: "end", issue: $issue, branch: $branch, base: $base, outcome: $outcome, exit_code: $exit_code, duration_seconds: $duration, timestamp: $ts, run_id: $run}')"
+    --arg sid "$session_id" \
+    --arg tp "$transcript_path" \
+    --arg wlp "$worktree_log_path" \
+    --arg hint "$hint" \
+    '{event: "end", issue: $issue, branch: $branch, base: $base, outcome: $outcome,
+      exit_code: $exit_code, duration_seconds: $duration, timestamp: $ts,
+      run_id: $run, session_id: $sid, transcript_path: $tp,
+      worktree_log_path: $wlp}
+     + (if $hint == "" then {} else {hint: $hint} end)')"
   _progress_append "$record"
 }
 
@@ -514,6 +530,45 @@ _dispatch_issue() {
   # the outer `set -e` from aborting on non-zero.
   local claude_exit=0
 
+  # ENG-308: pre-generate session-diagnostics fields per dispatch. session_id
+  # is passed to claude as --session-id so the JSONL transcript filename is
+  # known up-front; transcript_path and worktree_log_path are persisted into
+  # both the start and end records so /sr-status can surface them on
+  # non-success rows without having to reconstruct from live config.
+  local session_id; session_id="$(uuidgen | tr 'A-Z' 'a-z')"
+
+  # Resolve config_dir, distinguishing unset from empty-or-relative so we
+  # warn explicitly on misconfiguration (empty / non-absolute) without
+  # warning on the documented-default unset case.
+  #
+  # `${VAR+set}` (no colon) is "set, possibly empty" — so the first branch
+  # tells us "VAR is unset entirely" and we fall through silently to the
+  # default. Subsequent branches catch the misconfigured shapes.
+  local config_dir
+  if [[ -z "${CLAUDE_CONFIG_DIR+set}" ]]; then
+    config_dir="$HOME/.claude"
+  elif [[ -z "$CLAUDE_CONFIG_DIR" ]]; then
+    printf 'orchestrator: CLAUDE_CONFIG_DIR is set but empty; falling back to $HOME/.claude\n' >&2
+    config_dir="$HOME/.claude"
+  else
+    config_dir="$CLAUDE_CONFIG_DIR"
+  fi
+  case "$config_dir" in
+    /*) ;;
+    *)
+      printf 'orchestrator: CLAUDE_CONFIG_DIR=%q is not absolute; falling back to $HOME/.claude\n' \
+        "$config_dir" >&2
+      config_dir="$HOME/.claude"
+      ;;
+  esac
+
+  # Slug rule (worktree absolute path with `/` → `-`) is empirically observed
+  # in Claude Code 2.x. transcript_path is not validated at write time — JSONL
+  # may not exist yet when the start record lands.
+  local slug; slug="${path//\//-}"
+  local transcript_path="${config_dir}/projects/${slug}/${session_id}.jsonl"
+  local worktree_log_path="${path}/${CLAUDE_PLUGIN_OPTION_STDOUT_LOG_FILENAME}"
+
   # Live-status start record. Written immediately before the claude -p subshell
   # so /sr-status can render an in-flight Running row. Best-effort —
   # _progress_append failure does not abort dispatch (the matching end record
@@ -535,13 +590,27 @@ _dispatch_issue() {
     --arg base "$base_out" \
     --arg ts "$dispatch_timestamp" \
     --arg run "$run_id" \
-    '{event: "start", issue: $issue, branch: $branch, base: $base, timestamp: $ts, run_id: $run}')"
+    --arg sid "$session_id" \
+    --arg tp "$transcript_path" \
+    --arg wlp "$worktree_log_path" \
+    '{event: "start", issue: $issue, branch: $branch, base: $base,
+      timestamp: $ts, run_id: $run, session_id: $sid,
+      transcript_path: $tp, worktree_log_path: $wlp}')"
   _progress_append "$start_record" || true
 
   (
     cd "$path"
     set +e
-    claude -p --permission-mode auto --model "$CLAUDE_PLUGIN_OPTION_MODEL" --name "$issue_id: $title" "$prompt" 2>&1 | tee "$path/$CLAUDE_PLUGIN_OPTION_STDOUT_LOG_FILENAME"
+    # CLAUDE_CONFIG_DIR="$config_dir" forces the subprocess to use the same
+    # config directory the orchestrator just normalized; without it, an
+    # empty/relative caller-side value would land the JSONL somewhere other
+    # than the path we recorded.
+    CLAUDE_CONFIG_DIR="$config_dir" claude -p \
+      --permission-mode auto \
+      --model "$CLAUDE_PLUGIN_OPTION_MODEL" \
+      --name "$issue_id: $title" \
+      --session-id "$session_id" \
+      "$prompt" 2>&1 | tee "$path/$CLAUDE_PLUGIN_OPTION_STDOUT_LOG_FILENAME"
     ec="${PIPESTATUS[0]}"
     exit "$ec"
   ) || claude_exit=$?
@@ -567,26 +636,67 @@ _dispatch_issue() {
     state_fetch_ok=0
   fi
 
+  # Compute outcome FIRST so the diagnose call below covers
+  # unknown_post_state too (without duplicating logic across the early-return
+  # and the end-record paths). Linear-mutation side effects (label + taint)
+  # remain in the per-outcome block below.
+  local outcome
   if [[ "$claude_exit" -eq 0 && "$state_fetch_ok" -eq 0 ]]; then
-    _record_unknown_post_state "$issue_id" "$branch" "$base_out" "$claude_exit" "$duration" "$dispatch_timestamp"
-    return 0
-  fi
-
-  local outcome record
-  if [[ "$claude_exit" -eq 0 && "$post_state" == "$CLAUDE_PLUGIN_OPTION_REVIEW_STATE" ]]; then
+    outcome="unknown_post_state"
+  elif [[ "$claude_exit" -eq 0 && "$post_state" == "$CLAUDE_PLUGIN_OPTION_REVIEW_STATE" ]]; then
     outcome="in_review"
   elif [[ "$claude_exit" -eq 0 ]]; then
     outcome="exit_clean_no_review"
-    linear_add_label "$issue_id" "$CLAUDE_PLUGIN_OPTION_FAILED_LABEL" || \
-      printf 'orchestrator: failed to add %s label to %s (continuing)\n' "$CLAUDE_PLUGIN_OPTION_FAILED_LABEL" "$issue_id" >&2
-    _taint_descendants "$issue_id"
   else
     outcome="failed"
-    linear_add_label "$issue_id" "$CLAUDE_PLUGIN_OPTION_FAILED_LABEL" || \
-      printf 'orchestrator: failed to add %s label to %s (continuing)\n' "$CLAUDE_PLUGIN_OPTION_FAILED_LABEL" "$issue_id" >&2
-    _taint_descendants "$issue_id"
   fi
 
+  # Compute hint for the three dispatched non-success outcomes. The helper
+  # is bounded by a 5 s timeout so a hung heuristic cannot block failure
+  # bookkeeping (label writes, taint propagation, end-record write); on
+  # timeout, hint stays empty and the orchestrator proceeds. When neither
+  # `timeout` nor `gtimeout` is available we run unbounded with a one-time
+  # stderr note — H3's own internal 2 s poll cap is the second line of
+  # defense; H1/H2 are bounded by physics.
+  local hint=""
+  case "$outcome" in
+    exit_clean_no_review|failed|unknown_post_state)
+      local spec_base_sha=""
+      if [[ -r "$path/.sensible-ralph-base-sha" ]]; then
+        spec_base_sha="$(cat "$path/.sensible-ralph-base-sha")"
+      fi
+      local timeout_cmd=""
+      if command -v timeout >/dev/null 2>&1; then
+        timeout_cmd="timeout 5"
+      elif command -v gtimeout >/dev/null 2>&1; then
+        timeout_cmd="gtimeout 5"
+      else
+        printf 'orchestrator: timeout/gtimeout not available; running diagnose unbounded (H3 self-caps at 2s)\n' >&2
+      fi
+      # Helper stderr passes through to the orchestrator's stderr by
+      # contract (silent at default verbosity, breadcrumbs only when
+      # RALPH_DIAGNOSE_DEBUG=1). Never blanket-redirect.
+      hint="$($timeout_cmd bash "$SCRIPT_DIR/diagnose_session.sh" \
+        "$outcome" "$path" "$spec_base_sha" "$transcript_path")" || hint=""
+      ;;
+  esac
+
+  if [[ "$outcome" == "unknown_post_state" ]]; then
+    _record_unknown_post_state "$issue_id" "$branch" "$base_out" \
+      "$claude_exit" "$duration" "$dispatch_timestamp" \
+      "$session_id" "$transcript_path" "$worktree_log_path" "$hint"
+    return 0
+  fi
+
+  case "$outcome" in
+    exit_clean_no_review|failed)
+      linear_add_label "$issue_id" "$CLAUDE_PLUGIN_OPTION_FAILED_LABEL" || \
+        printf 'orchestrator: failed to add %s label to %s (continuing)\n' "$CLAUDE_PLUGIN_OPTION_FAILED_LABEL" "$issue_id" >&2
+      _taint_descendants "$issue_id"
+      ;;
+  esac
+
+  local record
   record="$(jq -n \
     --arg issue "$issue_id" \
     --arg branch "$branch" \
@@ -596,7 +706,15 @@ _dispatch_issue() {
     --argjson duration "$duration" \
     --arg ts "$dispatch_timestamp" \
     --arg run "$run_id" \
-    '{event: "end", issue: $issue, branch: $branch, base: $base, outcome: $outcome, exit_code: $exit_code, duration_seconds: $duration, timestamp: $ts, run_id: $run}')"
+    --arg sid "$session_id" \
+    --arg tp "$transcript_path" \
+    --arg wlp "$worktree_log_path" \
+    --arg hint "$hint" \
+    '{event: "end", issue: $issue, branch: $branch, base: $base, outcome: $outcome,
+      exit_code: $exit_code, duration_seconds: $duration, timestamp: $ts,
+      run_id: $run, session_id: $sid, transcript_path: $tp,
+      worktree_log_path: $wlp}
+     + (if $hint == "" then {} else {hint: $hint} end)')"
   _progress_append "$record"
   return 0
 }

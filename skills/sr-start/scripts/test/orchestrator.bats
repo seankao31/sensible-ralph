@@ -6,6 +6,7 @@
 
 SCRIPT_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
 ORCH_SH="$SCRIPT_DIR/orchestrator.sh"
+DIAGNOSE_SH="$SCRIPT_DIR/diagnose_session.sh"
 WORKTREE_SH="$(cd "$SCRIPT_DIR/../../.." && pwd)/lib/worktree.sh"
 AUTONOMOUS_PREAMBLE="$SCRIPT_DIR/autonomous-preamble.md"
 
@@ -64,6 +65,9 @@ setup() {
   mkdir -p "$STUB_DIR/lib"
   mkdir -p "$STUB_DIR/scripts"
   cp "$ORCH_SH" "$STUB_DIR/scripts/orchestrator.sh"
+  # ENG-308 diagnose helper. Orchestrator invokes it on non-success outcomes.
+  cp "$DIAGNOSE_SH" "$STUB_DIR/scripts/diagnose_session.sh"
+  chmod +x "$STUB_DIR/scripts/diagnose_session.sh"
   # Real worktree.sh — we want real git worktree operations
   cp "$WORKTREE_SH" "$STUB_DIR/lib/worktree.sh"
   # defaults.sh is sourced from $CLAUDE_PLUGIN_ROOT/lib for CLAUDE_PLUGIN_OPTION_* fallbacks
@@ -1579,4 +1583,311 @@ JQSH
   local real_jq; real_jq="$(PATH="${PATH#"$STUB_DIR":}" command -v jq)"
   [ -n "$real_jq" ]
   "$real_jq" '.' < "$REPO_DIR/.sensible-ralph/progress.json" > /dev/null
+}
+
+# ---------------------------------------------------------------------------
+# ENG-308: session-diagnostics fields (session_id, transcript_path,
+# worktree_log_path, hint) on start records and dispatched-outcome end
+# records.
+# ---------------------------------------------------------------------------
+
+@test "ENG-308 start record carries session_id, transcript_path, worktree_log_path" {
+  export STUB_CLAUDE_EXIT=0
+  export STUB_CLAUDE_TRANSITION_STATE="In Review"
+  export STUB_CLAUDE_ISSUE_ID="ENG-308"
+
+  local q; q="$(write_queue ENG-308)"
+  run_orch "$q"
+
+  [ "$status" -eq 0 ]
+
+  # session_id present on the start record, lowercase canonical UUID v4.
+  local sid; sid="$(jq -r '.[] | select(.issue == "ENG-308" and .event == "start") | .session_id' < "$REPO_DIR/.sensible-ralph/progress.json")"
+  [[ "$sid" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]
+
+  # transcript_path is absolute and contains the slug-encoded worktree path + session id.
+  local tp; tp="$(jq -r '.[] | select(.issue == "ENG-308" and .event == "start") | .transcript_path' < "$REPO_DIR/.sensible-ralph/progress.json")"
+  [[ "$tp" == /* ]]
+  [[ "$tp" == *"/projects/"* ]]
+  [[ "$tp" == *"$sid.jsonl" ]]
+
+  # worktree_log_path is the absolute dispatch-time path into the worktree.
+  local wlp; wlp="$(jq -r '.[] | select(.issue == "ENG-308" and .event == "start") | .worktree_log_path' < "$REPO_DIR/.sensible-ralph/progress.json")"
+  [ "$wlp" = "$REPO_DIR/.worktrees/eng-308/ralph-output.log" ]
+}
+
+@test "ENG-308 in_review end record carries the same session_id and path fields" {
+  export STUB_CLAUDE_EXIT=0
+  export STUB_CLAUDE_TRANSITION_STATE="In Review"
+  export STUB_CLAUDE_ISSUE_ID="ENG-308"
+
+  local q; q="$(write_queue ENG-308)"
+  run_orch "$q"
+
+  [ "$status" -eq 0 ]
+
+  local start_sid; start_sid="$(jq -r '.[] | select(.issue == "ENG-308" and .event == "start") | .session_id' < "$REPO_DIR/.sensible-ralph/progress.json")"
+  local end_sid;   end_sid="$(jq -r '.[] | select(.issue == "ENG-308" and .event == "end") | .session_id' < "$REPO_DIR/.sensible-ralph/progress.json")"
+  [ "$start_sid" = "$end_sid" ]
+
+  local end_tp; end_tp="$(jq -r '.[] | select(.issue == "ENG-308" and .event == "end") | .transcript_path' < "$REPO_DIR/.sensible-ralph/progress.json")"
+  [[ "$end_tp" == *"$end_sid.jsonl" ]]
+
+  local end_wlp; end_wlp="$(jq -r '.[] | select(.issue == "ENG-308" and .event == "end") | .worktree_log_path' < "$REPO_DIR/.sensible-ralph/progress.json")"
+  [ "$end_wlp" = "$REPO_DIR/.worktrees/eng-308/ralph-output.log" ]
+
+  # in_review records do not carry a hint (no diagnostic for green outcomes).
+  local end_hint; end_hint="$(jq -r '.[] | select(.issue == "ENG-308" and .event == "end") | .hint // "<absent>"' < "$REPO_DIR/.sensible-ralph/progress.json")"
+  [ "$end_hint" = "<absent>" ]
+}
+
+@test "ENG-308 failed end record carries hint composed by diagnose_session.sh" {
+  export STUB_CLAUDE_EXIT=7
+  # No transition state -> hard failure path.
+
+  local q; q="$(write_queue ENG-309)"
+  run_orch "$q"
+
+  [ "$status" -eq 0 ]
+
+  # Empty branch (no impl commits past base) -> H1 fires; clean tree -> H2 silent.
+  local end_hint; end_hint="$(jq -r '.[] | select(.issue == "ENG-309" and .event == "end") | .hint' < "$REPO_DIR/.sensible-ralph/progress.json")"
+  [ "$end_hint" = "no implementation commits" ]
+
+  # Diagnostic path fields must be present on the failed end record.
+  local end_sid; end_sid="$(jq -r '.[] | select(.issue == "ENG-309" and .event == "end") | .session_id' < "$REPO_DIR/.sensible-ralph/progress.json")"
+  [[ "$end_sid" =~ ^[0-9a-f]{8}- ]]
+  local end_wlp; end_wlp="$(jq -r '.[] | select(.issue == "ENG-309" and .event == "end") | .worktree_log_path' < "$REPO_DIR/.sensible-ralph/progress.json")"
+  [ "$end_wlp" = "$REPO_DIR/.worktrees/eng-309/ralph-output.log" ]
+}
+
+@test "ENG-308 exit_clean_no_review end record carries hint" {
+  export STUB_CLAUDE_EXIT=0
+  # No transition state -> soft failure (exit_clean_no_review).
+
+  local q; q="$(write_queue ENG-310)"
+  run_orch "$q"
+
+  [ "$status" -eq 0 ]
+
+  local end_outcome; end_outcome="$(jq -r '.[] | select(.issue == "ENG-310" and .event == "end") | .outcome' < "$REPO_DIR/.sensible-ralph/progress.json")"
+  [ "$end_outcome" = "exit_clean_no_review" ]
+
+  local end_hint; end_hint="$(jq -r '.[] | select(.issue == "ENG-310" and .event == "end") | .hint' < "$REPO_DIR/.sensible-ralph/progress.json")"
+  [ "$end_hint" = "no implementation commits" ]
+}
+
+@test "ENG-308 unknown_post_state end record carries session_id, paths, and hint" {
+  export STUB_CLAUDE_EXIT=0
+  export STUB_CLAUDE_TRANSITION_STATE="In Review"
+  export STUB_GET_STATE_FAIL_ENG_311=1
+
+  local q; q="$(write_queue ENG-311)"
+  run_orch "$q"
+
+  [ "$status" -eq 0 ]
+
+  local outcome; outcome="$(jq -r '.[] | select(.issue == "ENG-311" and .event == "end") | .outcome' < "$REPO_DIR/.sensible-ralph/progress.json")"
+  [ "$outcome" = "unknown_post_state" ]
+
+  # session_id, transcript_path, worktree_log_path are present.
+  local end_sid; end_sid="$(jq -r '.[] | select(.issue == "ENG-311" and .event == "end") | .session_id' < "$REPO_DIR/.sensible-ralph/progress.json")"
+  [[ "$end_sid" =~ ^[0-9a-f]{8}- ]]
+  local end_tp; end_tp="$(jq -r '.[] | select(.issue == "ENG-311" and .event == "end") | .transcript_path' < "$REPO_DIR/.sensible-ralph/progress.json")"
+  [[ "$end_tp" == *"$end_sid.jsonl" ]]
+  local end_wlp; end_wlp="$(jq -r '.[] | select(.issue == "ENG-311" and .event == "end") | .worktree_log_path' < "$REPO_DIR/.sensible-ralph/progress.json")"
+  [ "$end_wlp" = "$REPO_DIR/.worktrees/eng-311/ralph-output.log" ]
+
+  # The diagnose helper still runs for unknown_post_state — clean tree +
+  # empty branch -> H1 fires.
+  local end_hint; end_hint="$(jq -r '.[] | select(.issue == "ENG-311" and .event == "end") | .hint' < "$REPO_DIR/.sensible-ralph/progress.json")"
+  [ "$end_hint" = "no implementation commits" ]
+}
+
+@test "ENG-308 setup_failed end record does NOT carry session_id / transcript_path / worktree_log_path / hint" {
+  # Force dag_base to whitespace-only output so setup fails before claude is invoked.
+  export STUB_DAG_BASE_ENG_312="   "
+
+  local q; q="$(write_queue ENG-312)"
+  run_orch "$q"
+
+  [ "$status" -eq 0 ]
+
+  local outcome; outcome="$(jq -r '.[0].outcome' < "$REPO_DIR/.sensible-ralph/progress.json")"
+  [ "$outcome" = "setup_failed" ]
+
+  # None of the diagnostic fields appear on a setup_failed record.
+  local has_session; has_session="$(jq '.[0] | has("session_id")' < "$REPO_DIR/.sensible-ralph/progress.json")"
+  [ "$has_session" = "false" ]
+  local has_tp; has_tp="$(jq '.[0] | has("transcript_path")' < "$REPO_DIR/.sensible-ralph/progress.json")"
+  [ "$has_tp" = "false" ]
+  local has_wlp; has_wlp="$(jq '.[0] | has("worktree_log_path")' < "$REPO_DIR/.sensible-ralph/progress.json")"
+  [ "$has_wlp" = "false" ]
+  local has_hint; has_hint="$(jq '.[0] | has("hint")' < "$REPO_DIR/.sensible-ralph/progress.json")"
+  [ "$has_hint" = "false" ]
+}
+
+@test "ENG-308 local_residue end record does NOT carry session_id fields" {
+  # Pre-create the branch so dispatch lands as local_residue.
+  git -C "$REPO_DIR" branch eng-313
+
+  local q; q="$(write_queue ENG-313)"
+  run_orch "$q"
+
+  [ "$status" -eq 0 ]
+
+  local outcome; outcome="$(jq -r '.[0].outcome' < "$REPO_DIR/.sensible-ralph/progress.json")"
+  [ "$outcome" = "local_residue" ]
+
+  local has_session; has_session="$(jq '.[0] | has("session_id")' < "$REPO_DIR/.sensible-ralph/progress.json")"
+  [ "$has_session" = "false" ]
+}
+
+@test "ENG-308 skipped end record does NOT carry session_id fields" {
+  export STUB_CLAUDE_EXIT=2
+  export STUB_BLOCKERS_ENG_315='[{"id":"ENG-314","state":"Approved","branch":"eng-314"}]'
+  export STUB_BLOCKERS_ENG_314='[]'
+
+  local q; q="$(write_queue ENG-314 ENG-315)"
+  run_orch "$q"
+
+  [ "$status" -eq 0 ]
+
+  # ENG-315 was tainted via ENG-314's failure -> skipped, never dispatched.
+  local outcome_315; outcome_315="$(jq -r '.[] | select(.issue == "ENG-315") | .outcome' < "$REPO_DIR/.sensible-ralph/progress.json")"
+  [ "$outcome_315" = "skipped" ]
+
+  local has_session; has_session="$(jq -r '.[] | select(.issue == "ENG-315") | has("session_id")' < "$REPO_DIR/.sensible-ralph/progress.json")"
+  [ "$has_session" = "false" ]
+}
+
+@test "ENG-308 transcript_path honors absolute CLAUDE_CONFIG_DIR override" {
+  export STUB_CLAUDE_EXIT=0
+  export STUB_CLAUDE_TRANSITION_STATE="In Review"
+  export STUB_CLAUDE_ISSUE_ID="ENG-316"
+
+  local config_override; config_override="$(cd "$(mktemp -d)" && pwd -P)"
+  CLAUDE_CONFIG_DIR="$config_override" run bash -c "cd '$REPO_DIR' && '$STUB_DIR/scripts/orchestrator.sh' '$(write_queue ENG-316)'"
+
+  [ "$status" -eq 0 ]
+
+  local tp; tp="$(jq -r '.[] | select(.issue == "ENG-316" and .event == "start") | .transcript_path' < "$REPO_DIR/.sensible-ralph/progress.json")"
+  [[ "$tp" == "$config_override/projects/"* ]]
+  rm -rf "$config_override"
+}
+
+@test "ENG-308 transcript_path falls back to \$HOME/.claude when CLAUDE_CONFIG_DIR unset" {
+  export STUB_CLAUDE_EXIT=0
+  export STUB_CLAUDE_TRANSITION_STATE="In Review"
+  export STUB_CLAUDE_ISSUE_ID="ENG-317"
+
+  # Use a controlled HOME so we can assert the fallback path.
+  local fake_home; fake_home="$(cd "$(mktemp -d)" && pwd -P)"
+  HOME="$fake_home" run bash -c "unset CLAUDE_CONFIG_DIR; cd '$REPO_DIR' && '$STUB_DIR/scripts/orchestrator.sh' '$(write_queue ENG-317)'"
+
+  [ "$status" -eq 0 ]
+
+  local tp; tp="$(jq -r '.[] | select(.issue == "ENG-317" and .event == "start") | .transcript_path' < "$REPO_DIR/.sensible-ralph/progress.json")"
+  [[ "$tp" == "$fake_home/.claude/projects/"* ]]
+  rm -rf "$fake_home"
+}
+
+@test "ENG-308 transcript_path falls back with stderr warning when CLAUDE_CONFIG_DIR is empty" {
+  export STUB_CLAUDE_EXIT=0
+  export STUB_CLAUDE_TRANSITION_STATE="In Review"
+  export STUB_CLAUDE_ISSUE_ID="ENG-318"
+
+  local fake_home; fake_home="$(cd "$(mktemp -d)" && pwd -P)"
+  HOME="$fake_home" CLAUDE_CONFIG_DIR="" run bash -c "cd '$REPO_DIR' && '$STUB_DIR/scripts/orchestrator.sh' '$(write_queue ENG-318)'"
+
+  [ "$status" -eq 0 ]
+
+  local tp; tp="$(jq -r '.[] | select(.issue == "ENG-318" and .event == "start") | .transcript_path' < "$REPO_DIR/.sensible-ralph/progress.json")"
+  [[ "$tp" == "$fake_home/.claude/projects/"* ]]
+  [[ "$output" == *"CLAUDE_CONFIG_DIR is set but empty"* ]]
+  rm -rf "$fake_home"
+}
+
+@test "ENG-308 transcript_path falls back with stderr warning when CLAUDE_CONFIG_DIR is relative" {
+  export STUB_CLAUDE_EXIT=0
+  export STUB_CLAUDE_TRANSITION_STATE="In Review"
+  export STUB_CLAUDE_ISSUE_ID="ENG-319"
+
+  local fake_home; fake_home="$(cd "$(mktemp -d)" && pwd -P)"
+  HOME="$fake_home" CLAUDE_CONFIG_DIR="relative/path" run bash -c "cd '$REPO_DIR' && '$STUB_DIR/scripts/orchestrator.sh' '$(write_queue ENG-319)'"
+
+  [ "$status" -eq 0 ]
+
+  local tp; tp="$(jq -r '.[] | select(.issue == "ENG-319" and .event == "start") | .transcript_path' < "$REPO_DIR/.sensible-ralph/progress.json")"
+  [[ "$tp" == "$fake_home/.claude/projects/"* ]]
+  [[ "$output" == *"is not absolute"* ]]
+  rm -rf "$fake_home"
+}
+
+@test "ENG-308 worktree_log_path is dispatch-time path even when STDOUT_LOG_FILENAME is changed afterwards" {
+  export STUB_CLAUDE_EXIT=0
+  export STUB_CLAUDE_TRANSITION_STATE="In Review"
+  export STUB_CLAUDE_ISSUE_ID="ENG-320"
+
+  local q; q="$(write_queue ENG-320)"
+  run_orch "$q"
+  [ "$status" -eq 0 ]
+
+  local persisted; persisted="$(jq -r '.[] | select(.issue == "ENG-320" and .event == "end") | .worktree_log_path' < "$REPO_DIR/.sensible-ralph/progress.json")"
+  # Persisted path uses the dispatch-time STDOUT_LOG_FILENAME (ralph-output.log).
+  [ "$persisted" = "$REPO_DIR/.worktrees/eng-320/ralph-output.log" ]
+
+  # Reconfigure between dispatch and inspection — the persisted record must
+  # NOT change. The orchestrator never reads it back, but consumers
+  # (renderer) read it verbatim, so the field's contents are the contract.
+  CLAUDE_PLUGIN_OPTION_STDOUT_LOG_FILENAME="renamed.log"
+  local persisted_after; persisted_after="$(jq -r '.[] | select(.issue == "ENG-320" and .event == "end") | .worktree_log_path' < "$REPO_DIR/.sensible-ralph/progress.json")"
+  [ "$persisted_after" = "$persisted" ]
+}
+
+@test "ENG-308 diagnose helper runs even when .sensible-ralph-base-sha is unreadable (passes empty spec_base_sha)" {
+  export STUB_CLAUDE_EXIT=7
+
+  # Replace the diagnose helper with a recording stub that captures the
+  # invocation. The stub mirrors the real helper's contract: prints nothing
+  # (no hint), exits 0.
+  cat > "$STUB_DIR/scripts/diagnose_session.sh" <<DIAGSH
+#!/usr/bin/env bash
+printf 'outcome=%s wt=%s base_sha=%s tp=%s\n' "\$1" "\$2" "\$3" "\$4" > "$STUB_DIR/diagnose_invocation"
+exit 0
+DIAGSH
+  chmod +x "$STUB_DIR/scripts/diagnose_session.sh"
+
+  # Pre-removal hook: replace the orchestrator's base-sha file with an
+  # unreadable path. The orchestrator writes .sensible-ralph-base-sha pre-
+  # dispatch, then dispatches. Our stub is reading the file post-dispatch.
+  # Simulate unreadability by replacing with a directory of the same name
+  # AFTER the orchestrator's pre-dispatch write — the cleanest way is a
+  # wrapper claude stub that removes the file before exiting.
+  cat > "$STUB_DIR/claude" <<CLAUDESH
+#!/usr/bin/env bash
+issue_id=""
+while [[ \$# -gt 0 ]]; do
+  if [[ "\$1" == "--name" ]]; then
+    shift
+    issue_id="\${1%%:*}"
+    break
+  fi
+  shift
+done
+# Remove the base-sha file so the orchestrator's [[ -r ... ]] check fails
+# at hint-computation time and the helper is invoked with empty spec_base_sha.
+issue_lc="\$(printf '%s' "\$issue_id" | tr '[:upper:]' '[:lower:]')"
+rm -f "$REPO_DIR/.worktrees/\$issue_lc/.sensible-ralph-base-sha"
+exit 7
+CLAUDESH
+  chmod +x "$STUB_DIR/claude"
+
+  local q; q="$(write_queue ENG-321)"
+  run_orch "$q"
+
+  [ "$status" -eq 0 ]
+  [ -f "$STUB_DIR/diagnose_invocation" ]
+  # base_sha arg is the empty string when .sensible-ralph-base-sha is unreadable.
+  grep -qE 'base_sha= ' "$STUB_DIR/diagnose_invocation"
 }
