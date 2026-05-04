@@ -76,7 +76,9 @@ the header as the first line of stdout, before any issue IDs.
 
 - The `/sr-start` step 2 invocation
   (`build_queue.sh > "$sr_root/ordered_queue.txt"`) is unchanged. The
-  redirect captures both header and issue IDs in one atomic write.
+  redirect captures both header and issue IDs in one shell-level
+  write — see Failure modes below for the residual mid-write race
+  this opens.
 - **Empty-queue case** (no pickup-ready Approved issues): unchanged
   from today — emit nothing, exit 0. Do **not** emit a header for an
   empty queue. A queue file with a header but no issues would falsely
@@ -234,14 +236,13 @@ strict-contract enforcement, not deprecation paths.
   selected via fromdateiso8601" (line 240) — same reason.
 - **Delete:** "legacy records (no event field) coexist with new
   records: legacy filtered out by run_id selection" (line 190) —
-  partially obsolete. The renderer now selects records by header
-  `run_id` rather than by chronologically-latest derivation. If the
-  intent of the legacy-filtering coverage is preserved by the new
-  precedence test (records under `OLD` don't appear when header
-  selects `NEW`), this test can be deleted. If the operator wants
-  the legacy coverage retained, restate it as: "records from older
-  `run_id`s in `progress.json` are not rendered when the queue
-  header selects a different `run_id`."
+  obsolete. The renderer now selects records by header `run_id`
+  rather than by chronologically-latest derivation. The structural
+  protection (`select(.run_id == $run)` at `render_status.sh:63`)
+  silently drops any record whose `run_id` doesn't match the header,
+  including legacy records from older runs. The new precedence test
+  (records under `OLD` don't appear when header selects `NEW`)
+  exercises the same protection on the same code path.
 
 ### Acceptance-criteria mapping
 
