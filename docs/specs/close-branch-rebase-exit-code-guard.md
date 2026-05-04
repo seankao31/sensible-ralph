@@ -137,84 +137,75 @@ as rebase fails. Rewrite so the *flow* is explicit, the *taxonomy*
 > close-issue Step 5 is for the successful-but-empty case — e.g.
 > PR-pending workflows — not for failures).
 >
-> What happens next depends on who's at the keyboard:
+> /close-issue is interactive-only (per
+> `docs/design/autonomous-mode.md`: dispatched autonomous sessions
+> do not invoke /close-issue; they exit at /prepare-for-review with
+> the issue in `In Review`, and the operator runs /close-issue
+> manually next). So the recovery flow below is operator-only.
 >
-> *Interactive (operator at the keyboard).* The operator inspects the
-> diagnostic and the worktree state, then decides:
+> *Mechanical conflict — resolve in the worktree, then re-run.*
+> In the worktree, edit the conflicted files; `git -C
+> "$WORKTREE_PATH" add <files>`; `git -C "$WORKTREE_PATH" rebase
+> --continue`. `--continue` may surface another conflict (multi-
+> conflict rebases iterate); resolve and continue again as needed.
+> Re-invoke `/close-issue` only after the rebase has fully completed
+> AND the worktree is fully clean — `git -C "$WORKTREE_PATH" status
+> --short` produces NO output at all. Both `??` lines (untracked)
+> and non-`??` lines (modified, mid-rebase markers like `UU`, etc.)
+> cause close-branch's Pre-flight at lines 57-63 to exit non-zero on
+> re-entry. Untracked files left over from prior work must be
+> committed, removed, or preserved per close-issue's preservation
+> step before /close-issue can re-enter close-branch. Once
+> `status --short` is empty, re-invoke /close-issue. The
+> re-invocation runs Step 1's rebase from scratch; if local main
+> has not advanced, the rebase is a no-op and Step 2 proceeds. If
+> local main has advanced (new direct-to-main commits, or someone
+> ran `git pull` on the main checkout), Step 1 may conflict again —
+> be prepared to repeat the cycle. close-branch makes no
+> idempotence guarantee here; each invocation runs Step 1 from
+> scratch.
 >
-> - *Mechanical conflict — resolve in the worktree, then re-run.*
->   In the worktree, edit the conflicted files; `git -C
->   "$WORKTREE_PATH" add <files>`; `git -C "$WORKTREE_PATH" rebase
->   --continue`. `--continue` may surface another conflict (multi-
->   conflict rebases iterate); resolve and continue again as needed.
->   Re-invoke `/close-issue` only after the rebase has fully
->   completed — `git -C "$WORKTREE_PATH" status --short` reports no
->   non-`??` lines (this matches close-branch's Pre-flight at lines
->   57-63, which close-branch re-checks on re-invocation). The
->   re-invocation runs Step 1's rebase from scratch; if local main
->   has not advanced in the meantime, the rebase is a no-op and Step
->   2 proceeds. If local main has advanced (new direct-to-main
->   commits, or someone ran `git pull` on the main checkout), Step 1
->   may conflict again — be prepared to repeat the resolve-continue-
->   re-invoke cycle. close-branch makes no idempotence guarantee
->   here; each invocation runs Step 1 from scratch.
+> Mechanical resolutions (the operator can do these without
+> escalation):
 >
->   Mechanical resolutions (the operator can do these without
->   escalation):
+> - Unrelated edits in adjacent regions (formatting, nearby lines,
+>   imports) — keep both.
+> - Same logical change landed on both sides — drop the feature-
+>   branch duplicate; take main's version.
+> - Both sides appended different items to the same list,
+>   changelog, or docs section — merge the content.
 >
->   - Unrelated edits in adjacent regions (formatting, nearby lines,
->     imports) — keep both.
->   - Same logical change landed on both sides — drop the feature-
->     branch duplicate; take main's version.
->   - Both sides appended different items to the same list,
->     changelog, or docs section — merge the content.
+> *Ambiguous conflict — abort and escalate.* `git -C
+> "$WORKTREE_PATH" rebase --abort` if a rebase is in progress; for
+> fatal errors there is no rebase to abort, just investigate the
+> underlying issue. Surface the conflict to whoever owns the
+> resolution. Do not re-invoke `/close-issue` until it's resolved.
 >
-> - *Ambiguous conflict — abort and escalate.* `git -C
->   "$WORKTREE_PATH" rebase --abort` if a rebase is in progress; for
->   fatal errors there is no rebase to abort, just investigate the
->   underlying issue. Surface the conflict to whoever owns the
->   resolution. Do not re-invoke `/close-issue` until it's resolved.
+> Cases that are NOT mechanical:
 >
->   Cases that are NOT mechanical:
+> - Both sides made substantive, contradicting changes to the same
+>   logic.
+> - A file was deleted on one side and modified on the other.
+> - The right answer isn't obvious without operator context.
 >
->   - Both sides made substantive, contradicting changes to the same
->     logic.
->   - A file was deleted on one side and modified on the other.
->   - The right answer isn't obvious without operator context.
->
->   Silently picking a side on ambiguous logic is worse than
->   stopping — the "minimal intervention" principle applies only
->   when the decision is obvious.
->
-> *Autonomous (session dispatched by the orchestrator).* No ad-hoc
-> resolve+continue is permitted. close-branch's non-zero exit
-> propagates up through close-issue (which stops without cleanup,
-> per its Step 4) to the dispatched session, which exits with the
-> issue still in `In Review`. The orchestrator's post-dispatch state
-> check sees `exit 0 + In Review` (or whatever close-issue's stop
-> exit code is — the key invariant is the issue is NOT in `Done`)
-> and classifies the run via the rules in
-> `docs/design/autonomous-mode.md` — applies `ralph-failed`, taints
-> DAG descendants for the run, and surfaces the conflict for
-> operator triage on the next pass. The operator then follows the
-> interactive flow above. The guard introduced by this spec does
-> not add a new autonomous-recovery path; it just makes the existing
-> stop-trigger fire correctly instead of letting the cascade run
-> silently.
+> Silently picking a side on ambiguous logic is worse than stopping
+> — the "minimal intervention" principle applies only when the
+> decision is obvious.
 
 Three structural changes from the original prose:
 
 1. The lead-in describes the *real* close-issue failure-handling
    contract (stop, no cleanup) rather than the wrong absent-file
    fallback path (which only applies on success).
-2. The mechanical-resolution recipe iterates `--continue` (multi-
-   conflict rebases need multiple iterations) and gates
-   re-invocation on the rebase fully completing (matches Pre-flight
-   gate at lines 57-63).
-3. Interactive and autonomous flows are differentiated explicitly:
-   autonomous follows the escape-hatch contract from
-   `docs/design/autonomous-mode.md` (no ad-hoc recovery), interactive
-   has the resolve+continue+re-invoke cycle.
+2. The recipe is explicitly operator-only — /close-issue is
+   interactive (per `docs/design/autonomous-mode.md`), so there is
+   no autonomous-recovery path to specify here. The autonomous
+   exit-clean-with-comment escape hatch fires earlier in
+   /sr-implement, not at close time.
+3. The mechanical-resolution recipe iterates `--continue` (multi-
+   conflict rebases) and gates re-invocation on a fully-empty
+   `status --short` (matches Pre-flight at lines 57-63 exactly,
+   which rejects both untracked and uncommitted-tracked entries).
 
 ### Edit 3 — Red Flags section (no change)
 
@@ -254,13 +245,15 @@ After the edits, all of the following must pass:
    → zero matches. (Anchored to start-of-line so it doesn't match the
    inside-the-`||` form `git ... rebase main || rebase_rc=$?`.)
 
-3. **Prose flow update lands** (two complementary markers for the
-   Interactive-vs-Autonomous differentiation, each chosen to fit on
-   a single line in any reasonable prose wrapping):
+3. **Prose flow update lands.** The new prose reframes the
+   recovery flow as operator-only and references
+   `docs/design/autonomous-mode.md` to anchor that constraint.
+   Verify with two short single-line markers (each chosen to fit
+   on one line in any reasonable wrapping):
 
    ```bash
-   grep -nF '(operator at the keyboard)' .claude/skills/close-branch/SKILL.md
-   grep -nF 'session dispatched by the orchestrator' .claude/skills/close-branch/SKILL.md
+   grep -nF 'interactive-only' .claude/skills/close-branch/SKILL.md
+   grep -nF 'rebase has fully completed' .claude/skills/close-branch/SKILL.md
    ```
 
    → each grep returns exactly one match, inside Step 1.
