@@ -498,6 +498,67 @@ STUB
 }
 
 # ---------------------------------------------------------------------------
+# 3c. linear_get_issue_labels — calls issue view, returns one label name per line
+# ---------------------------------------------------------------------------
+@test "linear_get_issue_labels returns one label name per line" {
+  STUB_OUTPUT='{"identifier": "ENG-34", "labels": {"nodes": [{"name": "ralph-failed"}, {"name": "needs-review"}]}}'
+  export STUB_OUTPUT
+
+  run call_fn linear_get_issue_labels ENG-34
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"ralph-failed"* ]]
+  [[ "$output" == *"needs-review"* ]]
+  # Exactly two lines of output
+  local line_count; line_count="$(printf '%s\n' "$output" | wc -l | tr -d ' ')"
+  [ "$line_count" -eq 2 ]
+}
+
+@test "linear_get_issue_labels returns no output when issue has no labels" {
+  STUB_OUTPUT='{"identifier": "ENG-35", "labels": {"nodes": []}}'
+  export STUB_OUTPUT
+
+  run call_fn linear_get_issue_labels ENG-35
+
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "linear_get_issue_labels handles labels.nodes null" {
+  STUB_OUTPUT='{"identifier": "ENG-36", "labels": {"nodes": null}}'
+  export STUB_OUTPUT
+
+  run call_fn linear_get_issue_labels ENG-36
+
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "linear_get_issue_labels returns non-zero with diagnostic when stub exits non-zero" {
+  STUB_EXIT=1
+  export STUB_EXIT
+
+  run call_fn linear_get_issue_labels ENG-37
+
+  [ "$status" -ne 0 ]
+  if [[ "$output" != *"linear_get_issue_labels: failed to view"* ]]; then
+    echo "expected diagnostic in output, got: $output" >&2
+    return 1
+  fi
+}
+
+@test "linear_get_issue_labels calls issue view with --json --no-comments" {
+  STUB_OUTPUT='{"identifier": "ENG-38", "labels": {"nodes": []}}'
+  export STUB_OUTPUT
+
+  call_fn linear_get_issue_labels ENG-38
+
+  grep -q "issue view ENG-38" "$STUB_ARGS_FILE"
+  grep -q -- "--json" "$STUB_ARGS_FILE"
+  grep -q -- "--no-comments" "$STUB_ARGS_FILE"
+}
+
+# ---------------------------------------------------------------------------
 # 4. linear_set_state — calls issue update --state
 # ---------------------------------------------------------------------------
 @test "linear_set_state calls issue update with correct issue id and state" {

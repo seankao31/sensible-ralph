@@ -132,6 +132,15 @@ linear_set_state() {
     printf 'stub: linear_set_state failed for %s\n' "$issue_id" >&2
     return 1
   fi
+  # ENG-322: fail only on the post-dispatch revert call (state ==
+  # CLAUDE_PLUGIN_OPTION_APPROVED_STATE), so the dispatch-time In Progress
+  # transition still succeeds. Used by partial-write tests that exercise
+  # the labeled-In-Progress (revert API blip) recovery path.
+  local revert_fail_var="STUB_SET_STATE_FAIL_ON_REVERT_${key}"
+  if [[ -n "${!revert_fail_var:-}" && "$state" == "${CLAUDE_PLUGIN_OPTION_APPROVED_STATE:-Approved}" ]]; then
+    printf 'stub: linear_set_state failed on revert for %s\n' "$issue_id" >&2
+    return 1
+  fi
   printf '%s' "$state" > "$STUB_DIR/linear_state_$issue_id"
 }
 
@@ -145,6 +154,26 @@ linear_add_label() {
     printf 'stub: linear_add_label failed for %s\n' "$issue_id" >&2
     return 1
   fi
+}
+
+# ENG-322: post-add label verification stub. Reads STUB_LABELS_<KEY> (newline-
+# separated label names) and writes them to stdout. Default empty (no labels
+# observed — simulates Linear's silent-no-op when the workspace label is
+# missing). STUB_GET_LABELS_FAIL_<KEY> set => returns non-zero with a
+# diagnostic to stderr (simulates a transient `linear issue view` blip).
+# The stub is deliberately decoupled from linear_add_label so tests express
+# the silent-no-op scenario by setting label-add success and STUB_LABELS empty.
+linear_get_issue_labels() {
+  local issue_id="$1"
+  printf 'get_labels %s\n' "$issue_id" >> "$STUB_LINEAR_CALLS_FILE"
+  local key; key="$(_issue_var "$issue_id")"
+  local fail_var="STUB_GET_LABELS_FAIL_${key}"
+  if [[ -n "${!fail_var:-}" ]]; then
+    printf 'stub: linear_get_issue_labels failed for %s\n' "$issue_id" >&2
+    return 1
+  fi
+  local var="STUB_LABELS_${key}"
+  printf '%s' "${!var:-}"
 }
 
 linear_comment() {
@@ -370,14 +399,19 @@ CLAUDESH
 @test "hard failure: exit non-zero adds ralph-failed label, outcome=failed with exit_code" {
   export STUB_CLAUDE_EXIT=7
   # No state transition — session crashed
+  # ENG-322: post-add verify reads the label list; setting STUB_LABELS_ENG_20
+  # so the gate observes ralph-failed and the state-revert runs (happy path).
+  export STUB_LABELS_ENG_20="ralph-failed"
 
   local q; q="$(write_queue ENG-20)"
   run_orch "$q"
 
   [ "$status" -eq 0 ]
 
-  # ralph-failed label was added
+  # ralph-failed label was added, verified, and state was reverted to Approved.
   grep -qF "add_label ENG-20 ralph-failed" "$STUB_LINEAR_CALLS_FILE"
+  grep -qF "get_labels ENG-20" "$STUB_LINEAR_CALLS_FILE"
+  grep -qF "set_state ENG-20 Approved" "$STUB_LINEAR_CALLS_FILE"
 
   # progress.json end record: outcome=failed with exit_code=7
   local outcome; outcome="$(jq -r '.[] | select(.issue == "ENG-20" and .event == "end") | .outcome' < "$REPO_DIR/.sensible-ralph/progress.json")"
@@ -392,6 +426,7 @@ CLAUDESH
 @test "soft failure: exit 0 without state transition adds ralph-failed, outcome=exit_clean_no_review" {
   export STUB_CLAUDE_EXIT=0
   # No STUB_CLAUDE_TRANSITION_STATE — stub won't move state beyond "In Progress"
+  export STUB_LABELS_ENG_30="ralph-failed"
 
   local q; q="$(write_queue ENG-30)"
   run_orch "$q"
@@ -399,6 +434,8 @@ CLAUDESH
   [ "$status" -eq 0 ]
 
   grep -qF "add_label ENG-30 ralph-failed" "$STUB_LINEAR_CALLS_FILE"
+  grep -qF "get_labels ENG-30" "$STUB_LINEAR_CALLS_FILE"
+  grep -qF "set_state ENG-30 Approved" "$STUB_LINEAR_CALLS_FILE"
 
   local outcome; outcome="$(jq -r '.[] | select(.issue == "ENG-30" and .event == "end") | .outcome' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$outcome" = "exit_clean_no_review" ]
@@ -801,6 +838,9 @@ CLAUDESH
   # the literal string "null". Simulate that directly.
   export STUB_BRANCH_ENG_130="null"
   export STUB_BLOCKERS_ENG_130='[]'
+  # ENG-322: verify-after-add gate runs in the setup_failed path too; STUB_LABELS
+  # primes the post-add read so the helper observes the label and exits clean.
+  export STUB_LABELS_ENG_130="ralph-failed"
 
   local q; q="$(write_queue ENG-130)"
   run_orch "$q"
@@ -822,8 +862,10 @@ CLAUDESH
   local step; step="$(jq -r '.[0].failed_step' < "$REPO_DIR/.sensible-ralph/progress.json")"
   [ "$step" = "missing_branch_name" ]
 
-  # ralph-failed label was added
+  # ralph-failed label was added; verify-after-add gate ran (no state revert
+  # in setup_failed — state is still Approved).
   grep -qF "add_label ENG-130 ralph-failed" "$STUB_LINEAR_CALLS_FILE"
+  grep -qF "get_labels ENG-130" "$STUB_LINEAR_CALLS_FILE"
 }
 
 # ---------------------------------------------------------------------------
@@ -1054,6 +1096,8 @@ CLAUDESH
 
   export STUB_DAG_BASE_ENG_170="INTEGRATION eng-170-unrelated"
   export STUB_BLOCKERS_ENG_170='[]'
+  # ENG-322: prime the verify-after-add gate's read so it observes the label.
+  export STUB_LABELS_ENG_170="ralph-failed"
 
   local q; q="$(write_queue ENG-170)"
   run_orch "$q"
@@ -1078,8 +1122,9 @@ CLAUDESH
   # The branch was deleted so a re-run can recreate it
   ! git -C "$REPO_DIR" show-ref --verify --quiet "refs/heads/eng-170"
 
-  # ralph-failed label was added
+  # ralph-failed label was added; verify-after-add gate ran.
   grep -qF "add_label ENG-170 ralph-failed" "$STUB_LINEAR_CALLS_FILE"
+  grep -qF "get_labels ENG-170" "$STUB_LINEAR_CALLS_FILE"
 }
 
 # ---------------------------------------------------------------------------
@@ -1600,6 +1645,140 @@ JQSH
 }
 
 # ---------------------------------------------------------------------------
+# 26. ENG-322 partial-write coverage. The verify-after-add gate plus the gated
+#     state revert at the `failed`/`exit_clean_no_review` branches produce
+#     several distinct terminal states depending on which Linear API write
+#     succeeded. The four tests below exercise each path against the
+#     `failed` branch — `exit_clean_no_review` shares the textually-identical
+#     block, so per-branch divergence is not asserted.
+#
+#     Partial-write row 2: revert fails after a verified label-add. Issue
+#     terminates as labeled-In-Progress; criterion 2b operator recipe applies.
+# ---------------------------------------------------------------------------
+@test "ENG-322 revert fails after verified label-add: get_labels seen, set_state Approved attempted, warning emitted, outcome=failed" {
+  export STUB_CLAUDE_EXIT=4
+
+  # Verify will see the label (label-add succeeded, get_labels returns it).
+  export STUB_LABELS_ENG_240="ralph-failed"
+  # Only the post-dispatch revert call fails; dispatch-time In Progress
+  # transition still succeeds (the helper sets STUB_DIR/linear_state_ENG-240).
+  export STUB_SET_STATE_FAIL_ON_REVERT_ENG_240=1
+
+  local q; q="$(write_queue ENG-240)"
+  run_orch "$q"
+
+  [ "$status" -eq 0 ]
+
+  grep -qF "add_label ENG-240 ralph-failed" "$STUB_LINEAR_CALLS_FILE"
+  grep -qF "get_labels ENG-240" "$STUB_LINEAR_CALLS_FILE"
+  grep -qF "set_state ENG-240 Approved" "$STUB_LINEAR_CALLS_FILE"
+
+  # Call-site warning, not the helper's internal warnings.
+  [[ "$output" == *"failed to revert ENG-240 to Approved"* ]]
+
+  local outcome; outcome="$(jq -r '.[] | select(.issue == "ENG-240" and .event == "end") | .outcome' < "$REPO_DIR/.sensible-ralph/progress.json")"
+  [ "$outcome" = "failed" ]
+}
+
+# Partial-write row 5: linear_add_label hard-fails. Helper short-circuits
+# before the verify-read; gate keeps the revert from running.
+@test "ENG-322 label-add hard-fails: get_labels NOT seen, no revert, helper warning emitted, outcome=failed" {
+  export STUB_CLAUDE_EXIT=5
+  export STUB_ADD_LABEL_FAIL_ENG_241=1
+
+  local q; q="$(write_queue ENG-241)"
+  run_orch "$q"
+
+  [ "$status" -eq 0 ]
+
+  grep -qF "add_label ENG-241 ralph-failed" "$STUB_LINEAR_CALLS_FILE"
+  ! grep -qF "get_labels ENG-241" "$STUB_LINEAR_CALLS_FILE"
+  ! grep -qF "set_state ENG-241 Approved" "$STUB_LINEAR_CALLS_FILE"
+
+  [[ "$output" == *"failed to add ralph-failed label to ENG-241; leaving state In Progress (continuing)"* ]]
+
+  local outcome; outcome="$(jq -r '.[] | select(.issue == "ENG-241" and .event == "end") | .outcome' < "$REPO_DIR/.sensible-ralph/progress.json")"
+  [ "$outcome" = "failed" ]
+}
+
+# Partial-write row 4: label-add succeeds but the workspace label name is
+# missing, so the post-add read returns empty (Linear silent-no-op). The
+# verify gate detects the absence and prevents the state revert.
+@test "ENG-322 label silently no-ops: gate detects absence, no revert, helper warning emitted, outcome=failed" {
+  export STUB_CLAUDE_EXIT=6
+  # Label-add succeeds (no STUB_ADD_LABEL_FAIL_ENG_242), get_labels returns
+  # empty (no STUB_LABELS_ENG_242 — the silent-no-op simulator).
+
+  local q; q="$(write_queue ENG-242)"
+  run_orch "$q"
+
+  [ "$status" -eq 0 ]
+
+  grep -qF "add_label ENG-242 ralph-failed" "$STUB_LINEAR_CALLS_FILE"
+  grep -qF "get_labels ENG-242" "$STUB_LINEAR_CALLS_FILE"
+  ! grep -qF "set_state ENG-242 Approved" "$STUB_LINEAR_CALLS_FILE"
+
+  [[ "$output" == *"ralph-failed did not land on ENG-242 after label-add (silent no-op"* ]]
+
+  local outcome; outcome="$(jq -r '.[] | select(.issue == "ENG-242" and .event == "end") | .outcome' < "$REPO_DIR/.sensible-ralph/progress.json")"
+  [ "$outcome" = "failed" ]
+}
+
+# Partial-write row 3: linear_get_issue_labels fails after a successful
+# label-add. Helper cannot confirm the label landed — labeled-but-unverified.
+# Gate trips conservatively; criterion 2b recipe handles the recovery.
+@test "ENG-322 verify-read fails after label-add: gate trips, no revert, helper warning emitted, outcome=failed" {
+  export STUB_CLAUDE_EXIT=8
+  # Label-add succeeds, but the post-add read fails transiently.
+  export STUB_GET_LABELS_FAIL_ENG_243=1
+
+  local q; q="$(write_queue ENG-243)"
+  run_orch "$q"
+
+  [ "$status" -eq 0 ]
+
+  grep -qF "add_label ENG-243 ralph-failed" "$STUB_LINEAR_CALLS_FILE"
+  grep -qF "get_labels ENG-243" "$STUB_LINEAR_CALLS_FILE"
+  ! grep -qF "set_state ENG-243 Approved" "$STUB_LINEAR_CALLS_FILE"
+
+  [[ "$output" == *"linear_get_issue_labels failed for ENG-243 after label-add"* ]]
+
+  local outcome; outcome="$(jq -r '.[] | select(.issue == "ENG-243" and .event == "end") | .outcome' < "$REPO_DIR/.sensible-ralph/progress.json")"
+  [ "$outcome" = "failed" ]
+}
+
+# setup_failed surface: same verify-after-add gate runs, but no state revert
+# (state is still Approved because setup_failed paths fire before the
+# dispatch-time In Progress transition). Silent no-op surfaces as a stderr
+# diagnostic; outcome stays setup_failed.
+@test "ENG-322 setup_failed with label silent no-op: get_labels seen, no revert, helper warning emitted, outcome=setup_failed" {
+  export STUB_CLAUDE_EXIT=0
+  export STUB_CLAUDE_TRANSITION_STATE="In Review"
+
+  # Force dag_base empty for ENG-244 to trigger setup_failed (same trigger as
+  # test 12, but for a different issue ID so no cross-test interference).
+  export STUB_DAG_BASE_ENG_244="   "
+  export STUB_BLOCKERS_ENG_244='[]'
+  # Label-add returns success; verify-read returns empty -> silent no-op.
+
+  local q; q="$(write_queue ENG-244)"
+  run_orch "$q"
+
+  [ "$status" -eq 0 ]
+
+  grep -qF "add_label ENG-244 ralph-failed" "$STUB_LINEAR_CALLS_FILE"
+  grep -qF "get_labels ENG-244" "$STUB_LINEAR_CALLS_FILE"
+  # No state revert in setup_failed — state was never moved off Approved.
+  ! grep -qF "set_state ENG-244 Approved" "$STUB_LINEAR_CALLS_FILE"
+
+  [[ "$output" == *"ralph-failed did not land on ENG-244 after label-add (silent no-op"* ]]
+
+  local outcome; outcome="$(jq -r '.[] | select(.issue == "ENG-244" and .event == "end") | .outcome' < "$REPO_DIR/.sensible-ralph/progress.json")"
+  [ "$outcome" = "setup_failed" ]
+  local step; step="$(jq -r '.[] | select(.issue == "ENG-244" and .event == "end") | .failed_step' < "$REPO_DIR/.sensible-ralph/progress.json")"
+  [ "$step" = "dag_base_empty" ]
+}
+
 # ENG-308: session-diagnostics fields (session_id, transcript_path,
 # worktree_log_path, hint) on start records and dispatched-outcome end
 # records.
@@ -1969,4 +2148,3 @@ CLAUDESH
   run cat "$STUB_CLAUDE_ENV_CONFIG_DIR_FILE"
   [ "$output" = "set:$fake_home/.claude" ]
   rm -rf "$fake_home"
-}

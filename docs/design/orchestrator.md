@@ -171,10 +171,10 @@ Heuristics fail silent: missing/malformed JSONL, an unreadable base-sha, or a hu
 After `claude -p` returns, the orchestrator fetches the post-dispatch Linear state and classifies into one of seven outcomes. The full classification rules, the rationale for treating `exit 0` as ambiguous, and the reasons `local_residue` and `unknown_post_state` deliberately leave Linear untouched are in `docs/design/outcome-model.md`. In short:
 
 - `in_review` — `exit 0` + `state == REVIEW_STATE`. The only success.
-- `exit_clean_no_review` — `exit 0` + state-fetched-OK but ≠ `REVIEW_STATE`. Auto mode refused something. Labels `ralph-failed`, taints descendants.
-- `failed` — `exit != 0`. Labels `ralph-failed`, taints descendants.
+- `exit_clean_no_review` — `exit 0` + state-fetched-OK but ≠ `REVIEW_STATE`. Auto mode refused something. Labels `ralph-failed`, taints descendants; on success also reverts state to Approved (best-effort, gated on observed label presence).
+- `failed` — `exit != 0`. Labels `ralph-failed`, taints descendants; on success also reverts state to Approved (best-effort, gated on observed label presence).
 - `unknown_post_state` — `exit 0` + state fetch failed transiently. **No** label, **no** taint.
-- `setup_failed` — pre-dispatch step failed; recorded with `failed_step`. Labels `ralph-failed`, taints descendants.
+- `setup_failed` — pre-dispatch step failed; recorded with `failed_step`. Labels `ralph-failed`, taints descendants; label-add now goes through the verify-after-add gate (silent-no-op detection), state stays `Approved` regardless (no revert involved).
 - `local_residue` — pre-existing path/branch detected before any mutation. **No** label, **no** taint.
 - `skipped` — issue was tainted before its turn arrived; no claude invocation.
 
