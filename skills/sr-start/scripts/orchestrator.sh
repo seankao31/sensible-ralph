@@ -754,9 +754,16 @@ _dispatch_issue() {
   case "$outcome" in
     exit_clean_no_review|failed)
       if _apply_failed_label_verified "$issue_id"; then
-        linear_set_state "$issue_id" "$CLAUDE_PLUGIN_OPTION_APPROVED_STATE" || \
-          printf 'orchestrator: failed to revert %s to %s (continuing)\n' \
-            "$issue_id" "$CLAUDE_PLUGIN_OPTION_APPROVED_STATE" >&2
+        # Gate: only revert if state is still In Progress — avoids overwriting
+        # a state the operator intentionally changed mid-session (e.g. Canceled).
+        # For failed (non-zero exit), post_state may be empty if the state
+        # fetch also failed; the empty-string comparison is intentionally
+        # non-matching so we skip the revert in that case.
+        if [[ "$post_state" == "$CLAUDE_PLUGIN_OPTION_IN_PROGRESS_STATE" ]]; then
+          linear_set_state "$issue_id" "$CLAUDE_PLUGIN_OPTION_APPROVED_STATE" || \
+            printf 'orchestrator: failed to revert %s to %s (continuing)\n' \
+              "$issue_id" "$CLAUDE_PLUGIN_OPTION_APPROVED_STATE" >&2
+        fi
       fi
       _taint_descendants "$issue_id"
       ;;
