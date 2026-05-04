@@ -41,9 +41,11 @@ locally. The queue file becomes the single source of truth for "what
 is the current run".
 
 The race closes because `ordered_queue.txt` and the new `run_id`
-become visible atomically — at the moment `build_queue.sh`'s output
-finishes redirecting into the file. There is no longer a window where
-the new queue is visible but the new `run_id` is not.
+become visible atomically — at the moment `build_queue.sh`'s
+tempfile + same-directory `mv` publishes the new file (POSIX
+guarantees same-filesystem rename atomicity). There is no longer a
+window where the new queue is visible but the new `run_id` is not,
+nor a window where readers see a partial file.
 
 ## Design
 
@@ -71,27 +73,61 @@ ENG-288
 
 ### Writer
 
-`skills/sr-start/scripts/build_queue.sh` generates `run_id` and emits
-the header as the first line of stdout, before any issue IDs.
+`skills/sr-start/scripts/build_queue.sh` generates `run_id`, builds the
+full queue contents (header + issue IDs), and atomically publishes the
+result to a destination path passed as `$1`. **Interface change:** the
+script no longer streams to stdout; it takes an output path argument.
 
-- The `/sr-start` step 2 invocation
-  (`build_queue.sh > "$sr_root/ordered_queue.txt"`) is unchanged. The
-  redirect captures both header and issue IDs in one shell-level
-  write — see Failure modes below for the residual mid-write race
-  this opens.
-- **Empty-queue case** (no pickup-ready Approved issues): unchanged
-  from today — emit nothing, exit 0. Do **not** emit a header for an
-  empty queue. A queue file with a header but no issues would falsely
-  register as a new run in `/sr-status` even though the orchestrator
-  was never invoked.
+- New invocation, replacing the redirect-based form in
+  `skills/sr-start/SKILL.md` step 2:
+  ```bash
+  "$SKILL_DIR/scripts/build_queue.sh" "$sr_root/ordered_queue.txt"
+  ```
+- **Atomic publish.** `build_queue.sh` writes its output to a tempfile
+  in the same directory as the destination path
+  (`mktemp "${dest}.XXXXXX"`), then `mv`s the tempfile to the
+  destination on success. Same-filesystem rename is atomic on POSIX —
+  readers of `ordered_queue.txt` either see the prior published file
+  (fully formed) or the new one (fully formed), never a partial mix.
+  This pattern matches `_progress_append`'s tempfile + `mv` approach
+  in `orchestrator.sh:117–123`.
+- **Failure handling.** If any step in queue construction fails
+  (`linear_list_approved_issues`, `toposort.sh`, blocker fetches),
+  `build_queue.sh` removes the tempfile and exits non-zero. The
+  destination file is left untouched. This means a failed `/sr-start`
+  cannot publish a bogus "current run" — the prior queue file (if
+  any) remains the authoritative current state. Closes finding 2
+  from the codex adversarial review.
+- **Empty-queue case** (no pickup-ready Approved issues): the script
+  removes its tempfile, exits 0, and **does not touch the
+  destination file**. Existing `ordered_queue.txt` from a prior
+  /sr-start (if any) remains in place. `/sr-status` continues to show
+  the most recent ACTUAL run. Rationale: an empty queue means "no
+  new dispatch happened"; preserving the prior file means /sr-status
+  doesn't lose visibility into the last completed run.
 - The `run_id` generation line: `run_id="$(date -u +%Y-%m-%dT%H:%M:%SZ)"`,
-  identical to the line currently in `orchestrator.sh:150`.
-- Header is emitted only after `build_queue.sh` confirms a non-empty
-  queue. The current control flow already exits 0 early when
-  `approved_ids` or `toposort_input` is empty (`build_queue.sh:55–56`,
-  `:117`); the header emission belongs at the point where issue IDs
-  start being printed (i.e., immediately before the final
-  `toposort.sh < "$toposort_input"` invocation on line 119).
+  identical to the line currently in `orchestrator.sh:150`. Format
+  flows through to `progress.json` records untouched. Second-
+  resolution collision behavior is documented under Failure modes
+  below — inherits from today's orchestrator.
+- The header is the first line of the tempfile; issue IDs follow.
+  Order: header → toposort.sh output. The script exits non-zero before
+  the `mv` if `toposort.sh` fails, so a partial issue list is never
+  published.
+
+### Caller (`/sr-start` SKILL.md step 2)
+
+The full step 2 snippet under the new design:
+
+```bash
+sr_root="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/.sensible-ralph"
+mkdir -p "$sr_root"
+"$SKILL_DIR/scripts/build_queue.sh" "$sr_root/ordered_queue.txt"
+```
+
+If `build_queue.sh` exits non-zero, `set -e` (or a manual exit-status
+check, depending on the surrounding skill harness) halts dispatch.
+The destination file's prior state is preserved.
 
 ### Readers
 
@@ -144,11 +180,32 @@ plugin version that would have written a header-less queue file. The
 fail-loud branches above (orchestrator and renderer) are correct
 strict-contract enforcement, not deprecation paths.
 
+**Operator-facing upgrade behavior.** A repo that has a header-less
+`.sensible-ralph/ordered_queue.txt` left over from a prior plugin
+version will have `/sr-status` exit non-zero with the missing-header
+error message until the next `/sr-start` runs. The next `/sr-start`'s
+atomic publish writes a header-bearing file, restoring `/sr-status`.
+Operators who want immediate restoration without dispatching can
+either (a) `rm .sensible-ralph/ordered_queue.txt` to fall into the
+"no current run" path, or (b) re-run `/sr-start` to regenerate. Both
+are one-step recoveries. This trade-off is explicitly accepted —
+weighing one-time post-upgrade friction against indefinite
+dead-code maintenance of a fallback path. Documented per codex
+finding 4.
+
 ## File-by-file changes
 
-1. **`skills/sr-start/scripts/build_queue.sh`** — generate `run_id` and
-   emit the header line immediately before the `toposort.sh` invocation
-   on line 119. ~3 lines added.
+1. **`skills/sr-start/scripts/build_queue.sh`** — interface change:
+   take output path as `$1`. Generate `run_id`. Build full queue
+   contents (header + issue IDs from `toposort.sh`) into a tempfile in
+   the destination's directory. On success, `mv` the tempfile to the
+   destination. On `toposort.sh` failure or any other error, remove
+   the tempfile and exit non-zero (destination unchanged). On empty
+   queue, remove the tempfile, exit 0, and leave the destination
+   untouched. The current control-flow early-exits at
+   `build_queue.sh:55–56` and `:117` already handle the empty case;
+   they need adjustment to clean up the tempfile (instead of just
+   exiting). ~25 lines net.
 
 2. **`skills/sr-start/scripts/orchestrator.sh`** — replace the
    generation line (currently line 150) with a header read + non-zero
@@ -161,9 +218,13 @@ strict-contract enforcement, not deprecation paths.
    missing header. Add `#`-comment skip in the `queued_issues` loop
    (lines 104–110). ~15 lines net.
 
-4. **`skills/sr-start/SKILL.md`** — step 2 description grows one
-   sentence noting the queue file's first line is the `# run_id:`
-   header.
+4. **`skills/sr-start/SKILL.md`** — step 2 invocation changes from
+   `build_queue.sh > "$sr_root/ordered_queue.txt"` to
+   `build_queue.sh "$sr_root/ordered_queue.txt"` (positional arg, no
+   redirect). One sentence noting the queue file's first line is the
+   `# run_id:` header. One sentence noting that the script publishes
+   atomically and leaves the destination intact on failure or empty
+   queue.
 
 5. **`docs/design/orchestrator.md`** — the `progress.json` schema
    section currently states `run_id` is generated by the
@@ -182,13 +243,42 @@ strict-contract enforcement, not deprecation paths.
 
 ### `skills/sr-start/scripts/test/build_queue.bats`
 
-- **New:** "queue with approved issues emits `# run_id: <iso8601>` as
-  first line" — set up a single approved issue with no blockers, run
-  `build_queue.sh`, assert first output line matches
-  `^# run_id: [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$`,
-  assert remaining lines are issue IDs.
-- **Existing:** "no approved issues outputs nothing and exits 0"
-  (line 77) stays as-is — empty queue still emits nothing, no header.
+- **Helper sweep (interface change):** every existing test that
+  invokes `bash "$STUB_PLUGIN_ROOT/skills/sr-start/scripts/build_queue.sh"`
+  and asserts on `$output` (stdout) becomes a test that passes a
+  destination path and asserts on file contents. ~10 tests touched,
+  mechanical conversion. Add a per-test `local out_path; out_path="$(mktemp)"`
+  setup line and replace `[ "$output" = "..." ]` assertions with
+  `[ "$(cat "$out_path")" = "..." ]` (or substring/regex matches as
+  appropriate).
+- **New:** "queue with approved issues writes `# run_id: <iso8601>`
+  as first line" — set up a single approved issue with no blockers,
+  invoke with a destination path, assert first line of output file
+  matches `^# run_id: [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$`,
+  remaining lines are issue IDs.
+- **New (atomicity guarantee):** "build_queue.sh with failing
+  toposort.sh leaves the destination file unchanged" — pre-populate
+  the destination with a known sentinel content (e.g.,
+  `# run_id: SENTINEL\nENG-OLD\n`), set up an issue graph that
+  triggers a toposort cycle (or stub `toposort.sh` to exit non-zero),
+  invoke `build_queue.sh`, assert non-zero exit, assert destination
+  contents are byte-identical to the sentinel. Closes finding 2 from
+  the codex adversarial review.
+- **New (empty-queue preservation):** "build_queue.sh with empty
+  approved set leaves the destination file unchanged" — pre-populate
+  the destination with sentinel content, set
+  `STUB_APPROVED_IDS=""`, invoke `build_queue.sh`, assert exit 0,
+  assert destination contents byte-identical to the sentinel. Also
+  assert no tempfile lingers in the destination directory after the
+  run (mirrors `orchestrator.bats` test 23 atomicity check).
+- **New (empty-queue, no prior file):** "build_queue.sh with empty
+  approved set and no destination file does not create one" — invoke
+  with a destination path that does not exist, assert exit 0, assert
+  destination still does not exist. Same atomicity hygiene.
+- **Delete:** "no approved issues outputs nothing and exits 0"
+  (line 77) — superseded by the two new empty-queue tests above,
+  which cover both the "preserve prior" and "no-create" cases more
+  directly than the original output-emptiness assertion.
 
 ### `skills/sr-start/scripts/test/orchestrator.bats`
 
@@ -247,28 +337,38 @@ strict-contract enforcement, not deprecation paths.
 ### Acceptance-criteria mapping
 
 The original Linear description listed four acceptance criteria. Three
-map directly; the fourth is superseded by this spec.
+map directly; the fourth is superseded by this spec. Two acceptance
+criteria are added during the codex round (atomic publish + run_id
+inheritance documented).
 
-| Original criterion | Status | Covered by |
+| Criterion | Status | Covered by |
 | --- | --- | --- |
 | `/sr-start` writes `# run_id: <id>` as first line of `ordered_queue.txt` | Met | `build_queue.bats` new "header first line" test |
 | `/sr-status` reads `run_id` from header instead of deriving from `progress.json` | Met | `render_status.bats` precedence test |
 | Fall back to current derivation if header absent | **Superseded** | This spec drops the fallback; `/sr-status` errors loud on missing header. See "Backwards-compat" above for rationale (no existing users to compat for). |
 | Tests cover both paths | Met (revised) | New tests above cover header-present and header-missing-error in both the orchestrator and renderer |
+| **Added:** queue-file publish is atomic (race "closed" claim must hold) | Met | `build_queue.bats` new "atomicity guarantee" test (failing toposort leaves destination intact) + new "empty-queue preservation" test |
+| **Added:** `run_id` second-resolution constraint inheritance is documented | Met | "Failure modes" section, `run_id` second-resolution collision entry |
 
 ## Failure modes
 
-- **Race during the queue-file write.** The redirect
-  `build_queue.sh > "$sr_root/ordered_queue.txt"` is not atomic on
-  POSIX — the file is opened/truncated on `>` and written
-  incrementally. A `/sr-status` invocation that reads the file
-  mid-write could see a partial header, no header, or a partial issue
-  list. Today's race window is closed; this micro-window opens. In
-  practice the file is small (~tens of lines) and writes complete in
-  microseconds, but the race is technically present. **Mitigation:**
-  none in this spec — declared out of scope as immeasurably narrow.
-  If observed, follow-up by writing to a tempfile + `mv` (the same
-  pattern `_progress_append` uses).
+- **`run_id` second-resolution collision** (codex finding 3). Header
+  values come from `date -u +%Y-%m-%dT%H:%M:%SZ` — second-precision.
+  Two `/sr-start` invocations completed within the same UTC second
+  produce queue files with the same `run_id`. `/sr-status` would
+  group records from both invocations as one logical run. **This
+  inherits today's behavior:** the orchestrator currently has the
+  same collision (`orchestrator.bats:1447` notes "run_id is
+  second-resolution by design; back-to-back runs within the same
+  second would share an id"). Today the consequence is benign because
+  /sr-status's chronological-sort derivation also can't distinguish
+  same-second runs. Under this design, the consequence is the same:
+  ambiguous grouping. The risk is bounded by the operator pattern
+  (intentional rapid-fire `/sr-start`) and the constraint that
+  `/sr-start` is single-invocation by design. **Mitigation:** none in
+  this spec — widening the identifier (nanoseconds, PID-suffixed,
+  random) is out of scope; see Out of scope below. If real-world
+  collisions are ever observed, follow up with a separate issue.
 
 - **Operator hand-edits `ordered_queue.txt`.** If an operator opens
   the queue file and edits issue IDs without preserving the header,
@@ -285,7 +385,10 @@ map directly; the fourth is superseded by this spec.
 - **Concurrent `/sr-start` invocations.** Already documented as
   unsupported (`orchestrator.sh:109–111`). The single-source-of-truth
   design here inherits the same limitation: two parallel `/sr-start`
-  runs would race the queue file write. Not a new failure mode.
+  runs would race the queue file's atomic publish (last-rename-wins).
+  Not a new failure mode. The atomic publish guarantees readers see
+  one or the other in full, but the loser's `run_id` simply
+  vanishes — no half-formed file is exposed.
 
 ## Out of scope
 
@@ -298,8 +401,14 @@ map directly; the fourth is superseded by this spec.
   `/sr-start` rewrites the queue file with a fresh `run_id`.
 - Pruning or rotating `ordered_queue.txt` history. The file is
   overwritten on each `/sr-start`, no retention concept.
-- Atomic queue-file writes via tempfile + rename. Documented as a
-  follow-up under Failure modes.
+- **Widening `run_id` resolution** beyond second-precision UTC
+  (codex finding 3 recommendation). Inherits today's orchestrator
+  identifier format; any change to the format would propagate
+  through `progress.json` records, the orchestrator's existing
+  `run_id` handling, the chronological-sort logic in any consumer
+  that touches `progress.json` directly, and the existing
+  orchestrator.bats coverage. Worth a separate issue if real
+  collisions are observed.
 - Concurrent `/sr-start` support. Inherited limitation, not addressed.
 
 ## Prerequisites
