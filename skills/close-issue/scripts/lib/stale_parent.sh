@@ -24,9 +24,10 @@
 #   1 — comment failed (nothing applied; safe to skip labeling)
 #   2 — comment succeeded but label failed (partial: comment exists, label missing)
 _close_issue_stale_label_and_comment() {
-  local child_id="$1" child_branch="$2" parent_id="$3" parent_sha="$4" parent_short="$5"
+  local child_id="$1" child_branch="$2" parent_id="$3"
+  local parent_pre_merge_sha="$4" parent_pre_merge_short="$5" parent_integration_short="$6"
   local commits count truncated body
-  commits=$(list_commits_ahead "$parent_sha" "refs/heads/$child_branch") \
+  commits=$(list_commits_ahead "$parent_pre_merge_sha" "refs/heads/$child_branch") \
     || { printf 'list_commits_ahead failed for %s\n' "$child_id" >&2; return 1; }
   count=$(printf '%s\n' "$commits" | grep -c . || true)
   truncated=""
@@ -39,9 +40,9 @@ _close_issue_stale_label_and_comment() {
   # integration branch name. The child's reviewer can infer from the
   # parent issue's close comment or project convention.
   body=$(cat <<COMMENT
-**Stale-parent check** — parent \`${parent_id}\` closed at \`${parent_short}\`.
+**Stale-parent check** — parent \`${parent_id}\` closed at \`${parent_integration_short}\`. Pre-merge branch tip was \`${parent_pre_merge_short}\`.
 
-This branch (\`${child_branch}\`) was dispatched before \`${parent_id}\`'s review amendments landed. The parent's final HEAD is not an ancestor of this branch, so the review signed off on pre-amendment content.
+This branch (\`${child_branch}\`) does not have \`${parent_pre_merge_short}\` as an ancestor: \`${parent_id}\` received commits during review that this branch was not rebased onto, so the reviewer signed off on content against an older base.
 
 Commits on the parent not present on this branch:
 
@@ -49,7 +50,7 @@ Commits on the parent not present on this branch:
 ${commits}${truncated}
 \`\`\`
 
-Recommended: rebase this branch onto the landed parent before final review. If the divergence is a pure rebase (content identical, SHAs differ), dismiss the label manually. If this branch has its own In-Progress/In-Review descendants, rebasing here cascades to them.
+Recommended: rebase this branch onto the landed parent and re-review. If the diverging commits are content-equivalent to what was already reviewed (e.g. mechanical fixups, amended commit messages), dismiss the label manually. If this branch has its own In-Progress/In-Review descendants, rebasing here cascades to them.
 COMMENT
 )
 
@@ -59,20 +60,27 @@ COMMENT
 
 # Step 6 entry point. Always returns 0 — labeling is observational, not a
 # merge-safety gate; every failure path is a WARN entry, never an exit.
-# Empty $a_sha → silent no-op (caller's close-branch did not produce a
-# landed SHA; PR-pending workflows have no canonical parent HEAD to compare
-# against).
+# Either SHA empty → silent no-op (defensive layer; the call site in
+# close-issue/SKILL.md already gates on $INTEGRATION_SHA non-empty).
+# Ancestry checks (is_branch_fresh_vs_sha, list_commits_ahead) consume the
+# pre-merge SHA — that's the parent tip the reviewer signed off on, before
+# close-branch's rebase rewrote commit IDs. The integration SHA is body-text
+# only (the lead "closed at" line), never fed to ancestry helpers.
 close_issue_label_stale_children() {
   local issue_id="$1"
-  local a_sha="$2"
+  local parent_pre_merge_sha="$2"
+  local parent_integration_sha="$3"
 
-  [ -z "$a_sha" ] && return 0
+  if [ -z "$parent_pre_merge_sha" ] || [ -z "$parent_integration_sha" ]; then
+    return 0
+  fi
 
-  local a_short
-  # TODO(ENG-236): a malformed $a_sha would abort the entire close-issue
-  # ritual under the caller's `set -e`. Out of scope for this extraction;
-  # signposted for a future hardening lift.
-  a_short=$(git rev-parse --short "$a_sha")
+  local parent_pre_merge_short parent_integration_short
+  # TODO(ENG-236): a malformed SHA in either positional arg would abort the
+  # entire close-issue ritual under the caller's `set -e`. Out of scope
+  # for this extraction; signposted for a future hardening lift.
+  parent_pre_merge_short=$(git rev-parse --short "$parent_pre_merge_sha")
+  parent_integration_short=$(git rev-parse --short "$parent_integration_sha")
   local WARN=()
   local stale_count=0
   # Working variables declared local here — the original inline body
@@ -145,11 +153,13 @@ close_issue_label_stale_children() {
     # `|| rc=$?` captures the rc without triggering errexit in callers that
     # have it on — same pattern as preflight_labels.sh.
     fresh_rc=0
-    is_branch_fresh_vs_sha "$a_sha" "refs/heads/$child_branch" || fresh_rc=$?
+    is_branch_fresh_vs_sha "$parent_pre_merge_sha" "refs/heads/$child_branch" || fresh_rc=$?
     case "$fresh_rc" in
       0) ;;
       1) apply_rc=0
-         _close_issue_stale_label_and_comment "$child_id" "$child_branch" "$issue_id" "$a_sha" "$a_short" || apply_rc=$?
+         _close_issue_stale_label_and_comment "$child_id" "$child_branch" "$issue_id" \
+           "$parent_pre_merge_sha" "$parent_pre_merge_short" "$parent_integration_short" \
+           || apply_rc=$?
          case "$apply_rc" in
            0) stale_count=$((stale_count + 1)) ;;
            1) WARN+=("$child_id: stale parent detected but comment-post failed (no label applied)") ;;
