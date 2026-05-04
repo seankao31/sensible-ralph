@@ -201,11 +201,17 @@ prose compute the candidate set as part of constructing the
 reasoning prompt, with the filter visible in the conversation
 transcript.
 
-### 2. Step 2 sub-steps 1–3 — invocation, fast paths, label preflight
+### 2. Step 2 sub-steps 1–2 — invocation, fast paths
 
 The new Step 2 of `skills/sr-start/SKILL.md` documents the following
-sub-step sequence in prose. Sub-steps 1–3 are setup; 4–5 are
-reasoning + operator gate; 6–7 are writes + verification.
+sub-step sequence in prose. Sub-steps 1–2 are setup; 3–4 are
+reasoning + operator gate; 5–6 are writes + verification.
+
+No just-in-time label-existence check sits inside Step 2 itself.
+ENG-280's `preflight_labels.sh::preflight_labels_check` already
+includes `CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL` in `required_vars`,
+so Step 1 (`preflight_scan.sh`) is guaranteed to abort the run
+before Step 2 begins if the workspace label is missing.
 
 **Sub-step 1 — run the helper.**
 
@@ -222,34 +228,13 @@ SCAN_JSON=$("$SKILL_DIR/scripts/coord_dep_backstop_scan.sh") || {
 * If `.approved | length` is 0 or 1 (no pairs possible): emit
   `step 2: No coordination dependencies detected.` and proceed
   directly to Step 3.
-* If after candidate-pair filtering (sub-step 4) every pair is
+* If after candidate-pair filtering (sub-step 3) every pair is
   already covered by `existing_blockers`: emit the same one-line
   summary and proceed.
 
 Both empty-output paths satisfy acceptance criterion 5.
 
-**Sub-step 3 — label-existence preflight.**
-
-```bash
-linear_label_exists "$CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL" || {
-  echo "step 2: workspace label '$CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL' missing — create it or update plugin config" >&2
-  # Operator chooses: skip Step 2 (proceed to Step 3 with no scan) /
-  # abort the run.
-}
-```
-
-This duplicates `preflight_scan.sh`'s label check from Step 1
-intentionally. Step 1's check verifies workspace setup; Step 2's
-check is a just-in-time gate immediately before mutation. Either
-check could in principle catch the same setup gap, but they fire at
-different points and giving them different responsibilities (run-
-abort vs. step-skip) is cleaner than coupling them into one. Step 1
-already exits non-zero on missing label; Step 2's check is a belt-
-and-suspenders gate for the case where the operator chose "skip
-preflight anomalies" via manual override and continued — that flow
-is not currently supported but the gate costs nothing.
-
-### 3. Step 2 sub-step 4 — reasoning over the bundle
+### 3. Step 2 sub-step 3 — reasoning over the bundle
 
 Skill prose constructs the reasoning prompt from `SCAN_JSON`. The
 prose is responsible for:
@@ -257,8 +242,12 @@ prose is responsible for:
 1. **Compute the covered-pairs set in prose.** A pair `(A, B)` is
    covered if `B ∈ A.existing_blockers` OR
    `A ∈ B.existing_blockers`. Candidate pairs are all unordered
-   pairs `(A, B)` with `A.id < B.id` (lexicographic) where neither
-   direction is covered. Self-pairs are excluded by construction.
+   pairs `{A, B}` where neither direction is covered. Self-pairs
+   are excluded by construction. To generate each unordered pair
+   exactly once, sort the Approved set by **numeric suffix** of
+   the Linear ID (so `ENG-9 < ENG-50 < ENG-281`, not the string-
+   lexicographic order which would put `ENG-281 < ENG-9`), and
+   iterate `(approved[i], approved[j])` for `i < j`.
 2. **Six-item checklist per candidate pair, applied bundle-wide in
    one prompt** — same checklist ENG-280 step 11 sub-step 5
    specifies, repeated per candidate pair:
@@ -282,9 +271,10 @@ prose is responsible for:
      is parent.
    * **Symmetric collision:** if both touch the same section
      without an introducer/renamer ordering, the rationale must say
-     so. Linear ID order is the proposal-direction tiebreaker
-     (lower ID = parent), arbitrary but deterministic — running the
-     scan twice on identical state produces identical proposals.
+     so. Numeric-suffix order on the Linear IDs is the proposal-
+     direction tiebreaker (smaller suffix = parent). Arbitrary but
+     deterministic — running the scan twice on identical state
+     produces identical proposals.
 4. **One candidate per pair, even with multiple overlaps.** If A
    and B share a path AND a referenced identifier AND a rename, the
    proposed edge is **one** `blocked-by` relation with a multi-fact
@@ -300,7 +290,7 @@ ENG-280: "A script can flag that two specs reference the same path;
 only reasoning can judge whether the edits are in disjoint sections
 (safe to run in parallel) or logically coupled."
 
-### 4. Step 2 sub-step 5 — per-candidate operator gate
+### 4. Step 2 sub-step 4 — per-candidate operator gate
 
 Skill prose presents candidates one at a time. Per candidate:
 
@@ -317,14 +307,14 @@ Candidate edge: ENG-A → blocked-by ENG-B  (path-collide)
   always add the relation manually via Linear UI later; the next
   `/sr-start` will see it in `existing_blockers` and not re-prompt.
 * **abort** — stop the gate immediately. No Linear writes have
-  happened yet (writes are sub-step 6, after the gate completes).
+  happened yet (writes are sub-step 5, after the gate completes).
   Exit Step 2 with stderr `step 2: scan aborted by operator —
   dispatch halted`. Do NOT proceed to Step 3.
 
 **No `edit-rationale` option.** ENG-280 has it because finalize
 will commit the rationale to a Linear comment in the same atomic
 transaction; operators want to fix wording before commit. ENG-281's
-audit comment is composed by skill prose at write time (sub-step 6),
+audit comment is composed by skill prose at write time (sub-step 5),
 and the operator can edit the posted comment via Linear UI after
 the fact. Adding edit-rationale here would duplicate that fix-up
 window with no additional safety.
@@ -339,79 +329,108 @@ three-choice gate (accept/reject/edit-rationale ↔
 accept/reject/abort) for now and revisit if it bites in practice.
 See **Known limitations (v1)**.
 
-### 5. Step 2 sub-step 6 — per-child write loop (relations, comment, label)
+### 5. Step 2 sub-step 5 — per-child write loop (relations, comment, label)
 
 Run after the gate completes with non-empty `accepted_edges`. Group
 edges by child; iterate per child. The per-child sequence mirrors
 ENG-280 step 12 sub-steps 4–7 (relations BEFORE comment, comment-
 LAST, label after comment) so cleanup-time semantics are identical.
 
+`accepted_edges_json` is a JSON array of
+`{child, parent, rationale}` objects in conversation context after
+the gate. Iterate via jq; bash arrays cannot model nested-record
+access, so the implementer indexes into the JSON directly:
+
 ```bash
-# Build child → [{parent, rationale}, ...] map from accepted_edges.
-# Children processed in deterministic order (sorted by Linear ID).
-for child in "${child_ids[@]}"; do
-  child_edges=( ... )  # filter accepted_edges where .child == child
-  INITIAL_BLOCKERS=$(linear_get_issue_blockers "$child" | jq -r '.[].id' | sort -u)
+# Children to process, in numeric-suffix order so failures land on
+# deterministic children across re-runs.
+children=$(printf '%s' "$accepted_edges_json" \
+  | jq -r '[.[].child] | unique
+           | sort_by(. | sub("^[A-Z]+-"; "") | tonumber) | .[]')
+
+for child in $children; do
+  # All edges accepted for this child (preserves rationale order
+  # the operator saw at gate time).
+  child_edges_json=$(printf '%s' "$accepted_edges_json" \
+    | jq --arg c "$child" '[.[] | select(.child == $c)]')
+
+  INITIAL_BLOCKERS=$(linear_get_issue_blockers "$child" \
+    | jq -r '.[].id' | sort -u)
 
   committed_parents=()
-  for edge in "${child_edges[@]}"; do
-    parent="${edge.parent}"
-    # Pre-existing parent (operator added it manually between scan and
-    # write loop) — count it in the audit set but skip the relation-add.
+  edge_count=$(printf '%s' "$child_edges_json" | jq 'length')
+  for (( i = 0; i < edge_count; i++ )); do
+    parent=$(printf '%s' "$child_edges_json" | jq -r ".[$i].parent")
+
+    # Pre-existing parent (operator added it manually between scan
+    # and write loop) — count in audit set, skip the relation-add.
     if printf '%s\n' "$INITIAL_BLOCKERS" | grep -qx "$parent"; then
       committed_parents+=("$parent")
       continue
     fi
+
     if linear issue relation add "$child" blocked-by "$parent"; then
       committed_parents+=("$parent")
     else
-      # Per-edge failure: retry / skip-this-edge / abort. See below.
-      ...
+      # Per-edge failure: retry / skip-this-edge / abort.
+      # See "Per-edge failure choices" below for semantics.
+      :
     fi
   done
 
-  # If every accepted parent for this child was rejected/skipped,
-  # there's nothing to audit. Skip comment + label.
+  # Every accepted parent for this child rejected/skipped → nothing
+  # to audit; skip comment + label.
   [[ "${#committed_parents[@]}" -eq 0 ]] && continue
 
-  # Compose audit comment per ENG-280's contract, then post.
+  # Compose audit comment per ENG-280's contract.
   body_file=$(mktemp)
   {
     printf '%s\n\n' "**Coordination dependencies added by /sr-start scan**"
-    for edge in "${child_edges[@]}"; do
+    for (( i = 0; i < edge_count; i++ )); do
+      parent=$(printf '%s' "$child_edges_json" | jq -r ".[$i].parent")
+      rationale=$(printf '%s' "$child_edges_json" | jq -r ".[$i].rationale")
       # Bullet only for parents that actually committed.
-      [[ " ${committed_parents[*]} " == *" ${edge.parent} "* ]] || continue
-      printf -- '- blocked-by %s — %s\n' "${edge.parent}" "${edge.rationale}"
+      printf '%s\n' "${committed_parents[@]}" | grep -qx "$parent" || continue
+      printf -- '- blocked-by %s — %s\n' "$parent" "$rationale"
     done
-    printf '\n```coord-dep-audit\n'
-    printf '%s\n' "$(printf '%s\n' "${committed_parents[@]}" | jq -R . | jq -s '{parents: .}')"
-    printf '```\n\n'
+    parents_json=$(printf '%s\n' "${committed_parents[@]}" \
+      | jq -R . | jq -sc '{parents: .}')
+    printf '\n```coord-dep-audit\n%s\n```\n\n' "$parents_json"
     printf '%s\n' "Will be removed automatically on \`/close-issue\`."
   } > "$body_file"
 
   if ! linear issue comment add "$child" --body-file "$body_file"; then
     rm -f "$body_file"
-    # Per-comment failure: retry / proceed-anyway / rollback. See below.
-    ...
+    # Per-comment failure: retry / proceed-anyway / rollback.
+    # See "Per-comment failure choices" below for semantics.
+    :
   fi
   rm -f "$body_file"
 
-  # Label add — log-and-continue on failure (label is observational).
+  # Label add — log-and-continue (label is observational).
   linear_add_label "$child" "$CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL" \
     || echo "step 2: failed to add coord-dep label to $child — continuing" >&2
 
-  # Per-child verify (sub-step 7).
-  EXPECTED=$(printf '%s\n' "$INITIAL_BLOCKERS" "${committed_parents[@]}" | sort -u)
-  ACTUAL=$(linear_get_issue_blockers "$child" | jq -r '.[].id' | sort -u)
+  # Per-child verify (sub-step 6).
+  EXPECTED=$(printf '%s\n' "$INITIAL_BLOCKERS" "${committed_parents[@]}" \
+    | sort -u)
+  ACTUAL=$(linear_get_issue_blockers "$child" \
+    | jq -r '.[].id' | sort -u)
   if [[ "$EXPECTED" != "$ACTUAL" ]]; then
     echo "step 2: blocker-set mismatch on $child" >&2
     echo "  expected: $EXPECTED" >&2
     echo "  actual:   $ACTUAL" >&2
     echo "step 2: aborting before Step 3 — investigate manually" >&2
-    exit 1
+    return 1   # surfaces as Step 2 abort in skill prose
   fi
 done
 ```
+
+The `: # see ... below` placeholders in the bash sketch are where
+the per-edge and per-comment failure-handling branches plug in;
+the failure-choice prose immediately following expands them
+inline. This keeps the algorithm sketch readable (one screenful)
+without duplicating the branch logic in two places.
 
 **Per-edge failure choices** (when `linear issue relation add`
 fails):
@@ -437,8 +456,11 @@ fails after relations were added):
 
 * **retry** — usually transient.
 * **proceed-anyway** — print the comment body inline; operator
-  manually posts via Linear UI; do NOT add label; do NOT proceed
-  to Step 3 in this run. Operator finishes posting, then re-runs
+  manually posts via Linear UI; do NOT add label automatically;
+  do NOT proceed to Step 3 in this run. Operator finishes
+  posting, then optionally adds the `ralph-coord-dep` label via
+  Linear UI for dispatch-time discoverability (the label is
+  observational, not load-bearing for cleanup), then re-runs
   `/sr-start`; the next scan won't re-prompt the audited pair
   (it's in `existing_blockers`) and Step 2 fast-paths through.
 * **rollback** — best-effort
@@ -450,9 +472,9 @@ fails after relations were added):
 load-bearing artifact for cleanup, not the label. The label is
 observational (filter discoverability in Linear UI).
 
-### 6. Step 2 sub-step 7 — per-child verification
+### 6. Step 2 sub-step 6 — per-child verification
 
-Inline at the end of each child's iteration in sub-step 6 (see
+Inline at the end of each child's iteration in sub-step 5 (see
 shell sketch above). On any mismatch, exit Step 2 non-zero and do
 NOT proceed to Step 3.
 
@@ -521,8 +543,8 @@ SKILL.md prose + design doc land in one commit/PR.
   detected" and proceeds to Step 3.
 * **1 Approved peer.** Same fast path — no pairs possible.
 * **N Approved peers, every pair already covered.** Helper emits
-  full bundle; sub-step 4 candidate filter leaves the candidate
-  list empty; sub-step 4 emits the same one-line summary and
+  full bundle; sub-step 3 candidate filter leaves the candidate
+  list empty; sub-step 2 fast-path emits the same one-line summary and
   proceeds.
 * **A peer's description is empty (somehow passed Step 1's PRD
   check at 200 chars).** Reasoning prompt receives an empty
