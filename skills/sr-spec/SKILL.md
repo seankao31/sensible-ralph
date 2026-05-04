@@ -35,13 +35,14 @@ You MUST create a task for each of these items and complete them in order:
 3. **Offer visual companion** (if topic will involve visual questions) — its own message, no clarifying question alongside. See the Visual Companion section.
 4. **Ask clarifying questions** — one at a time, understand purpose/constraints/success criteria.
 5. **Propose 2-3 approaches** — with trade-offs and your recommendation.
-6. **Present design** — in sections scaled to their complexity. Get user approval after each section. Explicitly surface any **prerequisite Linear issues** that must land before this one (for `blocked-by` relations in step 11).
+6. **Present design** — in sections scaled to their complexity. Get user approval after each section. Explicitly surface any **prerequisite Linear issues** that must land before this one (for `blocked-by` relations in step 12).
 7. **Resolve or create the Linear issue** (step 6.5) — if `ISSUE_ID` is unset, create the ticket now in a `$SENSIBLE_RALPH_PROJECTS` project; transition to `In Design`.
 8. **Create branch+worktree, capture `SPEC_BASE_SHA`, write spec, commit** (step 7) — lazily create the per-issue branch+worktree (or `cd` into the existing pair on a re-spec), write `docs/specs/<topic>.md` on the branch, commit.
 9. **Spec self-review** — quick inline check for placeholders, contradictions, ambiguity, scope (see below).
 10. **User reviews written spec** — ask the user to review the spec file before the codex gate.
-11. **Codex review gate** — adversarial probing of the spec on the issue's own branch (`--base "$SPEC_BASE_SHA"`). Three finding buckets; loop back as needed.
-12. **Finalize the Linear issue** — see "Finalizing the Linear Issue" below. Terminal state: issue description matches the approved spec, state is `approved_state`, blocked-by relations set. The branch+worktree persist; `/sr-start` finds them at next dispatch.
+11. **Codex review gate** (step 10) — adversarial probing of the spec on the issue's own branch (`--base "$SPEC_BASE_SHA"`). Three finding buckets; loop back as needed.
+12. **Coordination-dependency scan** (step 11) — operator-interaction-only. Run the scan helper, reason about file-level overlap with Approved peers, and stage `accepted_edges` to a transport file. NO Linear writes here; all mutations defer to step 12 (finalize). See "Step 11 — Coordination-dependency scan" below.
+13. **Finalize the Linear issue** (step 12) — see "Finalizing the Linear Issue" below. Terminal state: issue description matches the approved spec, state is `approved_state`, blocked-by relations set (semantic PREREQS plus accepted coord-dep edges), audit comment posted, coord-dep label applied if any edges were added. The branch+worktree persist; `/sr-start` finds them at next dispatch.
 
 ## Process Flow
 
@@ -61,7 +62,8 @@ digraph sr_spec {
     "User reviews spec?" [shape=diamond];
     "Codex review gate (10)" [shape=box];
     "Findings to address?" [shape=diamond];
-    "Finalize Linear issue\n(description + state + blockers)" [shape=doublecircle];
+    "Coord-dep scan (11)\n(operator gate; no Linear writes)" [shape=box];
+    "Finalize Linear issue (12)\n(description + relations + audit + state)" [shape=doublecircle];
 
     "Re-entrancy preflight\n(state matrix → resume/refuse/transition)" -> "Explore project context";
     "Explore project context" -> "Visual questions ahead?";
@@ -81,7 +83,8 @@ digraph sr_spec {
     "Codex review gate (10)" -> "Findings to address?";
     "Findings to address?" -> "Create branch+worktree;\nwrite spec; commit (7)" [label="substantial — loop back"];
     "Findings to address?" -> "Codex review gate (10)" [label="trivial — fix inline, re-run"];
-    "Findings to address?" -> "Finalize Linear issue\n(description + state + blockers)" [label="none"];
+    "Findings to address?" -> "Coord-dep scan (11)\n(operator gate; no Linear writes)" [label="none"];
+    "Coord-dep scan (11)\n(operator gate; no Linear writes)" -> "Finalize Linear issue (12)\n(description + relations + audit + state)";
 }
 ```
 
@@ -374,7 +377,147 @@ Re-runs on an issue already in `$CLAUDE_PLUGIN_OPTION_APPROVED_STATE`: the gate 
 
 No max-iteration count. Trust user judgment. Genuinely-out-of-scope findings get filed as Linear follow-up issues, not crammed into this spec.
 
-## Finalizing the Linear Issue (Step 11)
+## Step 11 — Coordination-dependency scan
+
+**Operator-interaction-only.** Does NOT write to Linear. Stages
+`accepted_edges` to a transport file at
+`<worktree>/.sensible-ralph-coord-dep.json` so step 12 (finalize) can
+absorb the writes into its all-or-nothing-before-Approved sequence —
+keeping the In-Design issue residue-free until finalize succeeds
+atomically.
+
+The scan runs **after** the codex gate by design. The scan typically
+only adds blockers; it does not rewrite the spec, so running on
+already-codex-cleared content avoids re-scanning after substantive
+codex iterations.
+
+The detection is reasoning-driven, not regex-based. The scan helper
+assembles spec-level data; the structured-prompt below judges
+collisions vs. colocation.
+
+### Audit comment format
+
+This is the canonical format. Both `/sr-spec` and ENG-281's
+`/sr-start` backstop emit this exact shape; `/close-issue` step 8
+parses ONLY the ```` ```coord-dep-audit ```` fenced JSON block — bullet
+text is NOT delete authority. The single source of truth is
+`skills/sr-spec/scripts/coord_dep_scan.sh`'s header comment.
+
+```
+**Coordination dependencies added by /sr-spec scan**
+
+- blocked-by ENG-X — both restructure `lib/scope.sh`'s `_scope_load` function
+- blocked-by ENG-Y — ENG-Y renames `foo.sh` which this spec edits inline
+
+```coord-dep-audit
+{"parents": ["ENG-X", "ENG-Y"]}
+```
+
+Will be removed automatically on `/close-issue`.
+```
+
+### Sub-step 1: Load any prior transport file
+
+A prior `/sr-spec` may have added relations and aborted before
+posting the audit comment. Loading (rather than clearing) lets the
+operator re-audit those at sub-step 6 so step 12 can re-post the
+audit comment.
+
+```bash
+COORD_DEP_FILE="$WORKTREE_PATH/.sensible-ralph-coord-dep.json"
+if [[ -f "$COORD_DEP_FILE" ]]; then
+  prior_accepted_edges=$(cat "$COORD_DEP_FILE")
+else
+  prior_accepted_edges='[]'
+fi
+```
+
+### Sub-step 2: Label-existence preflight
+
+`linear issue update --label` silently no-ops on unknown labels, so
+step 12's `linear_add_label` would be a silent no-op without this
+gate, hiding incomplete cleanups later. Refuse to proceed if missing.
+
+```bash
+if ! linear_label_exists "$CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL"; then
+  echo "step 11: workspace label '$CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL' missing — create it or update plugin config" >&2
+  # Operator can create the label and retry, or skip step 11 entirely
+  # (proceed to step 12 with no coord-dep writes; ENG-281's /sr-start
+  # backstop covers missed edges).
+fi
+```
+
+### Sub-step 3: Run the scan helper
+
+```bash
+SCAN_BUNDLE=$(bash "$CLAUDE_PLUGIN_ROOT/skills/sr-spec/scripts/coord_dep_scan.sh" \
+  "$SPEC_FILE" \
+  "${PREREQS[@]+"${PREREQS[@]}"}")
+```
+
+The helper assembles a JSON bundle: `{ issue_id, new_spec, peers, existing_blockers }`. See
+`skills/sr-spec/scripts/coord_dep_scan.sh` for the full contract.
+
+### Sub-step 4: Trivial fast path
+
+Only when `peers` is empty (or all overlaps map to parents already in
+`existing_blockers`) **AND** `prior_accepted_edges` is empty: write
+`[]` to the transport file (matches the format from sub-step 7), emit
+`step 11: No coordination dependencies detected.`, and proceed to step
+12. If `prior_accepted_edges` is non-empty, do **NOT** take the fast
+path — fall through to the operator gate so prior entries get
+re-audit consideration.
+
+### Sub-step 5: Structured-prompt reasoning
+
+Reason over the new spec body and each peer's title and description.
+Six-item checklist:
+
+1. List path-level surface for the new spec (files touched, restructured, renamed).
+2. Same for each peer.
+3. Report shared paths.
+4. For each shared path, judge collide vs. disjoint; keep only collisions.
+5. List identifier-level overlaps (function names, env vars, config keys).
+6. List rename/move overlaps (one moves/renames a file the other edits).
+
+Skip any peer whose ID already appears in `existing_blockers` (defensive
+re-check; the helper already filtered).
+
+### Sub-step 6: Per-candidate operator gate
+
+Merge fresh-scan candidates with `prior_accepted_edges` (dedup by
+parent ID; for parents in both, present with the more recent
+rationale and note prior confirmation).
+
+For each candidate show: parent ID + title, source (fresh-scan /
+prior-accepted), category, one-line rationale. Three choices:
+**accept / reject / edit-rationale**.
+
+Rejecting a prior-accepted entry that's already in `INITIAL_BLOCKERS`
+(captured at finalize sub-step 2) means the relation **stays in
+Linear without an audit comment** — surface this consequence in the
+rejection prompt so the operator can manually remove the relation
+via Linear UI if they want.
+
+### Sub-step 7: Persist `accepted_edges` to the transport file
+
+Format is an array of `{parent, rationale}` objects:
+
+```json
+[{"parent": "ENG-X", "rationale": "..."}, ...]
+```
+
+**Always write the file** (empty array `[]` when nothing accepted) so
+step 12 can distinguish "step 11 ran" (file exists) from "step 11
+was bypassed" (file absent). Each Bash tool call in the skill is a
+fresh process — the transport file is the only reliable
+step-11→step-12 handoff.
+
+The transport file is gitignored (`/.sensible-ralph-coord-dep.json`)
+and per-worktree; successful finalize deletes it (sub-step 9 of step
+12).
+
+## Finalizing the Linear Issue (Step 12)
 
 Terminal step. Run sub-steps in order. Sub-steps 1-2 are mandatory preflight gates — no mutation (comment, description, relation, state) happens until both pass. If any later sub-step fails, STOP before the state transition.
 
@@ -444,9 +587,9 @@ fi
 
 `--body-file` (not `--body`) so markdown in the prior description round-trips correctly. Never overwrite the description before this comment lands.
 
-### 5. Push spec, set blockers, verify (all-or-nothing before approval)
+### 5. Push spec, set blockers, post audit, verify (all-or-nothing before approval)
 
-Blockers and description must all land cleanly before the state transition. A partial blocker set with the issue in `$CLAUDE_PLUGIN_OPTION_APPROVED_STATE` is materially unsafe — `/sr-start` would dispatch the issue before the missing prerequisite completed.
+Blockers, description, and audit comment must all land cleanly before the state transition. A partial blocker set with the issue in `$CLAUDE_PLUGIN_OPTION_APPROVED_STATE` is materially unsafe — `/sr-start` would dispatch the issue before the missing prerequisite completed.
 
 **Before running anything in this sub-step, explicitly initialize `PREREQS`** from the prerequisites identified during design:
 
@@ -459,25 +602,133 @@ PREREQS=(ENG-180 ENG-185)
 
 If the design surfaced prerequisites but the user hasn't supplied them explicitly, STOP and ask — do not guess or default to empty.
 
+The internal sequence absorbs the step-11 coord-dep writes:
+
+#### 5.1. Read `accepted_edges` from the transport file
+
+```bash
+COORD_DEP_FILE="$WORKTREE_PATH/.sensible-ralph-coord-dep.json"
+accepted_parents=()
+if [[ -f "$COORD_DEP_FILE" ]]; then
+  # Validate file shape BEFORE consuming. A truncated /
+  # hand-edited / corrupted file must abort finalize, not
+  # silently approve the issue with no coord-dep audit.
+  #
+  # Shape contract: a JSON array of objects, each having a
+  # 'parent' key. Empty array `[]` is valid (the trivial
+  # fast-path case in step 11 sub-step 4 writes exactly this).
+  if ! jq -e 'type == "array" and all(.[]; type == "object" and has("parent"))' \
+         "$COORD_DEP_FILE" >/dev/null 2>&1; then
+    echo "step 12: $COORD_DEP_FILE is malformed (expected JSON array of {parent: ..., rationale: ...} entries) — aborting finalize." >&2
+    echo "  Inspect or delete the file by hand before re-running /sr-spec." >&2
+    exit 1
+  fi
+  # Extract parent IDs. Empty output for an empty array is
+  # expected and fine — accepted_parents stays empty.
+  parsed_parents=$(jq -r '.[].parent' "$COORD_DEP_FILE")
+  while IFS= read -r p; do
+    [[ -n "$p" ]] && accepted_parents+=("$p")
+  done <<< "$parsed_parents"
+fi
+# If $COORD_DEP_FILE was absent, accepted_parents stays empty —
+# that's the "no step-11 dialogue ran" or "operator skipped the
+# scan" case, which is fine; finalize proceeds without coord-dep
+# writes.
+```
+
+#### 5.2. Capture `INITIAL_BLOCKERS`
+
+Needed in `EXPECTED` (sub-step 5.7) so re-spec's prior-session blockers are accepted as expected, not flagged as drift.
+
+```bash
+INITIAL_BLOCKERS=$(linear_get_issue_blockers "$ISSUE_ID" | jq -r '.[].id' | sort -u)
+```
+
+#### 5.3. Push spec description
+
 ```bash
 linear issue update "$ISSUE_ID" --description-file docs/specs/<topic>.md || {
   echo "sr-spec: description update failed; issue left in $STATE" >&2; exit 1;
 }
+```
 
-for p in "${PREREQS[@]}"; do
-  linear issue relation add "$ISSUE_ID" blocked-by "$p" || {
-    echo "sr-spec: failed to add blocked-by $p; issue left in $STATE with partial blockers" >&2
-    exit 1;
-  }
+#### 5.4. Compute `ADD_LIST`, walk it (relations BEFORE comment)
+
+```bash
+ADD_LIST=$(printf '%s\n' \
+  "${PREREQS[@]+"${PREREQS[@]}"}" \
+  "${accepted_parents[@]+"${accepted_parents[@]}"}" \
+  | sort -u | comm -23 - <(printf '%s\n' "$INITIAL_BLOCKERS"))
+
+committed_parents=()
+for parent in $ADD_LIST; do
+  if linear issue relation add "$ISSUE_ID" blocked-by "$parent"; then
+    committed_parents+=("$parent")
+  else
+    # Per-edge failure: surface to operator with three choices —
+    #
+    #   retry            : re-attempt the same parent.
+    #   skip-this-edge   : ONLY for parents from accepted_parents
+    #                      (coord-dep). Removes the parent from
+    #                      accepted_parents so the audit comment
+    #                      won't list it. NOT offered for PREREQS
+    #                      parents — silently dropping a semantic
+    #                      prereq would let an issue reach Approved
+    #                      without its required dependency edge,
+    #                      breaking /sr-start's pickup rule.
+    #                      PREREQS failures get retry-or-abort only.
+    #   abort finalize   : stop the loop. Audit comment has NOT
+    #                      been posted yet, so any added relations
+    #                      have NO audit trail — surface a recovery
+    #                      recipe per sub-step 5.6's failure path.
+    :
+  fi
 done
+```
 
-# Verify the post-add blocker set matches what we asked for.
-BLOCKERS_JSON=$(linear_get_issue_blockers "$ISSUE_ID") || {
-  echo "sr-spec: linear_get_issue_blockers failed for $ISSUE_ID — cannot verify blocker set; issue left in $STATE" >&2
-  exit 1
-}
-ACTUAL=$(printf '%s' "$BLOCKERS_JSON" | jq -r '.[].id' | sort -u)
-EXPECTED=$(printf '%s\n' "${PREREQS[@]}" | sort -u)
+`comm -23` filters out anything already in `INITIAL_BLOCKERS` to avoid duplicate-add (Linear's CLI behavior on duplicates is unreliable across versions).
+
+Comment-LAST is deliberate: it eliminates the over-claim failure mode where a skipped edge's marker line would later become destructive delete authority during cleanup. The trade-off (comment-post failure leaves relations without an audit trail) is handled in sub-step 5.6.
+
+#### 5.5. End-of-loop invariant (when not aborted)
+
+Every parent in `accepted_parents` is now in Linear — either pre-existing in `INITIAL_BLOCKERS` (operator re-confirmed prior) or in `committed_parents` (just added). Skipped parents have been removed from `accepted_parents`.
+
+If `accepted_parents` is empty after the loop: skip sub-steps 5.6 and 5.7; fall through to verify (5.8).
+
+#### 5.6. Post the audit comment (only if `accepted_parents` is non-empty)
+
+Compose per "Audit comment format" in step 11 above. Bullet lines list every parent in `accepted_parents`; the ```` ```coord-dep-audit ```` block lists the same parent IDs. The audit set is `accepted_parents` in full — both newly-added and prior-already-in-Linear — because cleanup needs to discover ALL of them.
+
+```bash
+linear issue comment add "$ISSUE_ID" --body-file <tmp>
+```
+
+**On comment-post failure:** newly-added relations are in Linear without an audit trail. Operator chooses:
+
+* **retry** — usually transient.
+* **proceed-anyway** — print the comment body inline; operator manually posts via Linear UI. Do NOT transition state. Issue stays `In Design`; transport file intact for next-run reload.
+* **rollback** — best-effort `linear issue relation delete` on each entry in `committed_parents` (this run's adds only; pre-existing prior-run relations are NOT touched). Issue stays `In Design`.
+
+#### 5.7. Add the coord-dep label (only if `accepted_parents` is non-empty)
+
+```bash
+linear_add_label "$ISSUE_ID" "$CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL"
+```
+
+Idempotent. On failure: log; continue. The audit comment is the load-bearing artifact for cleanup, not the label.
+
+#### 5.8. Verify
+
+`EXPECTED == ACTUAL` over the union of (`INITIAL_BLOCKERS` ∪ `PREREQS` ∪ `accepted_parents`):
+
+```bash
+EXPECTED=$(printf '%s\n' \
+  "${INITIAL_BLOCKERS[@]+"${INITIAL_BLOCKERS[@]}"}" \
+  "${PREREQS[@]+"${PREREQS[@]}"}" \
+  "${accepted_parents[@]+"${accepted_parents[@]}"}" \
+  | sort -u)
+ACTUAL=$(linear_get_issue_blockers "$ISSUE_ID" | jq -r '.[].id' | sort -u)
 if [ "$ACTUAL" != "$EXPECTED" ]; then
   echo "sr-spec: blocked-by set mismatch on $ISSUE_ID" >&2
   echo "  expected: $(echo "$EXPECTED" | tr '\n' ' ')" >&2
@@ -487,7 +738,11 @@ if [ "$ACTUAL" != "$EXPECTED" ]; then
 fi
 ```
 
-If any step above fails, STOP. Do **not** run the transition in sub-step 6.
+`accepted_parents` is the right set per sub-step 5.5's invariant — every entry is either in `INITIAL_BLOCKERS` or `committed_parents`.
+
+If any sub-step 5.x above fails, STOP. Do **not** run the transition in sub-step 6.
+
+The `${arr[@]+"${arr[@]}"}` guard above expands to nothing on empty arrays, avoiding bash 3.2's unbound-variable fault under `set -u`.
 
 ### 6. Transition state
 
@@ -501,6 +756,16 @@ linear issue update "$ISSUE_ID" --state "$CLAUDE_PLUGIN_OPTION_APPROVED_STATE" |
   exit 1
 }
 ```
+
+### 7. Delete the transport file
+
+Only after the state transition succeeds:
+
+```bash
+rm -f "$COORD_DEP_FILE"
+```
+
+If finalize fails before this point, the transport file persists for resume on the next `/sr-spec` run.
 
 The branch and worktree persist after finalize. They are NOT torn down. `/sr-start` will find them at next dispatch.
 
