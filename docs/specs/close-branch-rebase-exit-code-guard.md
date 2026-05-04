@@ -238,24 +238,45 @@ itself misbehaves, that's a separate spec.
 
 ## Out of scope
 
+The same class of "snippet doesn't show exit-code guard, prose says
+exit on failure" defect exists in several other steps of close-branch
+SKILL.md. None are fixed by ENG-288.
+
 - **Step 2's `git pull --ff-only origin main` and `git merge --no-ff`
-  exit-code guards.** These have similar prose-only handling — the
-  prose at lines 132 and 134 says "exit non-zero" on failure, but the
-  example snippets at lines 110-126 don't show the guard. Step 2's
-  failure modes cascade less catastrophically than Step 1's (the merge
-  itself usually fails on a stale main, and the push rejection is
-  caught by Step 3's existing retry/reset logic), but the same class
-  of defect exists. **The implementer must file a follow-up Linear
-  issue for this** at the end of implementation, scoped to Step 2.
+  exit-code guards.** Prose at lines 132 and 134 says "exit non-zero"
+  on failure, but the example snippets at lines 110-126 don't show
+  guards. Step 2 failures cascade less catastrophically than Step 1's
+  (a stale main makes the merge fail on its own, and a rejected push
+  is caught by Step 3's existing retry/reset logic), but the same
+  class of defect exists.
 - **Step 3's `git push origin main` exit-code guard.** Lines 146-163
   describe retry and reset paths in detail but the example snippet at
-  line 143 is bare. **Same follow-up as Step 2** — bundle into one
-  issue or file separately, implementer's call.
+  line 143 is bare.
 - **Step 5's `git checkout --detach` and Step 6's `git branch -d` /
-  `git push origin --delete` exit-code guards.** These are smaller-
-  blast-radius failures (a non-fatal cleanup hiccup, not a bad
-  `INTEGRATION_SHA`). Lower priority than Step 2/3; mention them in
-  the same follow-up issue or skip.
+  `git push origin --delete` exit-code guards.** Smaller-blast-radius
+  failures (a non-fatal cleanup hiccup, not a bad `INTEGRATION_SHA`).
+  Lower priority than Step 2/3.
+
+**Required follow-up Linear issue.** Before invoking `/prepare-for-
+review`, the implementer must file ONE new issue covering Step 2 and
+Step 3 hardening at minimum (the cases that, like ENG-288, can produce
+a wrong `INTEGRATION_SHA` or fail to fail loudly). Step 5 and Step 6
+guards may be added to the same issue at the implementer's discretion.
+Suggested title: `close-branch: guard remaining git operations against
+silent exit-code drop`. Body should reference ENG-288 as the precedent
+and link this spec.
+
+Other deferrals (no follow-up issue required):
+
+- **Extracting close-branch's bash into a real shell script with
+  `set -e`.** Would resolve the whole class at once but changes the
+  Skill-vs-script architectural choice and breaks the pattern with
+  the rest of the plugin's project-local skills.
+- **Bats coverage for close-branch.** Same architectural objection.
+- **Adding a `# why` comment near the guard in the SKILL.md.** The
+  diagnostic message itself ("rebase failed (exit ...). Resolve
+  conflicts and re-run...") is the explanation a reader needs in-
+  context; a separate code comment would duplicate it.
 - **Extracting close-branch's bash into a real shell script with
   `set -e`.** That would resolve the whole class of bug at once but
   changes the architectural choice (Skill vs script) and breaks the
