@@ -123,67 +123,98 @@ With Edit 1's guard, that's no longer true — the guard exits as soon
 as rebase fails. Rewrite so the *flow* is explicit, the *taxonomy*
 (mechanical vs ambiguous) is preserved as caller decision criteria:
 
-> **When the guard fires** (rebase failed with conflicts), close-branch
-> has already exited non-zero. The worktree is mid-rebase; the main
-> checkout is untouched. close-branch did NOT write
-> `.close-branch-result`, so close-issue's existing fallback handling
-> kicks in (see line 213 below: "treats an absent file as empty
-> values, which correctly skips stale-parent labeling and falls back
-> to a generic final message") — no new contract between close-branch
-> and close-issue is introduced by this guard. The caller (operator
-> running `/close-issue`, or an autonomous session that dispatched it)
-> decides what to do next:
+> **When the guard fires** (rebase exited non-zero), close-branch has
+> already exited. close-issue receives the non-zero return, prints
+> close-branch's diagnostic, and stops without running the Linear
+> Done transition, stale-parent labeling, or worktree removal (per
+> close-issue SKILL.md Step 4: "On non-zero exit from `close-branch`,
+> print the diagnostic and stop — no cleanup runs on failure"). The
+> worktree is in whatever state rebase left it — mid-rebase for
+> content conflicts (typically exit 1), untouched for fatal errors
+> (typically exit 128) — and the main checkout is untouched. close-
+> branch did NOT write `.close-branch-result`; on the failure path,
+> close-issue stops *before* reading it (the absent-file fallback at
+> close-issue Step 5 is for the successful-but-empty case — e.g.
+> PR-pending workflows — not for failures).
 >
-> *Mechanical conflict — resolve outside close-branch, then re-run.*
-> In the worktree, edit the conflicted files, `git -C "$WORKTREE_PATH"
-> add <files>`, `git -C "$WORKTREE_PATH" rebase --continue`, then
-> re-invoke `/close-issue`. On the second run, **if local main has
-> not advanced** in the meantime, Step 1's `git rebase main` is a
-> no-op (branch already on top of main), the guard does not fire, and
-> Step 2 proceeds normally. **If local main has advanced** (a new
-> direct-to-main commit landed, or someone ran `git pull` on the main
-> checkout), the second invocation rebases against the new tip and
-> may hit conflicts again — be prepared for the guard to fire a
-> second time and repeat the resolve+continue+re-invoke cycle. close-
-> branch makes no idempotence guarantee here; the rerun is just
-> another close-branch invocation that runs Step 1 from scratch.
+> What happens next depends on who's at the keyboard:
 >
-> Mechanical resolutions (the caller can do these without escalation):
+> *Interactive (operator at the keyboard).* The operator inspects the
+> diagnostic and the worktree state, then decides:
 >
-> - Unrelated edits in adjacent regions (formatting, nearby lines,
->   imports) — keep both.
-> - Same logical change landed on both sides — drop the feature-branch
->   duplicate; take main's version.
-> - Both sides appended different items to the same list, changelog,
->   or docs section — merge the content.
+> - *Mechanical conflict — resolve in the worktree, then re-run.*
+>   In the worktree, edit the conflicted files; `git -C
+>   "$WORKTREE_PATH" add <files>`; `git -C "$WORKTREE_PATH" rebase
+>   --continue`. `--continue` may surface another conflict (multi-
+>   conflict rebases iterate); resolve and continue again as needed.
+>   Re-invoke `/close-issue` only after the rebase has fully
+>   completed — `git -C "$WORKTREE_PATH" status --short` reports no
+>   non-`??` lines (this matches close-branch's Pre-flight at lines
+>   57-63, which close-branch re-checks on re-invocation). The
+>   re-invocation runs Step 1's rebase from scratch; if local main
+>   has not advanced in the meantime, the rebase is a no-op and Step
+>   2 proceeds. If local main has advanced (new direct-to-main
+>   commits, or someone ran `git pull` on the main checkout), Step 1
+>   may conflict again — be prepared to repeat the resolve-continue-
+>   re-invoke cycle. close-branch makes no idempotence guarantee
+>   here; each invocation runs Step 1 from scratch.
 >
-> *Ambiguous conflict — abort and escalate.* In the worktree,
-> `git -C "$WORKTREE_PATH" rebase --abort`, then surface the conflict
-> to a human (or, in an autonomous session, follow the global
-> CLAUDE.md autonomous-mode rules: post a Linear comment describing
-> the conflict and exit clean — that's an existing rule, not new
-> behavior introduced here). Do not re-invoke `/close-issue` until
-> the conflict has a known resolution.
+>   Mechanical resolutions (the operator can do these without
+>   escalation):
 >
-> Cases that are NOT mechanical:
+>   - Unrelated edits in adjacent regions (formatting, nearby lines,
+>     imports) — keep both.
+>   - Same logical change landed on both sides — drop the feature-
+>     branch duplicate; take main's version.
+>   - Both sides appended different items to the same list,
+>     changelog, or docs section — merge the content.
 >
-> - Both sides made substantive, contradicting changes to the same
->   logic.
-> - A file was deleted on one side and modified on the other.
-> - The right answer isn't obvious without user context.
+> - *Ambiguous conflict — abort and escalate.* `git -C
+>   "$WORKTREE_PATH" rebase --abort` if a rebase is in progress; for
+>   fatal errors there is no rebase to abort, just investigate the
+>   underlying issue. Surface the conflict to whoever owns the
+>   resolution. Do not re-invoke `/close-issue` until it's resolved.
 >
-> Silently picking a side on ambiguous logic is worse than stopping —
-> the "minimal intervention" principle applies only when the decision
-> is obvious.
+>   Cases that are NOT mechanical:
+>
+>   - Both sides made substantive, contradicting changes to the same
+>     logic.
+>   - A file was deleted on one side and modified on the other.
+>   - The right answer isn't obvious without operator context.
+>
+>   Silently picking a side on ambiguous logic is worse than
+>   stopping — the "minimal intervention" principle applies only
+>   when the decision is obvious.
+>
+> *Autonomous (session dispatched by the orchestrator).* No ad-hoc
+> resolve+continue is permitted. close-branch's non-zero exit
+> propagates up through close-issue (which stops without cleanup,
+> per its Step 4) to the dispatched session, which exits with the
+> issue still in `In Review`. The orchestrator's post-dispatch state
+> check sees `exit 0 + In Review` (or whatever close-issue's stop
+> exit code is — the key invariant is the issue is NOT in `Done`)
+> and classifies the run via the rules in
+> `docs/design/autonomous-mode.md` — applies `ralph-failed`, taints
+> DAG descendants for the run, and surfaces the conflict for
+> operator triage on the next pass. The operator then follows the
+> interactive flow above. The guard introduced by this spec does
+> not add a new autonomous-recovery path; it just makes the existing
+> stop-trigger fire correctly instead of letting the cascade run
+> silently.
 
-Two structural changes from the original:
+Three structural changes from the original prose:
 
-1. The lead-in flips from "do the resolution" to "decide what to do
-   next" — making clear that whatever the caller does happens *between*
-   close-branch invocations, not inside one.
-2. The mechanical-resolution recipe ends with "re-invoke `/close-issue`",
-   which the original text omitted. That re-invocation is what closes
-   the loop; without it the caller might forget to restart the ritual.
+1. The lead-in describes the *real* close-issue failure-handling
+   contract (stop, no cleanup) rather than the wrong absent-file
+   fallback path (which only applies on success).
+2. The mechanical-resolution recipe iterates `--continue` (multi-
+   conflict rebases need multiple iterations) and gates
+   re-invocation on the rebase fully completing (matches Pre-flight
+   gate at lines 57-63).
+3. Interactive and autonomous flows are differentiated explicitly:
+   autonomous follows the escape-hatch contract from
+   `docs/design/autonomous-mode.md` (no ad-hoc recovery), interactive
+   has the resolve+continue+re-invoke cycle.
 
 ### Edit 3 — Red Flags section (no change)
 
