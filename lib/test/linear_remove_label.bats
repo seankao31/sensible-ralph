@@ -188,3 +188,22 @@ call_fn() {
   [ "$status" -ne 0 ]
   [[ "$output" == *"could not resolve issue uuid"* ]]
 }
+
+# ---------------------------------------------------------------------------
+# 8. Issue has more than 50 labels (pagination) → fail loud, don't silently
+#    treat the target as absent.
+# ---------------------------------------------------------------------------
+@test "linear_remove_label fails loud when issue label page is truncated" {
+  export STUB_LABEL_LIST_OUTPUT='{"nodes":[{"id":"L1","name":"ralph-coord-dep","team":null}],"pageInfo":{"hasNextPage":false}}'
+  # First api call: query returns hasNextPage=true — the label list was truncated.
+  export STUB_API_OUTPUT_1='{"data":{"issue":{"id":"u1","labels":{"pageInfo":{"hasNextPage":true},"nodes":[{"id":"OTHER","name":"some-other-label"}]}}}}'
+
+  run call_fn linear_remove_label ENG-107 ralph-coord-dep
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"silent truncation refused"* ]]
+  [[ "$output" == *"more than 50 labels"* ]]
+  # No mutation should have been attempted.
+  api_calls="$(grep -c "^api " "$STUB_ARGS_FILE")"
+  [ "$api_calls" -eq 1 ]
+}

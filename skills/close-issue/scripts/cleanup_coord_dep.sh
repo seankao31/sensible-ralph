@@ -81,10 +81,18 @@ tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 comment_count=0
 
+# Portable base64 decode: BSD (macOS) uses -D historically; GNU uses -d.
+# Both flags are accepted on macOS Ventura+, but detect to handle older hosts.
+if printf '' | base64 -D >/dev/null 2>&1; then
+  _b64d() { base64 -D; }
+else
+  _b64d() { base64 -d; }
+fi
+
 while IFS= read -r body_b64; do
   [[ -n "$body_b64" ]] || continue
   comment_count=$((comment_count + 1))
-  printf '%s' "$body_b64" | base64 -d | awk -v dir="$tmpdir" -v c="$comment_count" '
+  printf '%s' "$body_b64" | _b64d | awk -v dir="$tmpdir" -v c="$comment_count" '
     /^```coord-dep-audit$/{n++; out=sprintf("%s/c%05d-block-%05d.json", dir, c, n); flag=1; next}
     /^```$/{flag=0; next}
     flag{print > out}

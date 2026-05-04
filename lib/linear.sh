@@ -329,6 +329,7 @@ query($issueId: String!) {
   issue(id: $issueId) {
     id
     labels(first: 50) {
+      pageInfo { hasNextPage }
       nodes { id name }
     }
   }
@@ -336,10 +337,17 @@ query($issueId: String!) {
 GRAPHQL
 )" || { printf 'linear_remove_label: failed to fetch labels for %s (label %q)\n' "$issue_id" "$label_name" >&2; return 1; }
 
-  local issue_uuid label_id
+  local issue_uuid label_id has_next
   issue_uuid="$(printf '%s' "$raw" | jq -r '.data.issue.id // empty')"
   if [[ -z "$issue_uuid" ]]; then
     printf 'linear_remove_label: could not resolve issue uuid for %s (label %q)\n' "$issue_id" "$label_name" >&2
+    return 1
+  fi
+
+  has_next="$(printf '%s' "$raw" | jq -r '.data.issue.labels.pageInfo.hasNextPage // false')"
+  if [[ "$has_next" == "true" ]]; then
+    printf 'linear_remove_label: issue %s has more than 50 labels — silent truncation refused; cannot verify %q is absent\n' \
+      "$issue_id" "$label_name" >&2
     return 1
   fi
 
