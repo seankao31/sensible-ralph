@@ -261,10 +261,12 @@ After the edits, all of the following must pass:
 4. **Red Flags update lands:**
 
    ```bash
-   grep -nF 'close-branch itself never resolves conflicts' .claude/skills/close-branch/SKILL.md
+   grep -nF 'caller-side per Step 1' .claude/skills/close-branch/SKILL.md
    ```
 
-   → exactly one match.
+   → exactly one match. (`caller-side` is a short hyphenated marker
+   chosen to fit on one line in any wrapping; it does not appear in
+   close-branch SKILL.md before this edit.)
 
 5. **No accidental change to other Step prose:**
 
