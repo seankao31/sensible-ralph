@@ -6,8 +6,7 @@ machine.
 
 A Claude Code plugin that extends the ralph technique
 ([Geoff Huntley's original](https://ghuntley.com/ralph/)) with five
-properties the name is a nod to. Named in ironic contrast with the Ralph
-Wiggum character, who famously lacks them.
+properties the name is a nod to.
 
 ## The five pillars
 
@@ -36,18 +35,6 @@ Wiggum character, who famously lacks them.
    Thinking happens before the loop starts, so the autonomous implementer
    is executing a decided design, not figuring one out. *Vanilla ralph
    hands the LLM a blob and lets it discover the scope as it goes.*
-
-### How this compares to other ralph variants
-
-- [`snarktank/ralph`](https://github.com/snarktank/ralph) is PRD-file-
-  centric — a `prd.json` plus a `passes: true/false` terminal gate.
-  No dependency graph, no issue-tracker integration, no review phase.
-- [`frankbria/ralph-claude-code`](https://github.com/frankbria/ralph-claude-code)
-  is ops-heavy — rate-limiting, circuit breakers, tmux monitoring — but
-  still drives off a flat task file with no structural deliberation.
-
-Neither has DAG scoping, Linear as the state machine, or a review gate
-as the terminal state.
 
 ## Installation
 
@@ -134,10 +121,10 @@ Brief summary:
 
 ## Companion skills
 
-The plugin bundles the four skills that sit in the critical path of
-the ralph lifecycle: `sr-start`, `sr-spec`, `sr-implement`,
-`prepare-for-review`, and `close-issue`. A few external skills extend
-the flow:
+The plugin bundles six skills: `sr-spec`, `sr-start`, `sr-status`,
+`sr-implement`, `prepare-for-review`, and `close-issue` (in roughly
+the order they show up across an issue's lifecycle). A few external
+skills extend the flow:
 
 **Required for the consumer repo:**
 
@@ -148,36 +135,52 @@ the flow:
   skill name is part of the contract. sensible-ralph intentionally
   doesn't bundle one — every project's merge ritual is different.
 
-**Recommended companions:**
+**Recommended plugin companions:**
 
-- **Superpowers plugin** ([obra/superpowers](https://github.com/obra/superpowers))
-  — provides `test-driven-development`, `systematic-debugging`,
-  `verification-before-completion`, `using-git-worktrees`,
-  `capture-decisions`, `prune-completed-docs`, `update-stale-docs`,
-  `clean-branch-history`. Referenced by `sr-implement` (for
-  implementation discipline) and by `prepare-for-review` (for its doc
-  steps). If superpowers isn't installed, those steps degrade gracefully
-  (skip with a note, or fall back to manual equivalents).
+- **Superpowers** ([obra/superpowers](https://github.com/obra/superpowers))
+  — provides implementation discipline: `test-driven-development`,
+  `systematic-debugging`, `verification-before-completion`, and
+  `using-git-worktrees`. Referenced by `sr-implement` (for TDD,
+  debugging, and verification) and by `close-issue` / the orchestrator
+  (for worktree conventions). If superpowers isn't installed, those
+  steps degrade gracefully (skip with a note, or fall back to manual
+  equivalents).
 - **Codex plugin** ([openai/codex-plugin-cc](https://github.com/openai/codex-plugin-cc))
-  — provides `codex-rescue` and `codex-review-gate`. `codex-review-gate`
-  is the review gate that `prepare-for-review` runs before handoff; it's
-  a load-bearing piece of the safety pillar in autonomous sessions.
+  — provides cross-model review primitives: the `codex-rescue` agent
+  and the `/rescue` / `/review` commands. The autonomous preamble in
+  `sr-start` references `codex-rescue` for stuck-session recovery.
   Install this if you rely on the orchestrator.
+
+**Referenced but not bundled** — these are invoked by name from
+inside the bundled skills (specific callers noted per bullet) and
+degrade gracefully when missing, but their absence is not free:
+
+- `update-stale-docs`, `capture-decisions`, `prune-completed-docs` —
+  the doc-sweep / decision-capture / doc-prune steps inside
+  `/prepare-for-review` (Steps 1–3). Skipping them weakens the
+  traceability pillar; the handoff still happens, just with thinner
+  durable artifacts.
+- `codex-review-gate` — the cross-model review gate run by `/sr-spec`
+  (adversarial spec review) and `/prepare-for-review` (Step 5, before
+  handoff to In Review). Skipping this in autonomous sessions silently
+  weakens the safety pillar — the orchestrator will still merge work
+  that no second model has looked at. Operators relying on the
+  orchestrator should make sure this skill is available.
+
+For reference shapes of these four skills, see Sean's personal
+agent-config dotfiles:
+[`seankao31/dotfiles/agent-config`](https://github.com/seankao31/dotfiles/tree/main/agent-config).
+They're not packaged as an installable plugin; you'll need to
+adapt the SKILL.md files into your own `~/.claude/skills/` setup
+(or fork them into a project-local `.claude/skills/`).
 
 ## Design notes
 
-- `/sr-start` and `/sr-spec` are **user-triggered** entry points
-  (`disable-model-invocation: true`). Don't auto-invoke either.
 - `/sr-implement` runs inside an autonomous session dispatched by
   `/sr-start`. The orchestrator prepends a preamble to the session
   prompt that overrides your CLAUDE.md rules requiring human input —
   those become "post a Linear comment and exit clean" instead. See
   `skills/sr-start/scripts/autonomous-preamble.md`.
-
-## Version
-
-`0.1.0` — evolving. The workflow design has stabilized through several
-iterations, but expect breaking changes before `1.0.0`.
 
 ## License
 
