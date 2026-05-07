@@ -14,3 +14,9 @@ ralph-output.log
 # runs means the previous /close-issue was interrupted.
 /.close-branch-inputs
 /.close-branch-result
+
+# Per-worktree transport file written by /sr-spec step 11 (coord-dep scan)
+# and consumed at /sr-spec step 12 (finalize). Successful finalize deletes
+# it; presence between runs means the prior /sr-spec aborted between
+# scan and finalize and the next /sr-spec re-loads the staged edges.
+/.sensible-ralph-coord-dep.json

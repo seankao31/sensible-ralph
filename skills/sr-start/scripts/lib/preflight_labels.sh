@@ -31,6 +31,7 @@ preflight_labels_check() {
   local -a required_vars=(
     CLAUDE_PLUGIN_OPTION_FAILED_LABEL
     CLAUDE_PLUGIN_OPTION_STALE_PARENT_LABEL
+    CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL
   )
   # Optional label env vars — skip if unset or empty. None today; kept as a
   # named list for future additions that may be feature-flagged (applied only

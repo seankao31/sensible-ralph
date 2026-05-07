@@ -245,7 +245,50 @@ fi
 
 Direct `linear` CLI call — no delegation to a separate Linear-workflow skill. The `--json`-then-branch pattern preserves the "don't write if already there" guarantee that keeps Linear's activity feed clean.
 
-## Step 8: Reap the worktree's codex broker, then remove the worktree
+## Step 8: Clean up coordination-dependency relations
+
+Walk the issue's comments for ```` ```coord-dep-audit ```` fenced JSON
+blocks (written by `/sr-spec` step 12 and ENG-281's `/sr-start` backstop
+when they auto-add coordination `blocked-by` edges), best-effort delete
+those relations, and clear the coord-dep label on full success.
+
+This step is housekeeping: the high-value mutation (`Done` transition,
+step 7) has already landed. Treat any failure here as log-and-continue
+to step 9 (worktree teardown). The persistent `$CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL`
+on the issue is the operator's signal that cleanup did not complete.
+
+```bash
+ISSUE_ID="$ISSUE_ID" \
+  bash "$CLAUDE_PLUGIN_ROOT/skills/close-issue/scripts/cleanup_coord_dep.sh" \
+  || echo "close-issue: coord-dep cleanup did not complete cleanly — coord-dep label kept; investigate before next /sr-start" >&2
+```
+
+### Audit comment format
+
+The cleanup helper parses ONLY the ```` ```coord-dep-audit ```` fenced
+JSON block; bullet text is NOT delete authority. The single source of
+truth for the format is `skills/sr-spec/scripts/coord_dep_scan.sh`'s
+header comment; the `/sr-spec` step 12 audit comment and ENG-281's
+`/sr-start` backstop both emit this exact shape:
+
+```
+**Coordination dependencies added by /sr-spec scan**
+
+- blocked-by ENG-X — <one-line rationale>
+- blocked-by ENG-Y — <one-line rationale>
+
+```coord-dep-audit
+{"parents": ["ENG-X", "ENG-Y"]}
+```
+
+Will be removed automatically on `/close-issue`.
+```
+
+A malformed JSON block in one comment is silently skipped so it doesn't
+suppress valid `parents` arrays from other well-formed blocks; if EVERY
+block is malformed, the helper keeps the label and exits 1.
+
+## Step 9: Reap the worktree's codex broker, then remove the worktree
 
 Last step. CWD is the main checkout, so worktree removal no longer threatens the session. Keeping it last means that if removal fails (dirty worktree, process holding files), the high-value state transitions — merge, push, branch delete, Linear Done — have already been applied cleanly.
 
