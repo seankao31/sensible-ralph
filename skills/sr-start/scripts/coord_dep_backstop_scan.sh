@@ -64,25 +64,32 @@
 
 set -euo pipefail
 
-# Idempotent re-source of the plugin libs the helper depends on. The skill
-# should already have sourced them, but a stand-alone invocation (manual
-# debug, autonomous probe) might not. Mirror the scope-loaded gate from
-# preflight_scan.sh — re-sourcing scope.sh re-reads .sensible-ralph.json,
-# so skip when the marker still matches this repo's scope content hash.
-if [[ -n "${CLAUDE_PLUGIN_ROOT:-}" ]]; then
-  # shellcheck source=/dev/null
-  source "$CLAUDE_PLUGIN_ROOT/lib/linear.sh"
+# Step 1's preflight_scan.sh runs in a subprocess, so its lib/defaults.sh
+# load does not populate this Step 2 invocation's parent shell. On a default-
+# config install (harness exports no CLAUDE_PLUGIN_OPTION_* values), reading
+# them here would observe empty strings — so source defaults.sh ourselves
+# before any helper that consumes them. Same bootstrap order as
+# preflight_scan.sh: defaults → linear → conditional scope.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
 
-  RESOLVED_REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || RESOLVED_REPO_ROOT=""
-  RESOLVED_SCOPE_HASH=""
-  if [[ -n "$RESOLVED_REPO_ROOT" && -f "$RESOLVED_REPO_ROOT/.sensible-ralph.json" ]]; then
-    RESOLVED_SCOPE_HASH="$(shasum -a 1 < "$RESOLVED_REPO_ROOT/.sensible-ralph.json" | awk '{print $1}')"
-  fi
-  EXPECTED_SCOPE_LOADED="${RESOLVED_REPO_ROOT}|${RESOLVED_SCOPE_HASH}"
-  if [[ "${SENSIBLE_RALPH_SCOPE_LOADED:-}" != "$EXPECTED_SCOPE_LOADED" ]]; then
-    # shellcheck source=/dev/null
-    source "$CLAUDE_PLUGIN_ROOT/lib/scope.sh"
-  fi
+# shellcheck source=../../../lib/defaults.sh
+source "$PLUGIN_ROOT/lib/defaults.sh"
+
+# shellcheck source=../../../lib/linear.sh
+source "$PLUGIN_ROOT/lib/linear.sh"
+
+# scope.sh re-reads .sensible-ralph.json, so skip when the load marker still
+# matches this repo's scope content hash.
+RESOLVED_REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || RESOLVED_REPO_ROOT=""
+RESOLVED_SCOPE_HASH=""
+if [[ -n "$RESOLVED_REPO_ROOT" && -f "$RESOLVED_REPO_ROOT/.sensible-ralph.json" ]]; then
+  RESOLVED_SCOPE_HASH="$(shasum -a 1 < "$RESOLVED_REPO_ROOT/.sensible-ralph.json" | awk '{print $1}')"
+fi
+EXPECTED_SCOPE_LOADED="${RESOLVED_REPO_ROOT}|${RESOLVED_SCOPE_HASH}"
+if [[ "${SENSIBLE_RALPH_SCOPE_LOADED:-}" != "$EXPECTED_SCOPE_LOADED" ]]; then
+  # shellcheck source=../../../lib/scope.sh
+  source "$PLUGIN_ROOT/lib/scope.sh"
 fi
 
 # 1. List Approved peers. Same filter build_queue.sh uses (Approved state,

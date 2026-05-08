@@ -18,8 +18,15 @@ setup() {
   # Per-peer behaviors:
   #   STUB_BLOCKERS_<id>_JSON  — JSON array (default '[]')
   #   STUB_BLOCKERS_<id>_FAIL  — set non-empty to force linear_get_issue_blockers exit 1
+  # When STUB_OBSERVED_VARS_FILE is set, linear_list_approved_issues records
+  # the values of CLAUDE_PLUGIN_OPTION_APPROVED_STATE / _FAILED_LABEL it sees.
+  # Used by the defaults.sh-sourcing regression test.
   cat > "$STUB_PLUGIN_ROOT/lib/linear.sh" <<'LINEAR_SH'
 linear_list_approved_issues() {
+  if [[ -n "${STUB_OBSERVED_VARS_FILE:-}" ]]; then
+    printf 'APPROVED_STATE=%s\n' "${CLAUDE_PLUGIN_OPTION_APPROVED_STATE-UNSET}" >> "$STUB_OBSERVED_VARS_FILE"
+    printf 'FAILED_LABEL=%s\n' "${CLAUDE_PLUGIN_OPTION_FAILED_LABEL-UNSET}" >> "$STUB_OBSERVED_VARS_FILE"
+  fi
   if [[ -n "${STUB_APPROVED_FAIL:-}" ]]; then
     return 1
   fi
@@ -38,6 +45,13 @@ linear_get_issue_blockers() {
   printf '%s' "${!json_var:-[]}"
 }
 LINEAR_SH
+
+  # The helper sources lib/defaults.sh before any helpers that read
+  # CLAUDE_PLUGIN_OPTION_*. Copy the real defaults.sh into the stub plugin
+  # root so the source line resolves; tests that pre-export the option vars
+  # are unaffected (defaults.sh's `: "${VAR=default}"` does not overwrite
+  # an already-set value).
+  cp "$SCRIPT_DIR/../../../lib/defaults.sh" "$STUB_PLUGIN_ROOT/lib/defaults.sh"
 
   # Skip the scope.sh re-source — set the marker to whatever the current repo
   # would resolve to so the helper's auto-source gate matches.
@@ -281,4 +295,25 @@ teardown() {
 
   [ "$status" -eq 0 ]
   echo "$output" | jq -e '.approved[0].id == "ENG-281"' > /dev/null
+}
+
+# ---------------------------------------------------------------------------
+# 12. Default-config install (CLAUDE_PLUGIN_OPTION_* unset in parent shell):
+#     the helper must source lib/defaults.sh so downstream helpers see the
+#     documented defaults (Approved / ralph-failed) rather than the empty
+#     string. Step 1's preflight_scan.sh sources defaults.sh in a subprocess,
+#     and that does NOT carry into Step 2's parent-shell invocation here.
+# ---------------------------------------------------------------------------
+@test "unset CLAUDE_PLUGIN_OPTION_* vars are populated via lib/defaults.sh" {
+  unset CLAUDE_PLUGIN_OPTION_APPROVED_STATE CLAUDE_PLUGIN_OPTION_FAILED_LABEL
+  STUB_OBSERVED_VARS_FILE="$STUB_PLUGIN_ROOT/observed_vars"
+  export STUB_OBSERVED_VARS_FILE
+  : > "$STUB_OBSERVED_VARS_FILE"
+  export STUB_APPROVED_IDS=""
+
+  run "$HELPER"
+
+  [ "$status" -eq 0 ]
+  grep -qx "APPROVED_STATE=Approved" "$STUB_OBSERVED_VARS_FILE"
+  grep -qx "FAILED_LABEL=ralph-failed" "$STUB_OBSERVED_VARS_FILE"
 }
