@@ -39,14 +39,23 @@ setup() {
   cd "$TEST_REPO"
   A_SHA="$(git rev-parse HEAD)"
   export A_SHA
+  git -C "$TEST_REPO" commit --quiet --allow-empty -m "second"
+  B_SHA="$(git rev-parse HEAD)"
+  export B_SHA
 
   # Logs the stubs append to so tests can assert "X was commented" /
   # "Y was labeled". Stubs append ONLY on success — mirrors the real-world
   # semantic that a non-zero rc means the mutation didn't take effect.
   export STUB_COMMENT_LOG="$STUB_DIR/comment_log"
   export STUB_LABEL_LOG="$STUB_DIR/label_log"
+  export STUB_COMMENT_BODY_LOG="$STUB_DIR/comment_body_log"
+  export STUB_FRESH_ARG_LOG="$STUB_DIR/fresh_arg_log"
+  export STUB_COMMITS_ARG_LOG="$STUB_DIR/commits_arg_log"
   : > "$STUB_COMMENT_LOG"
   : > "$STUB_LABEL_LOG"
+  : > "$STUB_COMMENT_BODY_LOG"
+  : > "$STUB_FRESH_ARG_LOG"
+  : > "$STUB_COMMITS_ARG_LOG"
 
   # Fake lib/linear.sh.
   #
@@ -82,6 +91,8 @@ linear_comment() {
     return "${!fail_var}"
   fi
   printf '%s\n' "$child_id" >> "$STUB_COMMENT_LOG"
+  printf '=== %s ===\n%s\n=== /%s ===\n' "$child_id" "$body" "$child_id" \
+    >> "$STUB_COMMENT_BODY_LOG"
   return 0
 }
 
@@ -126,6 +137,7 @@ resolve_branch_for_issue() {
 # works without per-test bookkeeping.
 is_branch_fresh_vs_sha() {
   local parent_sha="$1" branch_ref="$2"
+  printf '%s\t%s\n' "$parent_sha" "$branch_ref" >> "$STUB_FRESH_ARG_LOG"
   local branch="${branch_ref#refs/heads/}"
   local key; key="$(_stub_key "$branch")"
   local fresh_var="STUB_FRESH_${key}"
@@ -134,6 +146,7 @@ is_branch_fresh_vs_sha() {
 
 list_commits_ahead() {
   local parent_sha="$1" branch_ref="$2"
+  printf '%s\t%s\n' "$parent_sha" "$branch_ref" >> "$STUB_COMMITS_ARG_LOG"
   local branch="${branch_ref#refs/heads/}"
   local key; key="$(_stub_key "$branch")"
   local commits_var="STUB_COMMITS_${key}"
@@ -181,26 +194,14 @@ blocks_json() {
 }
 
 # ===========================================================================
-# 1. Empty A_SHA → silent no-op
-# ===========================================================================
-@test "close_issue_label_stale_children: empty A_SHA → silent no-op (no helper invoked)" {
-  run call_fn close_issue_label_stale_children "ENG-200" ""
-
-  [ "$status" -eq 0 ]
-  [ "$output" = "CALL_FN_SENTINEL" ]
-  [ ! -s "$STUB_COMMENT_LOG" ]
-  [ ! -s "$STUB_LABEL_LOG" ]
-}
-
-# ===========================================================================
-# 2. No amendments — every child fresh → no labels, no comments, no header
+# 1. No amendments — every child fresh → no labels, no comments, no header
 # ===========================================================================
 @test "close_issue_label_stale_children: all children fresh → no header, logs empty" {
   export STUB_BLOCKS_JSON
   STUB_BLOCKS_JSON="$(blocks_json ENG-100 "In Review" ENG-101 "In Review" ENG-102 "In Review")"
   export STUB_FRESH_ENG_100=0 STUB_FRESH_ENG_101=0 STUB_FRESH_ENG_102=0
 
-  run call_fn close_issue_label_stale_children "ENG-200" "$A_SHA"
+  run call_fn close_issue_label_stale_children "ENG-200" "$A_SHA" "$B_SHA"
 
   [ "$status" -eq 0 ]
   [ ! -s "$STUB_COMMENT_LOG" ]
@@ -219,7 +220,7 @@ blocks_json() {
   STUB_BLOCKS_JSON="$(blocks_json ENG-100 "In Review" ENG-101 "In Review" ENG-102 "In Review")"
   export STUB_FRESH_ENG_100=1 STUB_FRESH_ENG_101=1 STUB_FRESH_ENG_102=0
 
-  run call_fn close_issue_label_stale_children "ENG-200" "$A_SHA"
+  run call_fn close_issue_label_stale_children "ENG-200" "$A_SHA" "$B_SHA"
 
   [ "$status" -eq 0 ]
   grep -q "^ENG-100$" "$STUB_COMMENT_LOG"
@@ -240,7 +241,7 @@ blocks_json() {
   STUB_BLOCKS_JSON="$(blocks_json ENG-100 "In Review" ENG-101 "In Review")"
   export STUB_FRESH_ENG_100=1 STUB_FRESH_ENG_101=1
 
-  run call_fn close_issue_label_stale_children "ENG-200" "$A_SHA"
+  run call_fn close_issue_label_stale_children "ENG-200" "$A_SHA" "$B_SHA"
 
   [ "$status" -eq 0 ]
   [ ! -s "$STUB_COMMENT_LOG" ]
@@ -258,7 +259,7 @@ blocks_json() {
   export STUB_FRESH_ENG_100=1 STUB_FRESH_ENG_101=1
   export STUB_LABEL_FAIL_ENG_100=1
 
-  run call_fn close_issue_label_stale_children "ENG-200" "$A_SHA"
+  run call_fn close_issue_label_stale_children "ENG-200" "$A_SHA" "$B_SHA"
 
   [ "$status" -eq 0 ]
   # Comment posted for both (comment-first, label-second).
@@ -281,7 +282,7 @@ blocks_json() {
 @test "close_issue_label_stale_children: linear_get_issue_blocks failure → skip; no mutations" {
   export STUB_BLOCKS_RC=1
 
-  run call_fn close_issue_label_stale_children "ENG-200" "$A_SHA"
+  run call_fn close_issue_label_stale_children "ENG-200" "$A_SHA" "$B_SHA"
 
   [ "$status" -eq 0 ]
   [ ! -s "$STUB_COMMENT_LOG" ]
@@ -298,7 +299,7 @@ blocks_json() {
   STUB_BLOCKS_JSON="$(blocks_json ENG-100 "In Review" ENG-101 "In Progress" ENG-102 "Done")"
   export STUB_FRESH_ENG_100=1 STUB_FRESH_ENG_101=1 STUB_FRESH_ENG_102=1
 
-  run call_fn close_issue_label_stale_children "ENG-200" "$A_SHA"
+  run call_fn close_issue_label_stale_children "ENG-200" "$A_SHA" "$B_SHA"
 
   [ "$status" -eq 0 ]
   grep -q "^ENG-100$" "$STUB_COMMENT_LOG"
@@ -312,7 +313,7 @@ blocks_json() {
   STUB_BLOCKS_JSON="$(blocks_json ENG-100 "In Review" ENG-101 "Reviewing" ENG-102 "Done")"
   export STUB_FRESH_ENG_100=1 STUB_FRESH_ENG_101=1 STUB_FRESH_ENG_102=1
 
-  run call_fn close_issue_label_stale_children "ENG-200" "$A_SHA"
+  run call_fn close_issue_label_stale_children "ENG-200" "$A_SHA" "$B_SHA"
 
   [ "$status" -eq 0 ]
   ! grep -q "^ENG-100$" "$STUB_COMMENT_LOG"
@@ -336,7 +337,7 @@ blocks_json() {
   # ENG-102: branch resolution fails → "no local branch matching eng-102-* (skipped)"
   export STUB_RESOLVE_RC_ENG_102=1
 
-  run call_fn close_issue_label_stale_children "ENG-200" "$A_SHA"
+  run call_fn close_issue_label_stale_children "ENG-200" "$A_SHA" "$B_SHA"
 
   [ "$status" -eq 0 ]
   [[ "$output" == *"ENG-100"* ]]
@@ -372,7 +373,7 @@ blocks_json() {
   # eng_100_some_title (lowercase preserved — _stub_key does NOT uppercase).
   export STUB_FRESH_eng_100_some_title=1  # stale
 
-  run call_fn close_issue_label_stale_children "ENG-200" "$A_SHA"
+  run call_fn close_issue_label_stale_children "ENG-200" "$A_SHA" "$B_SHA"
 
   [ "$status" -eq 0 ]
   grep -q "^ENG-100$" "$STUB_COMMENT_LOG"
@@ -410,7 +411,7 @@ blocks_json() {
     fresh_rc=SENTINEL_FRESH_RC
     apply_rc=SENTINEL_APPLY_RC
 
-    close_issue_label_stale_children 'ENG-200' '$A_SHA' > /dev/null
+    close_issue_label_stale_children 'ENG-200' '$A_SHA' '$B_SHA' > /dev/null
 
     # After return, caller sentinels must be unchanged.
     [ \"\$label_rc\"    = 'SENTINEL_LABEL_RC' ]   || { printf 'label_rc leaked\n'    >&2; exit 1; }
@@ -427,4 +428,106 @@ blocks_json() {
 
   [ "$status" -eq 0 ]
   [[ "$output" == *"ISOLATION_OK"* ]]
+}
+
+# ===========================================================================
+# 11. Body propagates both short SHAs and expands every interpolation slot.
+#     Load-bearing for AC#2 (comment body contains both shorts in the right
+#     positions) and AC#3 (template matches the spec's Change 5).
+# ===========================================================================
+@test "close_issue_label_stale_children: body interpolates pre-merge + integration shorts and ${commits}" {
+  export STUB_BLOCKS_JSON
+  STUB_BLOCKS_JSON="$(blocks_json ENG-100 "In Review")"
+  export STUB_FRESH_ENG_100=1
+  export STUB_COMMITS_ENG_100="abc1234 sentinel commit"
+
+  PRE_MERGE_SHORT="$(git rev-parse --short "$A_SHA")"
+  INTEGRATION_SHORT="$(git rev-parse --short "$B_SHA")"
+
+  run call_fn close_issue_label_stale_children "ENG-200" "$A_SHA" "$B_SHA"
+  [ "$status" -eq 0 ]
+
+  body="$(awk '/^=== ENG-100 ===$/{flag=1;next} /^=== \/ENG-100 ===$/{flag=0} flag' "$STUB_COMMENT_BODY_LOG")"
+  body_file="$STUB_DIR/body_extract"
+  printf '%s\n' "$body" > "$body_file"
+
+  # Lead line carries the integration short (where the operator looks now).
+  grep -q "closed at \`${INTEGRATION_SHORT}\`" "$body_file"
+  # Pre-merge short appears in the diagnostic line.
+  grep -q "Pre-merge branch tip was \`${PRE_MERGE_SHORT}\`" "$body_file"
+  # Ancestor-claim line uses pre-merge short, not integration short.
+  grep -q "does not have \`${PRE_MERGE_SHORT}\` as an ancestor" "$body_file"
+  # ${commits} expanded with the stub's stdout.
+  grep -q "abc1234 sentinel commit" "$body_file"
+  # No stranded placeholder — guards against accidentally quoted heredoc tag.
+  ! grep -q '\${' "$body_file"
+  # Inner triple-backtick fences bracket the commits block.
+  fence_count="$(grep -c '^```$' "$body_file")"
+  [ "$fence_count" -eq 2 ]
+}
+
+# ===========================================================================
+# 12. Empty pre-merge SHA → silent no-op (defensive layer).
+# ===========================================================================
+@test "close_issue_label_stale_children: empty pre-merge SHA → silent no-op" {
+  run call_fn close_issue_label_stale_children "ENG-200" "" "$B_SHA"
+
+  [ "$status" -eq 0 ]
+  [ ! -s "$STUB_COMMENT_LOG" ]
+  [ ! -s "$STUB_LABEL_LOG" ]
+  if [[ "$output" == *"Step 6 notes"* ]]; then
+    echo "expected no Step 6 notes header, got: $output" >&2
+    return 1
+  fi
+}
+
+# ===========================================================================
+# 13. Empty integration SHA → silent no-op (defensive layer; complements the
+#     call-site `if` guard in close-issue/SKILL.md).
+# ===========================================================================
+@test "close_issue_label_stale_children: empty integration SHA → silent no-op" {
+  run call_fn close_issue_label_stale_children "ENG-200" "$A_SHA" ""
+
+  [ "$status" -eq 0 ]
+  [ ! -s "$STUB_COMMENT_LOG" ]
+  [ ! -s "$STUB_LABEL_LOG" ]
+  if [[ "$output" == *"Step 6 notes"* ]]; then
+    echo "expected no Step 6 notes header, got: $output" >&2
+    return 1
+  fi
+}
+
+# ===========================================================================
+# 14. is_branch_fresh_vs_sha receives pre-merge SHA, not integration SHA.
+#     Load-bearing regression guard — the SHA-routing assertion is the
+#     core semantic this ticket exists to fix.
+# ===========================================================================
+@test "close_issue_label_stale_children: is_branch_fresh_vs_sha is called with the pre-merge SHA" {
+  export STUB_BLOCKS_JSON
+  STUB_BLOCKS_JSON="$(blocks_json ENG-100 "In Review")"
+  export STUB_FRESH_ENG_100=0  # rc irrelevant — we inspect STUB_FRESH_ARG_LOG
+
+  run call_fn close_issue_label_stale_children "ENG-200" "$A_SHA" "$B_SHA"
+
+  [ "$status" -eq 0 ]
+  awk -v want="$A_SHA" '$1 == want { found = 1 } END { exit !found }' "$STUB_FRESH_ARG_LOG"
+  ! awk -v want="$B_SHA" '$1 == want { found = 1 } END { exit !found }' "$STUB_FRESH_ARG_LOG"
+}
+
+# ===========================================================================
+# 15. list_commits_ahead receives pre-merge SHA, not integration SHA.
+#     Parallel to test 14 — both helpers must use the pre-merge SHA, and
+#     fixing one without the other generates a comment whose listed commits
+#     are computed against the wrong base.
+# ===========================================================================
+@test "close_issue_label_stale_children: list_commits_ahead is called with the pre-merge SHA" {
+  export STUB_BLOCKS_JSON
+  STUB_BLOCKS_JSON="$(blocks_json ENG-100 "In Review")"
+  export STUB_FRESH_ENG_100=1  # stale → enters body-rendering path
+
+  run call_fn close_issue_label_stale_children "ENG-200" "$A_SHA" "$B_SHA"
+
+  [ "$status" -eq 0 ]
+  awk -v want="$A_SHA" '$1 == want { found = 1 } END { exit !found }' "$STUB_COMMITS_ARG_LOG"
+  ! awk -v want="$B_SHA" '$1 == want { found = 1 } END { exit !found }' "$STUB_COMMITS_ARG_LOG"
 }

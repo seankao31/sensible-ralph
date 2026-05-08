@@ -154,6 +154,14 @@ If this lists any files, stop and ask the user what to do with each one. Options
 
 Never silently discard untracked files. `plan.md` files have been lost this way before — the whole reason this pre-flight exists. Run this BEFORE invoking `close-branch`: it's a data-safety gate for the worktree-removal step later in this skill, not a precondition for rebase.
 
+### Capture parent tip pre-merge
+
+```bash
+PARENT_TIP_PRE_MERGE=$(git -C "$WORKTREE_PATH" rev-parse HEAD)
+```
+
+This SHA is the parent's branch tip after any review amendments but before `close-branch`'s Step 1 rebase rewrites commit IDs. It is the SHA against which In-Review children's freshness must be checked at Step 6: a child reviewed against pre-amendment content has the pre-merge tip as an ancestor of its branch, while the post-rebase integration SHA almost never is. Captured here, before delegation to `close-branch`, so the global skill (which is invariant across projects) owns the value rather than widening the project-local `close-branch` result-file contract.
+
 ## Step 4: Invoke `close-branch`
 
 Hand off VCS integration to the project-local `close-branch` skill via the `Skill` tool. `close-branch` owns every project-specific decision: base branch, rebase policy, merge strategy, push model, branch-delete semantics.
@@ -216,13 +224,15 @@ Ralph v2 dispatches multi-level DAGs: parent `A` may still be In Review when chi
 
 This step detects that at `A`'s close time (when amendments have canonically landed) and labels each stale child with `$CLAUDE_PLUGIN_OPTION_STALE_PARENT_LABEL` plus a Linear comment explaining the divergence. Non-fatal: any failure is recorded in a warning array printed immediately — the landing has already happened, so the labeling is observational, not a merge-safety gate. The ordering guardrail in Pre-flight §2 prevents child branches from landing un-reviewed; this step surfaces the review-integrity gap that guardrail cannot address.
 
-**Skip entirely if `$INTEGRATION_SHA` is empty.** Projects whose `close-branch` doesn't yet produce a landed SHA (PR-pending, multi-branch cascade with a later merge step) don't have a canonical parent HEAD to compare against; labeling against `HEAD` would be wrong.
+**Skip entirely when `$INTEGRATION_SHA` is empty** via an explicit `if` guard at the call site. Projects whose `close-branch` doesn't produce a landed SHA (PR-pending, multi-branch cascade with a later merge step) don't have a canonical parent HEAD to compare against; the helper's own empty-arg guard defends in depth, but the call site is the load-bearing skip. `PARENT_TIP_PRE_MERGE` will be non-empty whenever the parent worktree exists, so the `if` keys on the integration SHA.
 
 ```bash
-close_issue_label_stale_children "$ISSUE_ID" "$INTEGRATION_SHA"
+if [ -n "$INTEGRATION_SHA" ]; then
+  close_issue_label_stale_children "$ISSUE_ID" "$PARENT_TIP_PRE_MERGE" "$INTEGRATION_SHA"
+fi
 ```
 
-**Known limitations.** SHA-ancestry flags a child as stale even if the parent's amendment was a pure rebase with content unchanged — the operator dismisses the label manually. No auto-rebase of stale children; the operator decides whether to rebase and re-review, accept the review gap, or reopen review. Projects that override ralph's default branch naming see the helper gracefully skip each child via the "no local branch matching slug" WARN path.
+**Known limitations.** Ancestry is checked against `$PARENT_TIP_PRE_MERGE` — the parent's worktree HEAD before `close-branch`'s rebase rewrote commit IDs — so a pure rebase no longer trips the label. The residual edge case is content-equivalent amendments (mechanical fixups, message amends): the helper still flags them because the SHA chain has changed, and the operator dismisses the label manually. No auto-rebase of stale children; the operator decides whether to rebase and re-review, accept the review gap, or reopen review. Projects that override ralph's default branch naming see the helper gracefully skip each child via the "no local branch matching slug" WARN path.
 
 ## Step 7: Transition Linear issue to Done
 
