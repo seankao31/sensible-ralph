@@ -474,16 +474,22 @@ _dispatch_issue() {
     # Reuse path: branch+worktree already exist (from /sr-spec step 7 or a
     # prior dispatch). Merge in any in-review parents into the existing
     # branch, then write base-sha = HEAD of the (possibly merged) worktree.
-    # On single-parent conflict the helper returns 0 with the worktree in
-    # MERGING state (HEAD = pre-merge spec commit) — base-sha captures that
-    # spec commit so the agent's resolution commit lands in /prepare-for-
-    # review's diff. On multi-parent conflict the helper aborts and returns
-    # non-zero (subsequent parents would otherwise be silently dropped).
+    # On any-parent conflict (single or multi) the helper returns 0 with
+    # the worktree in MERGING state and a `.sensible-ralph-pending-merges`
+    # marker — the dispatched session reads the marker, resolves
+    # conflicts, completes the merge, and re-invokes the helper to drain
+    # remaining parents. Genuine merge errors (return 1) still feed the
+    # setup_failed path, as does a zero-parent invocation while the marker
+    # exists (stale prior-failure state).
     worktree_merge_parents "$path" ${merge_parents[@]+"${merge_parents[@]}"}
     if [[ $? -ne 0 ]]; then
       set -e
       _record_setup_failure "$issue_id" "worktree_merge_parents" "$timestamp"
       return 1
+    fi
+    if [[ -f "$path/.sensible-ralph-pending-merges" ]]; then
+      printf 'orchestrator: %s dispatched with pending parent merges (conflicts to resolve in-session): %s\n' \
+        "$issue_id" "${merge_parents[*]}" >&2
     fi
     base_sha="$(git -C "$path" rev-parse HEAD)"
   else
@@ -503,6 +509,10 @@ _dispatch_issue() {
         _cleanup_worktree "$path" "$branch"
         _record_setup_failure "$issue_id" "worktree_create_with_integration" "$timestamp"
         return 1
+      fi
+      if [[ -f "$path/.sensible-ralph-pending-merges" ]]; then
+        printf 'orchestrator: %s dispatched with pending parent merges (conflicts to resolve in-session): %s\n' \
+          "$issue_id" "${merge_parents[*]}" >&2
       fi
     else
       worktree_create_at_base "$path" "$branch" "$base_out"

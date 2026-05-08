@@ -77,13 +77,68 @@ linear issue view "$ISSUE_ID" --json | jq -r .description
 
 The issue description is the spec. Treat it as the source of requirements.
 
-## Step 2: Check for unresolved merge conflicts
+## Step 2: Drain pending parent merges
+
+The marker file `.sensible-ralph-pending-merges` is the authority for entering the drain loop. Three checks gate the flow:
 
 ```bash
-git status --short
+[ -f .sensible-ralph-pending-merges ] && echo MARKER
+git rev-parse -q --verify MERGE_HEAD && echo MERGING
+git diff --name-only --diff-filter=U                   # unresolved index entries
 ```
 
-If the orchestrator pre-merged a parent branch into this worktree, the merge may have left conflicts. Resolve them before implementing the feature. Use `git log --all --oneline` and `git diff` to reason about each parent.
+Cases:
+
+- **Marker absent, no MERGING, no UU/AA:** no drain work. Skip to Step 3.
+
+- **Marker absent, but MERGING set OR UU/AA present:** the worktree is in an unresolved merge state but the state was NOT created by this feature (the helper would have written a marker alongside the merge). Do NOT auto-commit — this is unowned state. Treat as a red flag per Step 5: post a Linear comment ("worktree has unresolved merge state but `.sensible-ralph-pending-merges` is absent; this state was not produced by the orchestrator's parent-merge helpers and cannot be safely auto-resolved"), exit clean. Do NOT invoke `/prepare-for-review`.
+
+  The UU/AA check is required because `git checkout --merge`, `git stash apply` with conflicts, and a few other operations can leave UU markers in the index without setting MERGE_HEAD. Catching both detectors prevents an unowned partial-merge state from silently slipping through to Step 3.
+
+- **Marker present:** enter the drain loop. Marker presence proves the merge state belongs to this feature. Before calling the helper — and BEFORE any conflict resolution / commit, since those mutate the branch — validate the marker is **fully well-formed**:
+  1. Every line (including would-be blank/whitespace-only lines) must match `^[0-9a-f]{40}( .*)?$` (40-char SHA optionally followed by a space and a display ref). Blank or whitespace-only lines fail this regex by construction; reject the marker if any line fails.
+  2. Every SHA in column 1 must be reachable in this repo via `git cat-file -e <sha>^{commit}`. A syntactically valid but unreachable SHA (parent ref deleted+gc'd, repository repack lost the object) fails this check.
+
+  If validation fails on any line, red-flag — do NOT invoke the helper, do NOT resolve conflicts, do NOT commit. Any of those would mutate the branch before discovering the corruption and leave the worktree in a worse state than where it started. The helper itself ALSO refuses zero-arg invocations when the marker is present (defense in depth — see `docs/design/worktree-contract.md` "Pending parent merges"), but fail-closed validation in the session is the primary guard because it triggers BEFORE any merge side effects. Run the loop below until the marker is gone.
+
+### Drain loop
+
+1. **Resolve unmerged files (if any).** If `git status` shows unmerged files (UU/AA), resolve each using `git diff`, the spec, and `git log <parent>..HEAD` to understand each side's intent. `git add` resolved files (do NOT commit yet — fall through to step 2).
+
+2. **Finish any in-progress merge.** Check whether the worktree is in MERGING state:
+
+   ```bash
+   git rev-parse -q --verify MERGE_HEAD
+   ```
+
+   If this prints a SHA (exit 0), a merge is in progress and must be committed before the helper can run again. Run:
+
+   ```bash
+   git commit --no-edit
+   ```
+
+   This handles three crash-recovery cases:
+   - Conflicts just resolved in step 1 → commit them now.
+   - Conflicts resolved + staged in a prior session attempt but the session crashed before committing → MERGE_HEAD still exists, no UU/AA files; this commit completes the merge.
+   - Resolution committed already → MERGE_HEAD does not exist; the `git rev-parse` returns non-zero, no commit needed.
+
+   Skipping this step and going straight to the helper would invoke `git merge` on a worktree with MERGE_HEAD set, producing "fatal: You have not concluded your merge" → helper returns 1 → spurious red flag.
+
+3. **Re-invoke the helper to drain remaining parents.** Pass the marker contents as args; the helper accepts SHAs uniformly with ref names:
+
+   ```bash
+   source "$CLAUDE_PLUGIN_ROOT/lib/worktree.sh"
+   worktree_merge_parents "$PWD" $(awk '{print $1}' .sensible-ralph-pending-merges)
+   ```
+
+   The `awk '{print $1}'` extracts SHAs from the first column of the marker (display refs in column 2 are informational only).
+
+   Possible outcomes:
+   - Returns 0 and the marker file is gone → all parents merged. Proceed to Step 3.
+   - Returns 0 and the marker file is still present → the next parent conflicted; loop back to step 1.
+   - Returns 1 → genuine merge failure (parent SHA unreachable in repo, unexpected git error). Treat as a red flag per Step 5: post a Linear comment, do NOT invoke `/prepare-for-review`.
+
+Keep looping (resolve → finish-merge → re-invoke) until the marker file is gone. Each conflict resolution is a separate commit and shows up in the `/prepare-for-review` diff for reviewer awareness.
 
 ## Step 3: Implement per the PRD
 

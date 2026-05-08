@@ -6,6 +6,7 @@
 /.sensible-ralph/
 /.worktrees/
 /.sensible-ralph-base-sha
+/.sensible-ralph-pending-merges
 ralph-output.log
 
 # Handoff files between close-issue (sensible-ralph plugin skill) and the

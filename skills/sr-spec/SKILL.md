@@ -188,6 +188,7 @@ fi
 - Ask after each section whether it looks right so far.
 - Cover: architecture, components, data flow, error handling, testing.
 - **Also cover prerequisites:** any Linear issues that must land before this one — in any project declared in the repo's `.sensible-ralph.json` scope. Cross-project blockers are fine as long as the prerequisite's project is in scope. These become `blocked-by` relations. Prerequisites outside the scope will trip `/sr-start`'s out-of-scope blocker preflight; call that out now rather than letting it fail at dispatch.
+- **Multi-parent prerequisite caveat.** If this spec ends up with 2+ `blocked-by` parents that won't have landed to `$SENSIBLE_RALPH_DEFAULT_BASE_BRANCH` before dispatch, the orchestrator will perform a multi-parent INTEGRATION merge of those parents into the worktree. We provide best-effort support — when parents conflict during integration, the dispatched session resolves the conflicts inline (see `docs/design/worktree-contract.md` "Pending parent merges"). But parent–parent conflicts are messy: a wrong resolution by the autonomous session can wedge the integration in subtle ways that only surface at review time. **Prefer to land prerequisites to trunk before filing the dependent issue.** If you can't avoid the pattern, weight the issue's complexity accordingly and expect more review-time iteration.
 - Be ready to go back and clarify if something doesn't make sense.
 
 **Design for isolation and clarity:**

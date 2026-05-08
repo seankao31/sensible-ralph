@@ -74,20 +74,24 @@ Two helpers in `lib/worktree.sh` wrap this:
   multi-parent integration case (always 2+ parents — `dag_base.sh`
   emits `INTEGRATION` only when multiple blockers are In Review). Creates
   the worktree at `$SENSIBLE_RALPH_DEFAULT_BASE_BRANCH`, then
-  sequentially merges each parent. Conflicts on any parent abort the
-  merge with `git merge --abort` — subsequent parents can't be silently
-  dropped. See
-  `docs/archive/decisions/ralph-v2-multi-parent-integration-abort.md`.
+  sequentially merges each parent. On conflict, leaves the worktree in
+  MERGING state and writes the `.sensible-ralph-pending-merges` marker;
+  the dispatched session drains the marker per "Pending parent merges"
+  below. See `docs/archive/decisions/ralph-v2-multi-parent-integration-abort.md`
+  for the prior fail-fast contract that this approach replaces.
 
 A third helper in `lib/worktree.sh` is used by the orchestrator's reuse
 path:
 
 - **`worktree_merge_parents $path $parents...`** — merges a parent list
   into an *already-existing* worktree, in order. Mirrors
-  `worktree_create_with_integration`'s conflict semantics: single-parent
-  leaves conflicts in place for the agent (returns 0); multi-parent
-  aborts on conflict (returns non-zero). Skips parents that are already
-  ancestors of HEAD (no-op merge).
+  `worktree_create_with_integration`'s conflict semantics: on any
+  conflict (single or multi parent), leaves conflicts in place,
+  writes the `.sensible-ralph-pending-merges` marker, returns 0. The
+  dispatched session drains the marker per "Pending parent merges"
+  below. Skips parents that are already ancestors of HEAD (no-op
+  merge), which is what makes the helper safely re-invokable from the
+  session's drain loop.
 
 **Ref resolution for parent branches** (both helpers): each parent is
 resolved against `refs/heads/$parent` first, then
@@ -163,6 +167,119 @@ trunk-relative and would over-include parent-branch commits.
 The file is gitignored as `/.sensible-ralph-base-sha` (see "Required
 .gitignore entries" below) so it does not get committed into the
 session's first feature commit.
+
+## Pending parent merges
+
+Design-time, we recommend against multi-parent integrations (see
+`skills/sr-spec/SKILL.md`); this section describes the best-effort
+fallback when they occur.
+
+When `worktree_create_with_integration` or `worktree_merge_parents`
+hits a merge conflict on any parent, it leaves the conflict in place
+(MERGING state, conflict markers in the worktree) and writes a marker
+file to coordinate the session-side drain. Both helpers share the
+same shape — single and multi parent.
+
+**File path.** `<worktree>/.sensible-ralph-pending-merges` — peer of
+`.sensible-ralph-base-sha` and the dispatch log file.
+
+**Format.** Plain text, one entry per line, in the order originally
+requested. Each entry is a 40-char hex commit SHA, optionally
+followed by a single space and a display ref name for log readability
+(e.g. `abc123…def origin/eng-200-foo`). The session-side drain reads
+only the SHA (first whitespace-separated token); the display ref is
+informational.
+
+**Lifecycle.**
+
+- Written by the helper on conflict — overwriting any prior marker.
+- Deleted by the helper at the end of a successful merge loop (every
+  parent merged or skipped via ancestor check). `rm -f` is safe whether
+  the marker existed at start or not.
+- Zero-parent invocations are NOT a generic cleanup mechanism:
+  marker-absent zero-parent runs are a no-op success; marker-present
+  zero-parent runs refuse (return 1) and preserve the marker, so a
+  stale marker from a prior failed dispatch surfaces as orchestrator
+  `setup_failed` rather than being silently obliterated.
+- Never mutated by the orchestrator or the dispatched session
+  directly.
+
+**Content invariant.** The marker always lists the **full original
+parent list** the caller passed in (each pinned to the SHA the helper
+resolved on its first call), not the remaining-after-conflict list.
+Idempotent re-runs depend on `merge-base --is-ancestor` to skip
+already-merged parents; they do not depend on marker mutation.
+
+**SHA pinning.** SHAs guard against parent-branch advancement between
+marker write and rerun (re-fetch, force-push, branch reset on origin).
+Without pinning, a retry could merge different commits than the
+original attempt, breaking idempotence and contaminating the
+`/prepare-for-review` diff with parent updates the agent never
+consciously integrated.
+
+**Helper contract.** Both `worktree_create_with_integration` and
+`worktree_merge_parents` share these properties:
+
+- Each parent arg may be a ref name (resolved against `refs/heads/`
+  then `refs/remotes/origin/`) or a 40-char hex SHA validated via
+  `git cat-file -e <sha>^{commit}`. The marker stores SHAs so re-runs
+  with marker contents merge the same commits even if the named refs
+  have advanced. The helper does NOT accept already-prefixed forms
+  like `origin/<branch>` as input — pre-change contract preserved.
+- The merge loop skips parents that are already ancestors of HEAD
+  (`merge-base --is-ancestor`). This is what makes the helpers
+  re-invokable post-conflict — the session can pass the full marker
+  contents back and parents already merged earlier in the loop are
+  no-ops.
+- On conflict (any `parent_count`), helper leaves the worktree in
+  MERGING state, writes the marker with the full original list, and
+  returns 0. On a non-conflict merge error (e.g., unrelated histories),
+  helper returns 1. The marker write itself is **fail closed**: it
+  uses an in-place tempfile + same-FS rename for atomicity, checks
+  every I/O step, and refuses if the marker path is occupied by a
+  non-file. Any marker-write failure propagates from the helper as
+  non-zero — the orchestrator must never see a `return 0` over a
+  worktree in MERGING state without a valid marker, since the
+  session-side drain treats that combination as unowned state.
+
+**Session-side drain.** The dispatched session's `/sr-implement` Step
+2 implements the recovery flow. Before any branch mutation, it
+validates the marker fail-closed: every line must match
+`^[0-9a-f]{40}( .*)?$` (so blank or whitespace-only lines reject the
+marker rather than being silently skipped during awk extraction), and
+every SHA must be reachable via `git cat-file -e <sha>^{commit}`
+(unreachable SHAs reject the marker before any merge). Only after
+both checks pass on every line does the session enter the drain loop:
+resolve any unmerged files, then complete any in-progress merge via
+`git rev-parse -q --verify MERGE_HEAD` + `git commit --no-edit`
+(BEFORE re-invoking the helper — `git merge` on a worktree with
+MERGE_HEAD set fails with "fatal: You have not concluded your merge"),
+then re-invoke `worktree_merge_parents` with the marker SHAs. The
+helper detects ancestors and skips them. The marker is deleted on
+clean drain; if another conflict happens, the marker is preserved
+(unchanged) and the loop iterates.
+
+**Orchestrator notice.** After both helper call sites, the
+orchestrator checks for the marker file. If present, it logs to
+stderr:
+
+```
+orchestrator: <issue_id> dispatched with pending parent merges (conflicts to resolve in-session): <space-separated parent list>
+```
+
+It does NOT record `setup_failed` for the marker case — the helper
+returned 0 and the session is responsible for the drain. The
+`setup_failed` branch is reserved for genuine merge errors (helper
+return 1) and the marker-aware zero-parent guard.
+
+**`base_sha` interaction.** When the helper returns 0 with the marker
+present, the orchestrator's post-merge `base_sha` capture sees a
+worktree HEAD that has not advanced past the conflict (no merge
+commit yet for the conflicting parent). So `base_sha` = pre-conflict
+HEAD; the agent's resolution commit and any subsequent parent merges
+land **after** `base_sha`, appearing in the `/prepare-for-review`
+diff for reviewer awareness. This matches today's single-parent
+conflict behavior; the marker generalizes it across `parent_count`.
 
 ## Output log
 
@@ -300,6 +417,7 @@ canonical list is copy-pasteable:
 /.sensible-ralph/
 /.worktrees/
 /.sensible-ralph-base-sha
+/.sensible-ralph-pending-merges
 ralph-output.log
 /.close-branch-inputs
 /.close-branch-result
@@ -311,6 +429,7 @@ ralph-output.log
 | `/.sensible-ralph/` | Orchestrator runtime state — `progress.json`, `ordered_queue.txt`. Per-run, transient, repo-root-only. |
 | `/.worktrees/` | Default `worktree_base`. Linked worktrees should never appear in the parent repo's tracked tree. If `worktree_base` is overridden, the override path needs the equivalent entry. |
 | `/.sensible-ralph-base-sha` | Per-worktree contract file. Absolute-from-worktree-root, so the entry uses a leading slash to anchor it. Without this, the file would be staged into the session's first feature commit. |
+| `/.sensible-ralph-pending-merges` | Per-worktree marker for conflicts left in place by the parent-merge helpers. Absolute-from-worktree-root anchor. Without this, the file would be staged into the session's resolution commit during the drain loop. |
 | `ralph-output.log` | Default `stdout_log_filename`. Per-worktree session log; no leading slash so it matches anywhere. If `stdout_log_filename` is overridden, the override needs its own entry. |
 | `/.close-branch-inputs` | Handoff file written by `/close-issue` before invoking `close-branch`. Written at the start of each close ritual, deleted by `close-branch` on entry. Presence between runs signals an interrupted `/close-issue`. |
 | `/.close-branch-result` | Result file written by `close-branch`, read and deleted by `/close-issue`. Same lifecycle as `/.close-branch-inputs`. |
