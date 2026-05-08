@@ -130,8 +130,15 @@ get the same shape of change. The merge loop becomes:
         - Write the marker file with `<sha> <display>` per line, in
           original order, for ALL inputs (including ones already
           skipped via ancestor-check this run — the marker captures
-          the caller's complete request).
-        - Return 0. Worktree is left in MERGING state.
+          the caller's complete request). The write is atomic and
+          checked: write to a sibling tempfile, check every I/O
+          step, then `mv` into place. Refuse upfront if the marker
+          path is occupied by a non-file. **Marker write failure
+          (any I/O error, hostile preexisting non-file) propagates
+          as the helper's non-zero exit** — see "Marker write fails
+          closed" below for rationale.
+        - On marker write success: return 0. Worktree is left in
+          MERGING state.
       - If no unmerged files → genuine merge error path:
         - Print existing error message to stderr.
         - Return 1.
@@ -208,6 +215,59 @@ required for the helper to be re-invokable post-conflict — without
 the skip, re-running on a partially-merged worktree would attempt
 to merge already-merged parents and emit "Already up to date"
 messages or, for the conflicting parent, fail in unexpected ways.
+
+### Marker write fails closed
+
+Codex review (round 11) flagged that the marker write was unchecked:
+`: > "$marker_path"` followed by `printf >> "$marker_path"` in a loop,
+with the caller hard-coded to `return 0` regardless of write success.
+Combined with the session-side contract that treats MERGING / UU state
+without a valid marker as **unowned state** (Step 2 above), a silent
+write failure (disk full, permissions, hostile preexisting non-file)
+would dispatch a session that immediately refuses to continue — leaving
+the worktree mid-merge with no automatic recovery path.
+
+The `_worktree_write_pending_marker` helper is the sole writer of the
+marker. It enforces:
+
+- **Upfront non-file refusal.** If `[ -e "$marker_path" ] && [ ! -f
+  "$marker_path" ]` (a directory, symlink, device, etc. is occupying
+  the marker path), the helper returns 1 without writing — `mv` would
+  otherwise silently move the tempfile *into* an existing directory
+  rather than replacing it.
+- **Atomic install via mktemp + same-FS rename.** Writes go to
+  `mktemp "${marker_path}.XXXXXX"` (sibling tempfile in the same
+  directory, so `mv` is a same-FS atomic rename per POSIX). Readers
+  never observe a half-written marker.
+- **Checked I/O.** Each step (`mktemp`, `printf > tempfile`, `mv
+  tempfile → marker_path`) is checked. On any failure: emit a
+  diagnostic to stderr identifying the failed step, `rm -f` the
+  tempfile, return 1.
+
+Both call sites in `worktree_create_with_integration` and
+`worktree_merge_parents` propagate the helper's exit:
+
+```bash
+if ! _worktree_write_pending_marker "$marker_path" "$marker_body"; then
+  printf 'worktree_xxx: failed to write pending-merges marker at %s\n' "$marker_path" >&2
+  return 1
+fi
+return 0
+```
+
+The orchestrator's existing non-zero handling at both call sites
+(`_record_setup_failure`) catches the propagated failure and surfaces
+it as `setup_failed`. No orchestrator change is required.
+
+The helper signature also changes from `(marker_path, shas_array_var,
+displays_array_var)` (bash 4.3+ nameref pattern emulated via `eval`)
+to `(marker_path, marker_body)` where `marker_body` is the
+preformatted multi-line string. This eliminates `eval` entirely from
+the marker-write path — Codex round 11 separately flagged the eval as
+a potential branch-name injection vector. Each caller builds
+`marker_body` with a local `for` loop indexing its already-in-scope
+`resolved_shas` and `display_refs` arrays, so no nameref or array
+indirection is needed.
 
 ## Orchestrator changes (`skills/sr-start/scripts/orchestrator.sh`)
 
@@ -521,14 +581,38 @@ modification, but they do not cover the marker write. Add:
     This locks in the single-parent rollout contract at
     integration level.
 
-Total deltas in `lib/test/worktree.bats`: 2 flipped, 11 added.
+17. `worktree_merge_parents: fails closed when marker path is
+    occupied by a non-file`. Setup: standard single-parent conflict
+    setup, but pre-create `<wt>/.sensible-ralph-pending-merges` as a
+    directory (`mkdir`) before invoking the helper. Run helper.
+    Assert: status non-zero; the directory at the marker path is
+    untouched (no half-state); no stray temp file matching
+    `.sensible-ralph-pending-merges.*` was left in the worktree;
+    stderr matches "marker". Pins the fail-closed marker-write
+    contract (Codex round 11): the orchestrator must never see a
+    `return 0` from the helper over a worktree in MERGING state
+    without a valid marker.
+
+18. `worktree_create_with_integration: fails closed when marker
+    path is occupied by a non-file`. Symmetric coverage of the
+    create path. Setup: parent A introduces a tracked subdirectory
+    at `.sensible-ralph-pending-merges/decoy.txt` so git
+    materializes the hostile marker dir during the merge of A;
+    parent B then conflicts with main on `conflict.txt`, forcing
+    the integration loop to attempt the marker write after A
+    populated the dir. Same assertions as test 17. Required
+    because the helper's worktree is created during the call (we
+    cannot `mkdir` the marker path beforehand from outside).
+
+Total deltas in `lib/test/worktree.bats`: 2 flipped, 13 added.
 Plus 2 added in `skills/sr-start/scripts/test/orchestrator.bats`
 (see "Orchestrator integration tests" below). Existing single-parent
-tests are not modified. Tests 10a/10b and 11a/11b are duplicated
-across helpers because `lib/worktree.sh` keeps the resolution and
-merge-loop implementations separate (not factored into a shared
-subroutine); covering both helpers prevents the create path from
-drifting from the merge-parents path under future refactors.
+tests are not modified. Tests 10a/10b, 11a/11b, and 17/18 are
+duplicated across helpers because `lib/worktree.sh` keeps the
+resolution and merge-loop implementations separate (not factored
+into a shared subroutine); covering both helpers prevents the
+create path from drifting from the merge-parents path under future
+refactors.
 
 Add a 12th lib/test/worktree.bats test:
 
@@ -681,7 +765,15 @@ purely doc-enforced.
    zero-parent invocation WITH marker refuses (return 1, marker
    untouched), (g) SHA-pinned retry merges the original commit
    even after the named ref advances, (h) the helper accepts a
-   40-char hex SHA as a parent arg.
+   40-char hex SHA as a parent arg, (i) **marker write fails closed
+   when the marker path is occupied by a non-file**: pre-create
+   `<wt>/.sensible-ralph-pending-merges` as a directory and trigger
+   the conflict path; helper must return non-zero, the existing
+   directory must remain untouched (no half-state, no tempfile
+   leftover), and stderr must surface "marker" so operators can
+   diagnose. Covers both helpers via separate tests since the
+   create-path failure setup uses a tracked subdirectory in parent
+   A's tree to materialize the hostile marker dir during merge.
 
 6b. `skills/sr-start/scripts/test/orchestrator.bats` covers, via the
     existing dispatch harness: (a) reuse-path multi-parent conflict

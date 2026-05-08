@@ -99,7 +99,15 @@ worktree_create_with_integration() {
     local unmerged
     unmerged="$(git -C "$path" diff --name-only --diff-filter=U)"
     if [[ -n "$unmerged" ]]; then
-      _worktree_write_pending_marker "$marker_path" resolved_shas display_refs
+      local marker_body=""
+      local j
+      for (( j = 0; j < parent_count; j++ )); do
+        marker_body+="${resolved_shas[$j]} ${display_refs[$j]}"$'\n'
+      done
+      if ! _worktree_write_pending_marker "$marker_path" "$marker_body"; then
+        printf 'worktree_create_with_integration: failed to write pending-merges marker at %s\n' "$marker_path" >&2
+        return 1
+      fi
       return 0
     else
       printf 'worktree_create_with_integration: merge failed for parent %s\n' "$display" >&2
@@ -183,7 +191,15 @@ worktree_merge_parents() {
     local unmerged
     unmerged="$(git -C "$path" diff --name-only --diff-filter=U)"
     if [[ -n "$unmerged" ]]; then
-      _worktree_write_pending_marker "$marker_path" resolved_shas display_refs
+      local marker_body=""
+      local j
+      for (( j = 0; j < parent_count; j++ )); do
+        marker_body+="${resolved_shas[$j]} ${display_refs[$j]}"$'\n'
+      done
+      if ! _worktree_write_pending_marker "$marker_path" "$marker_body"; then
+        printf 'worktree_merge_parents: failed to write pending-merges marker at %s\n' "$marker_path" >&2
+        return 1
+      fi
       return 0
     else
       printf 'worktree_merge_parents: merge failed for parent %s\n' "$display" >&2
@@ -195,32 +211,58 @@ worktree_merge_parents() {
   return 0
 }
 
-# Write the .sensible-ralph-pending-merges marker file. Each line is
-# "<sha> <display>" — the SHA is the authoritative pinning, the display ref
-# is informational for log readability. The marker captures the caller's
-# COMPLETE original parent list (including parents already skipped via the
-# ancestor check this run), in original order.
+# Write the .sensible-ralph-pending-merges marker file atomically and fail
+# closed. Marker content is each line "<sha> <display>" — the SHA is the
+# authoritative pinning; the display ref is informational. The marker captures
+# the caller's COMPLETE original parent list (including parents already
+# skipped via the ancestor check this run), in original order.
 #
-# Args (all required):
-#   $1               marker file path
-#   $2 (nameref)     name of the resolved-SHAs array
-#   $3 (nameref)     name of the display-refs array
+# The marker is the SOLE authority used by the next session to re-enter the
+# drain loop after a conflict (see docs/design/worktree-contract.md). A silent
+# write failure would leave the worktree in MERGING state without a valid
+# marker — which the session contract treats as unowned state and refuses to
+# resume. So every step is checked and the helper returns non-zero on any
+# failure, including a hostile preexisting non-file at the marker path.
+# Atomic install via mktemp+mv ensures readers never see a half-written file.
 #
-# Bash 4.3+ namerefs (`local -n`) are not available in bash 3.2 (macOS
-# default), so we eval the array expansions explicitly.
+# Args:
+#   $1            marker file path
+#   $2            marker body (preformatted; one "sha display\n" per parent)
+#
+# Callers MUST check the return value and propagate failure as their own
+# non-zero exit — do NOT bury this with `... ; return 0`.
 _worktree_write_pending_marker() {
   local marker_path="$1"
-  local shas_var="$2"
-  local displays_var="$3"
-  local count
-  eval "count=\${#${shas_var}[@]}"
-  local i sha display
-  : > "$marker_path"
-  for (( i = 0; i < count; i++ )); do
-    eval "sha=\${${shas_var}[\$i]}"
-    eval "display=\${${displays_var}[\$i]}"
-    printf '%s %s\n' "$sha" "$display" >> "$marker_path"
-  done
+  local marker_body="$2"
+
+  # Defense against marker-path corruption: if something other than a regular
+  # file is sitting at the marker path (directory, symlink, device), refuse
+  # rather than letting `mv` silently put the tempfile somewhere unexpected
+  # (e.g., inside an existing directory).
+  if [ -e "$marker_path" ] && [ ! -f "$marker_path" ]; then
+    printf '_worktree_write_pending_marker: refusing to overwrite non-file at marker path: %s\n' "$marker_path" >&2
+    return 1
+  fi
+
+  # Same-directory tempfile so the final mv is a same-FS rename (atomic per
+  # POSIX). The XXXXXX template is filled by mktemp.
+  local tmp_path
+  if ! tmp_path="$(mktemp "${marker_path}.XXXXXX" 2>/dev/null)"; then
+    printf '_worktree_write_pending_marker: failed to create tempfile alongside marker %s\n' "$marker_path" >&2
+    return 1
+  fi
+
+  if ! printf '%s' "$marker_body" > "$tmp_path"; then
+    rm -f "$tmp_path"
+    printf '_worktree_write_pending_marker: failed to write marker tempfile %s\n' "$tmp_path" >&2
+    return 1
+  fi
+
+  if ! mv -- "$tmp_path" "$marker_path"; then
+    rm -f "$tmp_path"
+    printf '_worktree_write_pending_marker: failed to atomically install marker at %s\n' "$marker_path" >&2
+    return 1
+  fi
 }
 
 # Resolve the true repo root (main checkout path) regardless of cwd.

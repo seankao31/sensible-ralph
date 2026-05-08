@@ -234,7 +234,13 @@ consciously integrated.
 - On conflict (any `parent_count`), helper leaves the worktree in
   MERGING state, writes the marker with the full original list, and
   returns 0. On a non-conflict merge error (e.g., unrelated histories),
-  helper returns 1.
+  helper returns 1. The marker write itself is **fail closed**: it
+  uses an in-place tempfile + same-FS rename for atomicity, checks
+  every I/O step, and refuses if the marker path is occupied by a
+  non-file. Any marker-write failure propagates from the helper as
+  non-zero — the orchestrator must never see a `return 0` over a
+  worktree in MERGING state without a valid marker, since the
+  session-side drain treats that combination as unowned state.
 
 **Session-side drain.** The dispatched session's `/sr-implement` Step
 2 implements the recovery flow. Before any branch mutation, it

@@ -986,6 +986,87 @@ call_fn_from() {
   [ "$sha" = "$parent_sha" ]
 }
 
+@test "worktree_merge_parents: fails closed when marker path is occupied by a non-file" {
+  # Codex review of ENG-282 flagged: marker write was unchecked, so any I/O
+  # failure (disk full, perms, hostile FS state) silently returned 0 and left
+  # the worktree in MERGING state without an authoritative marker —
+  # unrecoverable on the next session because the new contract treats
+  # MERGE_HEAD without a valid marker as unowned state.
+  #
+  # Trigger I/O failure by pre-creating the marker path as a directory. The
+  # write helper must (a) detect that the target is not a regular file and
+  # refuse, and (b) propagate the failure up through the caller as non-zero.
+  # This pins write-result checking AND defends against marker-path corruption.
+  git -C "$REPO_DIR" checkout -b "eng-282-failclose-a" -q
+  echo "parent A" > "$REPO_DIR/conflict.txt"
+  git -C "$REPO_DIR" add conflict.txt
+  git -C "$REPO_DIR" commit -m "A" -q
+  git -C "$REPO_DIR" checkout main -q
+
+  local wt_path="$REPO_DIR/.worktrees/eng-282-failclose-wt"
+  git -C "$REPO_DIR" worktree add "$wt_path" -b "eng-282-failclose-wt" -q
+  echo "wt version" > "$wt_path/conflict.txt"
+  git -C "$wt_path" add conflict.txt
+  git -C "$wt_path" commit -m "wt conflict" -q
+
+  # Hostile preexisting state at the marker path.
+  mkdir "$wt_path/.sensible-ralph-pending-merges"
+
+  run call_fn worktree_merge_parents "$wt_path" "eng-282-failclose-a"
+
+  [ "$status" -ne 0 ]
+  # The pre-existing directory is untouched (no half-state), and no stray
+  # tempfile was left in the worktree from an atomic-rename attempt.
+  [ -d "$wt_path/.sensible-ralph-pending-merges" ]
+  local leftovers
+  leftovers="$(find "$wt_path" -maxdepth 1 -name '.sensible-ralph-pending-merges.*' 2>/dev/null)"
+  [ -z "$leftovers" ]
+  # Stderr surfaces the failure so operators can diagnose without grepping.
+  [[ "$output" =~ "marker" ]]
+}
+
+@test "worktree_create_with_integration: fails closed when marker path is occupied by a non-file" {
+  # Symmetric coverage of the create-helper's marker-write contract. Mirrors
+  # the merge_parents test above but exercises the create path's integration
+  # loop. The worktree path must not exist before `git worktree add`, so we
+  # arrange the hostile marker directory to appear after the merge: by giving
+  # parent A a tracked subdirectory at the marker path. Git materializes that
+  # directory during the merge of A, then the marker write attempt finds it
+  # already occupied and must fail closed.
+  git -C "$REPO_DIR" checkout -b "eng-282-create-failclose-a" -q
+  mkdir "$REPO_DIR/.sensible-ralph-pending-merges"
+  echo "decoy" > "$REPO_DIR/.sensible-ralph-pending-merges/decoy.txt"
+  git -C "$REPO_DIR" add .sensible-ralph-pending-merges/decoy.txt
+  git -C "$REPO_DIR" commit -m "A introduces hostile marker dir" -q
+  git -C "$REPO_DIR" checkout main -q
+  rm -rf "$REPO_DIR/.sensible-ralph-pending-merges"
+
+  # Parent B: conflicts with main on conflict.txt so the integration loop
+  # stops on B and tries to write the marker after A has populated the dir.
+  git -C "$REPO_DIR" checkout -b "eng-282-create-failclose-b" -q
+  echo "B version" > "$REPO_DIR/conflict.txt"
+  git -C "$REPO_DIR" add conflict.txt
+  git -C "$REPO_DIR" commit -m "B" -q
+  git -C "$REPO_DIR" checkout main -q
+
+  echo "main version" > "$REPO_DIR/conflict.txt"
+  git -C "$REPO_DIR" add conflict.txt
+  git -C "$REPO_DIR" commit -m "main conflict" -q
+
+  local wt_path="$REPO_DIR/.worktrees/eng-282-create-failclose-wt"
+
+  run call_fn worktree_create_with_integration "$wt_path" "eng-282-create-failclose-wt" \
+    "eng-282-create-failclose-a" "eng-282-create-failclose-b"
+
+  [ "$status" -ne 0 ]
+  # Hostile dir untouched, no stray temp file.
+  [ -d "$wt_path/.sensible-ralph-pending-merges" ]
+  local leftovers
+  leftovers="$(find "$wt_path" -maxdepth 1 -name '.sensible-ralph-pending-merges.*' 2>/dev/null)"
+  [ -z "$leftovers" ]
+  [[ "$output" =~ "marker" ]]
+}
+
 @test "worktree_create_with_integration: single-parent conflict writes pending-merges marker with one SHA line" {
   # Single-parent conflict via create path — orchestrator doesn't route
   # single-parent through the create helper today, but the helper contract
