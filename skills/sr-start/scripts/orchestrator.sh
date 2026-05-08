@@ -663,6 +663,12 @@ _dispatch_issue() {
   (
     cd "$path"
     set +e
+    # SENSIBLE_RALPH_AUTONOMOUS=1 signals autonomous-mode to skills that need
+    # a deterministic "no human at the keyboard" branch (e.g.
+    # /prepare-for-review's halt path). The preamble alone isn't enough —
+    # inferring autonomous-vs-interactive from preamble presence in context
+    # can fail silently; the env var collapses that to a hard contract.
+    #
     # When the parent had an empty/relative CLAUDE_CONFIG_DIR we forward
     # the normalized value so the child writes its JSONL where the
     # orchestrator recorded transcript_path. When the parent had it
@@ -670,14 +676,14 @@ _dispatch_issue() {
     # auth fallback continues to work — see the _propagate_config_dir
     # block above for the auth-vs-path rationale.
     if (( _propagate_config_dir )); then
-      CLAUDE_CONFIG_DIR="$config_dir" claude -p \
+      SENSIBLE_RALPH_AUTONOMOUS=1 CLAUDE_CONFIG_DIR="$config_dir" claude -p \
         --permission-mode auto \
         --model "$CLAUDE_PLUGIN_OPTION_MODEL" \
         --name "$issue_id: $title" \
         --session-id "$session_id" \
         "$prompt" 2>&1 | tee "$path/$CLAUDE_PLUGIN_OPTION_STDOUT_LOG_FILENAME"
     else
-      claude -p \
+      SENSIBLE_RALPH_AUTONOMOUS=1 claude -p \
         --permission-mode auto \
         --model "$CLAUDE_PLUGIN_OPTION_MODEL" \
         --name "$issue_id: $title" \

@@ -345,6 +345,35 @@ progress_json() {
 }
 
 # ---------------------------------------------------------------------------
+# 1b. Autonomous-mode signal: SENSIBLE_RALPH_AUTONOMOUS=1 reaches claude env.
+# /prepare-for-review's halt path (ENG-245) branches on this var; the
+# contract is that the orchestrator exports it at the dispatch site.
+# ---------------------------------------------------------------------------
+@test "ENG-245 SENSIBLE_RALPH_AUTONOMOUS=1 is exported into claude subprocess env" {
+  export STUB_CLAUDE_EXIT=0
+  export STUB_CLAUDE_TRANSITION_STATE="In Review"
+  export STUB_CLAUDE_ISSUE_ID="ENG-245TEST"
+
+  # Replace the default stub with one that records the value of
+  # SENSIBLE_RALPH_AUTONOMOUS as seen by claude.
+  local autonomous_capture="$STUB_DIR/claude_autonomous_value"
+  cat > "$STUB_DIR/claude" <<CLAUDESH
+#!/usr/bin/env bash
+printf '%s\n' "\${SENSIBLE_RALPH_AUTONOMOUS:-UNSET}" > "$autonomous_capture"
+exit 0
+CLAUDESH
+  chmod +x "$STUB_DIR/claude"
+
+  local q; q="$(write_queue ENG-245TEST)"
+  run_orch "$q"
+
+  [ "$status" -eq 0 ]
+  [ -f "$autonomous_capture" ]
+  local captured; captured="$(cat "$autonomous_capture")"
+  [ "$captured" = "1" ]
+}
+
+# ---------------------------------------------------------------------------
 # 2. Clean queue (3 independent): all succeed
 # ---------------------------------------------------------------------------
 @test "clean queue of 3 independent issues: all transition to in_review" {
