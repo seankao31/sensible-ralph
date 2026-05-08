@@ -99,6 +99,28 @@ The anomaly set:
 - **Why it blocks the run.** Linear's label-by-name resolution silently no-ops on a nonexistent label, so an unconfigured workspace would let the orchestrator keep "marking" failed issues with labels that never land — and then `linear_list_approved_issues`'s exclusion filter would silently retry every failed issue forever. Failing loud at preflight is the only way to surface the missing setup; the per-label diagnostic names both the literal label and the env var that points at it so the operator knows whether to create the label or update the config.
 - **Operator fix.** Create the label once per workspace (the SKILL.md prerequisites section provides the exact `linear label create` commands), or update the corresponding plugin option to name a label that already exists. See [`skills/sr-start/SKILL.md`](../../skills/sr-start/SKILL.md) Prerequisites.
 
+## Coordination-dependency scan
+
+A reasoning-driven gate that runs between the pickup rule and the preflight anomaly set. Detects coordination dependencies — cases where two specs touch the same file, identifier, or invariant in ways that demand a particular merge order — and converts them into `blocked-by` edges so toposort dispatches them in a sequence that avoids merge conflicts.
+
+The scan is structurally distinct from both other gates:
+
+- A non-pickup-ready issue is silently skipped; a coord-dep candidate pauses dispatch and asks the operator to triage.
+- A preflight anomaly is a structural defect the operator fixes in Linear; a coord-dep candidate is a *latent* dependency the scan surfaces for the operator to confirm or reject.
+
+There are two producers of coord-dep edges, with overlapping but non-identical coverage:
+
+- **`/sr-spec` step 11** (ENG-280) — primary scan, runs at finalize time. Compares one new spec against the Approved peers existing at that moment. Catches couplings as they're introduced; misses everything that was already Approved when ENG-280 landed, plus everything that bypasses `/sr-spec` (manual finalize via Linear UI).
+- **`/sr-start` Step 2** (ENG-281) — backstop scan, runs at dispatch time. Compares all-pairs across the current Approved set. Catches the migration cases (pre-ENG-280 issues, manual-finalize issues) and post-hoc couplings revealed when a later spec exposes overlap with already-approved peers that pairwise scans never had cause to surface. The backstop runs after Step 1's preflight (no point reasoning over specs whose structural anomalies haven't been triaged) and before Step 3's `build_queue.sh` (`blocked-by` edges the scan accepts must exist before toposort sees the graph).
+
+Both producers emit the **same audit-comment shape**: a `**Coordination dependencies added by /sr-... scan**` header, a bulleted list of `blocked-by ENG-X — <rationale>` lines, and a `coord-dep-audit` fenced JSON block carrying the parent IDs. The fenced JSON block is the load-bearing artifact for cleanup — bullet text is not delete authority. Both producers also apply the `ralph-coord-dep` workspace label (configurable via `coord_dep_label`) to each child that received at least one accepted edge. The label is observational; the audit comment is what `/close-issue` parses.
+
+`/close-issue` step 8 invokes `skills/close-issue/scripts/cleanup_coord_dep.sh`, which queries the issue's comments, parses every `coord-dep-audit` block (per-block jq, isolated per comment), unions the parent ID sets, deletes the corresponding `blocked-by` relations best-effort, and clears the `ralph-coord-dep` label on full success. One cleanup helper handles both producers — no per-producer divergence — because the audit format is the cross-skill contract. See [`linear-lifecycle.md`](linear-lifecycle.md) and [`skills/close-issue/SKILL.md`](../../skills/close-issue/SKILL.md) step 8.
+
+The backstop's per-child write loop and per-child verification carry a shared **recovery file** at `<repo>/.sensible-ralph/coord-dep-recovery.json` for orphan-relation auto-repair across runs. Per-edge abort or per-comment partial-rollback may leave a relation in Linear without an audit comment; the recovery file persists `(child, parent, rationale)` triples so the next `/sr-start`'s sub-step 1 can compose-and-post the missing audit comment idempotently. A separate `verify_drift` array records benign concurrent UI adds for operator observability; drift entries are informational, not orphans. Atomic temp-file + rename writes ensure the file is never half-written; auto-deletion on malformed JSON is deliberately not offered because losing orphan triples would let unauditable relations slip through covered-pairs filtering forever.
+
+Operator interaction in the backstop scan is per-candidate (accept / reject / abort), not all-or-nothing. Rejected candidates can be added back manually via Linear UI and the next `/sr-start` will see them in `existing_blockers` and not re-prompt. A peer with a structurally thin description that the reasoning step cannot classify is handled per-peer (accept-risk for that peer's pairs only, or abort the run) so one weak spec doesn't block dispatch of unrelated Approved issues.
+
 ## Pre-existing blocker vs. in-run queue: the non-obvious case
 
 The third pickup condition has a subtlety that catches operators by surprise. An Approved blocker satisfies the condition only if it is **in this run's approved set** — the result of `linear_list_approved_issues` for the current `/sr-start` invocation.

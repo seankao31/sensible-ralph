@@ -22,9 +22,9 @@
 #   0 — successful cleanup (label removed if it existed) OR no audit
 #       blocks found (clean no-op).
 #   1 — real failure: API error, page truncation, all-blocks-malformed,
-#       or one or more parents still present after delete attempts.
-#       In every exit-1 path the coord-dep label is KEPT so the operator
-#       sees that cleanup did not complete.
+#       workspace-label query failure, or one or more parents still
+#       present after delete attempts. In every exit-1 path the coord-dep
+#       label is KEPT so the operator sees that cleanup did not complete.
 
 set -euo pipefail
 
@@ -42,6 +42,36 @@ if [[ -z "${CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL:-}" ]]; then
   echo "cleanup_coord_dep: CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL must be set" >&2
   exit 1
 fi
+
+# Try to remove the coord-dep workspace label from $ISSUE_ID. Branches on
+# all three linear_label_exists return codes — collapsing rc=2 (query error
+# / page truncation) into the rc=1 "absent" branch would let a transient
+# Linear failure mask itself as a clean cleanup.
+#   rc 0 — label exists; attempt remove (per-issue removal failure is
+#          logged but not fatal — best-effort).
+#   rc 1 — label genuinely absent in workspace; skip remove, success.
+#   rc 2 — query error / pagination truncation; KEEP label, return 1 so
+#          the caller exits non-zero. linear_label_exists prints its own
+#          diagnostic on this path.
+# Returns 0 on success or skip; 1 on query error.
+_clear_coord_dep_label() {
+  local label="$CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL"
+  local rc=0
+  linear_label_exists "$label" || rc=$?
+  case "$rc" in
+    0)
+      linear_remove_label "$ISSUE_ID" "$label" \
+        || echo "cleanup_coord_dep: label removal failed — continuing" >&2
+      ;;
+    1)
+      echo "cleanup_coord_dep: workspace label $label not present — skipping label remove" >&2
+      ;;
+    *)
+      echo "cleanup_coord_dep: workspace label query failed (rc=$rc) — KEEPING coord-dep label" >&2
+      return 1
+      ;;
+  esac
+}
 
 # 1. Query audit-block-bearing comments. body.contains filter narrows to
 #    comments that mention the marker; per-block jq below treats the fenced
@@ -118,14 +148,8 @@ if [[ -z "$parents" ]]; then
     echo "cleanup_coord_dep: $fenced_block_count audit block(s) found but yielded zero parsable parents — KEEPING coord-dep label" >&2
     exit 1
   fi
-  # Truly no audit blocks. Clean fast path: try to remove the label if
-  # it exists in the workspace; log on any failure but exit 0.
-  if linear_label_exists "$CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL" 2>/dev/null; then
-    linear_remove_label "$ISSUE_ID" "$CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL" \
-      || echo "cleanup_coord_dep: label removal failed — continuing" >&2
-  else
-    echo "cleanup_coord_dep: workspace label $CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL not present — skipping label remove" >&2
-  fi
+  # Truly no audit blocks. Clean fast path: clear the label if present.
+  _clear_coord_dep_label || exit 1
   exit 0
 fi
 
@@ -154,12 +178,7 @@ done
 # 5. Label removal gated on full delete success. If any real failure,
 #    keep the label so the operator can see cleanup is incomplete.
 if [[ "$real_failures" -eq 0 ]]; then
-  if linear_label_exists "$CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL" 2>/dev/null; then
-    linear_remove_label "$ISSUE_ID" "$CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL" \
-      || echo "cleanup_coord_dep: label removal failed — continuing" >&2
-  else
-    echo "cleanup_coord_dep: workspace label $CLAUDE_PLUGIN_OPTION_COORD_DEP_LABEL not present — skipping label remove" >&2
-  fi
+  _clear_coord_dep_label || exit 1
   exit 0
 else
   echo "cleanup_coord_dep: $real_failures edge(s) still present; coord-dep label kept" >&2

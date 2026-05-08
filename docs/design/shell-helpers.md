@@ -105,7 +105,7 @@ source "$PLUGIN_ROOT/lib/worktree.sh"
 falls back to walking three levels up from `$SCRIPT_DIR` — used by
 the bats harnesses, which run scripts outside the harness context.
 The same fallback applies in `preflight_scan.sh`, `build_queue.sh`,
-and `dag_base.sh`.
+`dag_base.sh`, and `coord_dep_backstop_scan.sh`.
 
 ### Canonical sequence (close-issue)
 

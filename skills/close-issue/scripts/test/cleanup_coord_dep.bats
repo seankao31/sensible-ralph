@@ -345,3 +345,43 @@ set_comments_response() {
   [[ "$output" == *"post-delete linear_get_issue_blockers failed"* ]]
   [ ! -s "$STUB_REMOVE_LABEL_LOG" ]
 }
+
+# ---------------------------------------------------------------------------
+# 15. linear_label_exists rc=2 (query error / pagination truncation) on the
+#     clean fast path: must NOT be conflated with rc=1 (label genuinely
+#     absent). Keep the label and exit 1 so the operator sees a transient
+#     Linear failure rather than a phantom-success cleanup.
+# ---------------------------------------------------------------------------
+@test "label query error (rc=2) on clean fast path: exit 1, label kept" {
+  set_comments_response  # zero comments → clean fast path
+  export STUB_BLOCKERS_JSON='[]'
+  export STUB_DEFAULT_LABEL_EXISTS=2
+
+  run "$HELPER"
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"workspace label query failed"* ]]
+  # Label removal must NOT be attempted on a query error.
+  [ ! -s "$STUB_REMOVE_LABEL_LOG" ]
+}
+
+# ---------------------------------------------------------------------------
+# 16. linear_label_exists rc=2 on the post-delete success path: parent was
+#     deleted cleanly, but label query then fails. Label must be kept and
+#     exit 1 so the operator can see cleanup is incomplete.
+# ---------------------------------------------------------------------------
+@test "label query error (rc=2) after successful delete: exit 1, label kept" {
+  body=$'```coord-dep-audit\n{"parents":["ENG-501"]}\n```\n'
+  set_comments_response "$body"
+  export STUB_BLOCKERS_JSON='[]'  # post-delete: parent absent → real_failures=0
+  export STUB_DEFAULT_LABEL_EXISTS=2
+
+  run "$HELPER"
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"workspace label query failed"* ]]
+  # Delete loop ran (we reached the success path).
+  grep -qF "blocked-by ENG-501" "$STUB_DELETE_LOG"
+  # Label removal must NOT be attempted on a query error.
+  [ ! -s "$STUB_REMOVE_LABEL_LOG" ]
+}
