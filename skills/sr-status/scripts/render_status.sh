@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Read-only renderer for /sr-status. Reads .sensible-ralph/progress.json and
-# .sensible-ralph/ordered_queue.txt at the repo root, partitions records from the
-# chronologically-latest run_id into Done / Running / Queued, and prints a
-# sectioned table.
+# Read-only renderer for /sr-status. Reads
+# .sensible-ralph/ordered_queue.txt's `# run_id: <iso>` header (ENG-287:
+# the orchestrator publishes the queue file with the header before any
+# progress.json record lands), then partitions records from
+# .sensible-ralph/progress.json that match that run_id into
+# Done / Running / Queued and prints a sectioned table.
 #
 # Side effects: NONE — no writes to Linear, git, the filesystem, or network.
 
@@ -35,44 +37,38 @@ _no_runs_message() {
   echo "No ralph runs recorded in this repo. Run /sr-start to dispatch the queue."
 }
 
-if [[ ! -f "$progress_file" ]]; then
+# No queue file → no committed run ever existed in this repo. Legitimate
+# fresh-repo path; render the friendly hint and exit clean.
+if [[ ! -f "$queue_file" ]]; then
   _no_runs_message
   exit 0
 fi
 
-# Latest run_id by chronological sort (explicit fromdateiso8601 — orchestrator
-# always writes normalized UTC). Beats lexicographic sort which silently
-# breaks on cross-timezone runs.
-latest_run_id="$(jq -r '
-  [.[].run_id]
-  | unique
-  | map(select(. != null))
-  | sort_by(fromdateiso8601)
-  | last // empty
-' < "$progress_file")"
-
-if [[ -z "$latest_run_id" ]]; then
-  _no_runs_message
-  exit 0
+# Parse `# run_id: <iso>` from line 1 of the queue file. Orchestrator-written
+# files always carry it; absence means a header-less leftover from a prior
+# plugin version. Error loud — re-running /sr-start regenerates the file.
+queue_header="$(head -n 1 "$queue_file")"
+if [[ "$queue_header" =~ ^\#[[:space:]]*run_id:[[:space:]]*(.+)$ ]]; then
+  latest_run_id="${BASH_REMATCH[1]}"
+else
+  echo "sr-status: ordered_queue.txt missing '# run_id: <id>' header line — re-run /sr-start to regenerate." >&2
+  exit 1
 fi
 
-# Filter records to the latest run, then partition by event. Pre-event-field
-# legacy records are dropped here: they belong to older run_ids by the time
-# this code path matters (since new runs always have newer timestamps), so
-# the filter naturally excludes them.
-run_records="$(jq --arg run "$latest_run_id" '[.[] | select(.run_id == $run)]' < "$progress_file")"
+# Header is present but progress.json may not exist yet — this is the
+# orchestrator's setup-time gap between the commitment publish and the first
+# `start` record landing. Initialize an empty record set and continue with
+# partitioning logic so /sr-status renders Done(0)/Running(0)/Queued(N)
+# honestly. Scoped strictly to "file does not exist" — unreadable or
+# malformed progress.json crashes via set -e (intentional: integrity
+# bug should surface, not be masked).
+if [[ -f "$progress_file" ]]; then
+  run_records="$(jq --arg run "$latest_run_id" '[.[] | select(.run_id == $run)]' < "$progress_file")"
+else
+  run_records='[]'
+fi
 end_records="$(printf '%s' "$run_records" | jq '[.[] | select(.event == "end")]')"
 start_records="$(printf '%s' "$run_records" | jq '[.[] | select(.event == "start")]')"
-
-end_count="$(printf '%s' "$end_records" | jq 'length')"
-start_count="$(printf '%s' "$start_records" | jq 'length')"
-
-# Latest run is legacy-only (no event field on any record): fall through.
-# Becomes unreachable for the latest run_id once the first new run completes.
-if (( end_count == 0 && start_count == 0 )); then
-  _no_runs_message
-  exit 0
-fi
 
 # Done = issues with an end record. End-only records (failed start-record
 # write) still classify here — the Done row format reads only end-record
@@ -94,21 +90,21 @@ done < <(printf '%s' "$run_records" | jq -r '
 ')
 
 # Queued = ordered_queue.txt minus Done minus Running. Preserves queue order.
-# A failed start-record write would leave the issue in ordered_queue.txt with
-# no record in progress.json — it ends up here as Queued, mis-rendered until
-# the end record lands and reclassifies it as Done.
+# Skip comment lines (the `# run_id: ...` header on line 1 and any future
+# metadata). A failed start-record write would leave the issue in
+# ordered_queue.txt with no record in progress.json — it ends up here as
+# Queued, mis-rendered until the end record lands and reclassifies it as Done.
 queued_issues=()
-if [[ -f "$queue_file" ]]; then
-  done_set=" ${done_issues[*]:-} "
-  running_set=" ${running_issues[*]:-} "
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    line="${line//[[:space:]]/}"
-    [[ -z "$line" ]] && continue
-    if [[ "$done_set" != *" $line "* && "$running_set" != *" $line "* ]]; then
-      queued_issues+=("$line")
-    fi
-  done < "$queue_file"
-fi
+done_set=" ${done_issues[*]:-} "
+running_set=" ${running_issues[*]:-} "
+while IFS= read -r line || [[ -n "$line" ]]; do
+  line="${line//[[:space:]]/}"
+  [[ -z "$line" ]] && continue
+  [[ "$line" == \#* ]] && continue
+  if [[ "$done_set" != *" $line "* && "$running_set" != *" $line "* ]]; then
+    queued_issues+=("$line")
+  fi
+done < "$queue_file"
 
 # ---------------------------------------------------------------------------
 # Formatting helpers

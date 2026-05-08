@@ -59,12 +59,18 @@ The loop continues until the queue is empty or every remaining issue is tainted.
 
 ## Queue construction
 
-The ordered queue is built **before** the orchestrator runs and frozen for the duration of the dispatch:
+The ordered queue is built **before** the orchestrator runs and frozen for the duration of the dispatch. Two files mediate the build → dispatch handoff:
 
-1. **`build_queue.sh`** — calls `linear_list_approved_issues` (which unions over every project in `SENSIBLE_RALPH_PROJECTS` and excludes any issue carrying `$CLAUDE_PLUGIN_OPTION_FAILED_LABEL`), then per-issue checks the [pickup rule](linear-lifecycle.md#pickup-rule). Issues whose blockers are not all in `Done`, `In Review`, or queued-Approved are dropped with a stderr warning. For each surviving issue it emits `<issue_id> <priority> <blocker_id>...` to a temp file.
+- `.sensible-ralph/queue_pending.txt` — written by `build_queue.sh` in `/sr-start` step 2, contains issue IDs only (no header). Internal to the build/preview phase. Never read by `/sr-status`.
+- `.sensible-ralph/ordered_queue.txt` — written **only** by the orchestrator at startup, after the operator confirms dispatch. Line 1 is `# run_id: <iso8601>`; subsequent lines are issue IDs. The authoritative committed-run record read by `/sr-status`.
+
+The two-file split closes ENG-287's mixed-state window: aborted previews and failed builds leave `ordered_queue.txt` intact (still showing the last actual run, if any), so `/sr-status` partitions records against the same `run_id` the orchestrator wrote. Mixed-state rendering becomes structurally impossible.
+
+1. **`build_queue.sh "$queue_pending"`** — calls `linear_list_approved_issues` (which unions over every project in `SENSIBLE_RALPH_PROJECTS` and excludes any issue carrying `$CLAUDE_PLUGIN_OPTION_FAILED_LABEL`), then per-issue checks the [pickup rule](linear-lifecycle.md#pickup-rule). Issues whose blockers are not all in `Done`, `In Review`, or queued-Approved are dropped with a stderr warning. For each surviving issue it emits `<issue_id> <priority> <blocker_id>...` to a temp file. Output is published atomically (tempfile + same-directory `mv`) to the destination passed as `$1`. Exit codes: `0` = published a non-empty queue; `1` = construction failed; `2` = empty queue, nothing to publish (caller-distinguishable from success so an empty queue cannot be mistaken for a fresh dispatch).
 2. **`toposort.sh`** — Kahn's algorithm over the `blocked-by` graph restricted to the input set. Linear priority is the tiebreaker for issues ready at the same time (priority=0 "no priority" is remapped to 5 so it sorts after Low). A cycle exits non-zero with `error: cycle detected`.
+3. **Orchestrator commitment publish** — at startup the orchestrator reads `queue_pending.txt`, generates `run_id` (`date -u +%Y-%m-%dT%H:%M:%SZ`), and atomically publishes `# run_id: <iso>` plus the issue IDs to `ordered_queue.txt`. The published header value is the same `run_id` the orchestrator copies into every `progress.json` record this run writes; readers consume from one of the copies, nothing derives a fresh `run_id` from a stored copy. See [`docs/decisions/run-id-from-queue-header.md`](../decisions/run-id-from-queue-header.md) for the rationale.
 
-The result lands at `.sensible-ralph/ordered_queue.txt` under the repo root. Fresh Approved issues that are added to Linear mid-run do **not** get picked up — the queue is fixed at `/sr-start` time. The "start" framing is deliberate: one invocation processes one queue.
+Fresh Approved issues that are added to Linear mid-run do **not** get picked up — the queue is fixed at `/sr-start` time. The "start" framing is deliberate: one invocation processes one queue.
 
 The pickup rule's "queued Approved blocker counts as resolved" clause is what makes overnight execution of dependency chains work: toposort guarantees the parent dispatches before the child, the parent's session reaches `In Review` before the child's setup begins, and `dag_base.sh` then picks up the parent's branch as the child's base. See `docs/design/linear-lifecycle.md` for the full state-machine context.
 
@@ -199,7 +205,7 @@ Each record carries:
 - **`event`** — `"start"` (immediately before `claude -p`) or `"end"` (after classification). Discriminator added in ENG-241 so `/sr-status` can render in-flight Running rows. Pre-ENG-241 records have no `event` field and are filtered out via `run_id` selection (latest run only).
 - **`issue`** — Linear issue ID. Always present.
 - **`timestamp`** — ISO 8601 UTC. On `start` records, the dispatch moment. On `end` records, the same dispatch timestamp — so `timestamp + duration_seconds` consistently means "claude end time."
-- **`run_id`** — ISO 8601 UTC captured once at orchestrator start. Every record from the same invocation shares this value; consumers group by it for per-run analysis.
+- **`run_id`** — ISO 8601 UTC captured once at orchestrator start. The orchestrator copies the same in-memory value into both the `# run_id:` header line of `.sensible-ralph/ordered_queue.txt` (published atomically before any progress.json record lands) and every `progress.json` record this run writes. Consumers group by it for per-run analysis. **Source of truth contract:** the in-memory value is authoritative; the queue header and progress.json are both copies. Readers (including `/sr-status`) consume from one of the copies; nothing derives a new `run_id` from a stored copy.
 - **`outcome`** — `end` records only. One of the seven outcomes above.
 - **`branch`, `base`** — `start` records and dispatched-outcome `end` records (`in_review`, `exit_clean_no_review`, `failed`, `unknown_post_state`).
 - **`exit_code`, `duration_seconds`** — dispatched-outcome `end` records only. `duration_seconds` is keyed off the `claude -p` invocation start, not function entry, so it measures the session itself rather than setup overhead.

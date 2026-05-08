@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Dispatch loop: consume an ordered queue of issue IDs, pre-create the
+# Dispatch loop: consume a pending queue of issue IDs, pre-create the
 # worktree at the DAG-chosen base, transition Linear state, invoke
 # `claude -p` with the rendered prompt, classify outcomes using the
 # Linear post-dispatch state (Q2 finding: exit 0 alone does NOT imply
@@ -9,9 +9,18 @@ set -euo pipefail
 # propagate failure taint to transitive downstream dependents, and
 # append a per-issue record to progress.json.
 #
-# Input contract: $1 is a file path containing one issue ID per line,
-# pre-sorted by toposort.sh. .sensible-ralph/progress.json is written under the repo root
-# (resolved via $PLUGIN_ROOT/lib/worktree.sh::_resolve_repo_root), independent of cwd.
+# Input contract: $1 is a path to queue_pending.txt — one issue ID per
+# line, no header, pre-sorted by toposort.sh. The file must exist and be
+# non-empty; missing/empty signals a /sr-start contract violation and exits
+# non-zero. This script is also the sole publisher of
+# .sensible-ralph/ordered_queue.txt: at startup, before any progress.json
+# record lands, it generates run_id and atomically writes
+# `# run_id: <iso8601>\n<issue ids…>` to that file. The published header is
+# the same run_id that flows into every progress.json record this run
+# writes; /sr-status reads it directly. (ENG-287)
+# .sensible-ralph/progress.json and ordered_queue.txt are both written under
+# the repo root (resolved via $PLUGIN_ROOT/lib/worktree.sh::_resolve_repo_root),
+# independent of cwd.
 #
 # Required env: CLAUDE_PLUGIN_OPTION_IN_PROGRESS_STATE,
 #               CLAUDE_PLUGIN_OPTION_REVIEW_STATE,
@@ -50,11 +59,17 @@ fi
 # shellcheck source=../../../lib/worktree.sh
 source "$PLUGIN_ROOT/lib/worktree.sh"
 
-queue_file="${1:?orchestrator.sh: queue file path required as \$1}"
+queue_file="${1:?orchestrator.sh: queue_pending.txt path required as \$1}"
+
+if [[ ! -f "$queue_file" ]]; then
+  printf 'orchestrator: queue_pending file does not exist: %s\n' "$queue_file" >&2
+  exit 1
+fi
 
 # Ensure the consumer-repo .sensible-ralph/ directory exists once at startup so the
-# atomic mktemp+mv pattern in _progress_append has a destination on the first
-# record, no matter which dispatch path writes first.
+# atomic mktemp+mv pattern in _progress_append (and the ordered_queue.txt
+# publish below) has a destination on the first write, no matter which
+# dispatch path runs first.
 repo_root="$(_resolve_repo_root)"
 mkdir -p "$repo_root/.sensible-ralph"
 
@@ -141,13 +156,28 @@ while IFS= read -r line || [[ -n "$line" ]]; do
 done < "$queue_file"
 
 if [[ "${#queued_ids[@]}" -eq 0 ]]; then
-  exit 0
+  printf 'orchestrator: queue_pending file is empty: %s — /sr-start contract violation; nothing to dispatch\n' "$queue_file" >&2
+  exit 1
 fi
 
-# Invocation id — shared by every progress.json record written by this run.
-# Groups records from the same orchestrator invocation for later auditing
-# (design doc Component 6). ISO 8601 UTC.
+# Invocation id — shared by every progress.json record written by this run
+# AND embedded as the header of ordered_queue.txt below. Groups records from
+# the same orchestrator invocation for later auditing (design doc Component
+# 6). ISO 8601 UTC.
 run_id="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+# Commitment publish (ENG-287): the orchestrator is the only writer of
+# .sensible-ralph/ordered_queue.txt. Atomically write `# run_id: <iso>\n<ids>`
+# via tempfile + same-directory mv before any progress.json record lands, so
+# /sr-status reads run_id from the header and never partitions a fresh queue
+# against a previous run's records.
+ordered_queue_file="$repo_root/.sensible-ralph/ordered_queue.txt"
+ordered_queue_tmp="$(mktemp "${ordered_queue_file}.XXXXXX")"
+{
+  printf '# run_id: %s\n' "$run_id"
+  printf '%s\n' "${queued_ids[@]}"
+} > "$ordered_queue_tmp"
+mv "$ordered_queue_tmp" "$ordered_queue_file"
 
 # Parallel arrays encoding the parent->children map (bash 3.2 has no assoc arrays).
 # _parent_ids[i] is the parent; _child_lists[i] is a space-delimited list of its children.

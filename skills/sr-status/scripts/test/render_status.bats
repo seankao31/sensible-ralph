@@ -2,6 +2,11 @@
 # Tests for skills/sr-status/scripts/render_status.sh — the read-only
 # /sr-status renderer. Uses a real throwaway git repo and writes synthetic
 # progress.json + ordered_queue.txt fixtures.
+#
+# ENG-287: ordered_queue.txt always carries a `# run_id: <iso>` header on
+# line 1; the renderer reads it directly and partitions progress.json
+# records by that run_id. The chronological-sort derivation on
+# progress.json is gone.
 
 # Project root containing skills/sr-start and skills/sr-status.
 # The renderer sources $CLAUDE_PLUGIN_ROOT/skills/sr-start/scripts/lib/...,
@@ -41,17 +46,25 @@ write_progress() {
   printf '%s' "$1" > "$REPO_DIR/.sensible-ralph/progress.json"
 }
 
+# Helper: write ordered_queue.txt with the `# run_id: <id>` header on line 1
+# and the supplied issue IDs on subsequent lines. In production this is
+# only ever written by the orchestrator's commitment publish; tests write it
+# directly to set up rendered-state fixtures.
+# Usage: write_queue <run_id> [issue_id...]
 write_queue() {
+  local run_id="$1"; shift
   : > "$REPO_DIR/.sensible-ralph/ordered_queue.txt"
+  printf '# run_id: %s\n' "$run_id" >> "$REPO_DIR/.sensible-ralph/ordered_queue.txt"
   for id in "$@"; do
     printf '%s\n' "$id" >> "$REPO_DIR/.sensible-ralph/ordered_queue.txt"
   done
 }
 
 # ---------------------------------------------------------------------------
-# 5. No progress.json: friendly hint, exit 0
+# 1. No queue file: friendly hint, exit 0 (legitimate fresh-repo path —
+#    no orchestrator run has ever committed a queue here).
 # ---------------------------------------------------------------------------
-@test "no progress.json: prints 'No ralph runs recorded' hint and exits 0" {
+@test "no queue file: prints 'No ralph runs recorded' hint and exits 0" {
   run_render
   [ "$status" -eq 0 ]
   [[ "$output" == *"No ralph runs recorded"* ]]
@@ -59,7 +72,7 @@ write_queue() {
 }
 
 # ---------------------------------------------------------------------------
-# 6. Single in-flight issue (start record only) — Running with elapsed
+# 2. Single in-flight issue (start record only) — Running with elapsed
 # ---------------------------------------------------------------------------
 @test "single in-flight issue (start record only): renders under Running with elapsed time" {
   # Start record from 2 minutes ago — elapsed should render as "2m"
@@ -67,7 +80,7 @@ write_queue() {
   write_progress '[
     {"event":"start","issue":"ENG-211","branch":"eng-211-foo","base":"main","timestamp":"'"$now_iso"'","run_id":"'"$now_iso"'"}
   ]'
-  write_queue ENG-211
+  write_queue "$now_iso" ENG-211
 
   run_render
   [ "$status" -eq 0 ]
@@ -82,7 +95,7 @@ write_queue() {
 }
 
 # ---------------------------------------------------------------------------
-# 7. Mixed Done + Running + Queued — all three sections populated correctly
+# 3. Mixed Done + Running + Queued — all three sections populated correctly
 # ---------------------------------------------------------------------------
 @test "mixed Done + Running + Queued: all sections populated, Done from end record, Running from start record, Queued from queue file" {
   local now_iso; now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -92,7 +105,7 @@ write_queue() {
     {"event":"end","issue":"ENG-208","outcome":"in_review","branch":"eng-208-foo","base":"main","exit_code":0,"duration_seconds":3120,"timestamp":"2026-04-22T17:50:00Z","run_id":"'"$run_id"'"},
     {"event":"start","issue":"ENG-211","branch":"eng-211-bar","base":"main","timestamp":"'"$now_iso"'","run_id":"'"$run_id"'"}
   ]'
-  write_queue ENG-208 ENG-211 ENG-212 ENG-213
+  write_queue "$run_id" ENG-208 ENG-211 ENG-212 ENG-213
 
   run_render
   [ "$status" -eq 0 ]
@@ -113,7 +126,7 @@ write_queue() {
 }
 
 # ---------------------------------------------------------------------------
-# 8. All complete — Done populated, Running and Queued each show (none)
+# 4. All complete — Done populated, Running and Queued each show (none)
 # ---------------------------------------------------------------------------
 @test "all complete: Running and Queued each show (none)" {
   local run_id="2026-04-22T18:30:00Z"
@@ -121,7 +134,7 @@ write_queue() {
     {"event":"start","issue":"ENG-208","branch":"eng-208-foo","base":"main","timestamp":"2026-04-22T18:30:00Z","run_id":"'"$run_id"'"},
     {"event":"end","issue":"ENG-208","outcome":"in_review","branch":"eng-208-foo","base":"main","exit_code":0,"duration_seconds":600,"timestamp":"2026-04-22T18:30:00Z","run_id":"'"$run_id"'"}
   ]'
-  write_queue ENG-208
+  write_queue "$run_id" ENG-208
 
   run_render
   [ "$status" -eq 0 ]
@@ -135,7 +148,7 @@ write_queue() {
 }
 
 # ---------------------------------------------------------------------------
-# 9. Failed outcome formatting: 'failed (exit 7)'
+# 5. Failed outcome formatting: 'failed (exit 7)'
 # ---------------------------------------------------------------------------
 @test "failed outcome: rendered as 'failed (exit N)'" {
   local run_id="2026-04-22T18:30:00Z"
@@ -143,6 +156,7 @@ write_queue() {
     {"event":"start","issue":"ENG-210","branch":"eng-210-foo","base":"main","timestamp":"2026-04-22T18:30:00Z","run_id":"'"$run_id"'"},
     {"event":"end","issue":"ENG-210","outcome":"failed","branch":"eng-210-foo","base":"main","exit_code":7,"duration_seconds":180,"timestamp":"2026-04-22T18:30:00Z","run_id":"'"$run_id"'"}
   ]'
+  write_queue "$run_id" ENG-210
 
   run_render
   [ "$status" -eq 0 ]
@@ -150,13 +164,14 @@ write_queue() {
 }
 
 # ---------------------------------------------------------------------------
-# 10. setup_failed outcome formatting: 'setup_failed (linear_set_state)'
+# 6. setup_failed outcome formatting: 'setup_failed (linear_set_state)'
 # ---------------------------------------------------------------------------
 @test "setup_failed outcome: rendered as 'setup_failed (<failed_step>)'" {
   local run_id="2026-04-22T18:30:00Z"
   write_progress '[
     {"event":"end","issue":"ENG-220","outcome":"setup_failed","failed_step":"linear_set_state","timestamp":"2026-04-22T18:30:00Z","run_id":"'"$run_id"'"}
   ]'
+  write_queue "$run_id" ENG-220
 
   run_render
   [ "$status" -eq 0 ]
@@ -164,50 +179,74 @@ write_queue() {
 }
 
 # ---------------------------------------------------------------------------
-# 11. Latest run_id selection: only records from the latest run are rendered
+# 7. ENG-287 regression: queue header `run_id` takes precedence; new run
+#    with no progress.json records yet renders empty Done/Running and full
+#    Queued. The old derivation would have selected the previous run.
 # ---------------------------------------------------------------------------
-@test "two run_ids in progress.json: only the latest is rendered" {
+@test "ENG-287 queue header run_id wins: new run with no records yet, prior run records ignored" {
   local old_run="2026-04-20T10:00:00Z"
   local new_run="2026-04-22T18:30:00Z"
+  # progress.json has only OLD-run records.
   write_progress '[
-    {"event":"start","issue":"ENG-100","branch":"eng-100","base":"main","timestamp":"2026-04-20T10:00:00Z","run_id":"'"$old_run"'"},
-    {"event":"end","issue":"ENG-100","outcome":"in_review","branch":"eng-100","base":"main","exit_code":0,"duration_seconds":900,"timestamp":"2026-04-20T10:00:00Z","run_id":"'"$old_run"'"},
-    {"event":"start","issue":"ENG-200","branch":"eng-200","base":"main","timestamp":"2026-04-22T18:30:00Z","run_id":"'"$new_run"'"},
-    {"event":"end","issue":"ENG-200","outcome":"in_review","branch":"eng-200","base":"main","exit_code":0,"duration_seconds":600,"timestamp":"2026-04-22T18:30:00Z","run_id":"'"$new_run"'"}
+    {"event":"start","issue":"ENG-OLD","branch":"eng-old","base":"main","timestamp":"'"$old_run"'","run_id":"'"$old_run"'"},
+    {"event":"end","issue":"ENG-OLD","outcome":"in_review","branch":"eng-old","base":"main","exit_code":0,"duration_seconds":600,"timestamp":"'"$old_run"'","run_id":"'"$old_run"'"}
   ]'
+  # Queue header points at the NEW run with three issue IDs.
+  write_queue "$new_run" ENG-A ENG-B ENG-C
 
   run_render
   [ "$status" -eq 0 ]
-  # Only the newer run's issue appears
-  [[ "$output" == *"ENG-200"* ]]
-  [[ "$output" != *"ENG-100"* ]]
   [[ "$output" == *"Run started: $new_run"* ]]
+  [[ "$output" == *"=== Done (0) ==="* ]]
+  [[ "$output" == *"=== Running (0) ==="* ]]
+  [[ "$output" == *"=== Queued (3) ==="* ]]
+  [[ "$output" == *"ENG-A"* ]]
+  [[ "$output" == *"ENG-B"* ]]
+  [[ "$output" == *"ENG-C"* ]]
+  # OLD run's records do not appear anywhere — the structural protection
+  # `select(.run_id == $run)` drops them.
+  [[ "$output" != *"ENG-OLD"* ]]
+  [[ "$output" != *"$old_run"* ]]
 }
 
 # ---------------------------------------------------------------------------
-# 12. Legacy pre-event-field records: filtered out by run_id selection
+# 8. ordered_queue.txt exists but has no header line: error and exit non-zero
+#    (legacy header-less file from prior plugin versions, or operator
+#    hand-edit that wiped the header).
 # ---------------------------------------------------------------------------
-@test "legacy records (no event field) coexist with new records: legacy filtered out by run_id selection" {
-  local legacy_run="2026-04-15T08:00:00Z"
-  local new_run="2026-04-22T18:30:00Z"
-  # Legacy record has no event field; new run has event:start + event:end.
-  write_progress '[
-    {"issue":"ENG-50","outcome":"in_review","branch":"eng-50","base":"main","exit_code":0,"duration_seconds":1200,"timestamp":"2026-04-15T08:00:00Z","run_id":"'"$legacy_run"'"},
-    {"event":"start","issue":"ENG-300","branch":"eng-300","base":"main","timestamp":"2026-04-22T18:30:00Z","run_id":"'"$new_run"'"},
-    {"event":"end","issue":"ENG-300","outcome":"in_review","branch":"eng-300","base":"main","exit_code":0,"duration_seconds":600,"timestamp":"2026-04-22T18:30:00Z","run_id":"'"$new_run"'"}
-  ]'
+@test "ordered_queue.txt without header: errors loud, exit non-zero" {
+  : > "$REPO_DIR/.sensible-ralph/ordered_queue.txt"
+  printf 'ENG-100\nENG-101\n' > "$REPO_DIR/.sensible-ralph/ordered_queue.txt"
+
+  run_render
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"missing '# run_id: <id>' header line"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# 9. ENG-287 setup-time gap: queue header is present but progress.json does
+#    not exist yet (first `start` record has not landed). Renderer
+#    initializes empty record set and continues — Done(0) Running(0)
+#    Queued(N) — instead of crashing under set -e.
+# ---------------------------------------------------------------------------
+@test "ENG-287 queue header present, progress.json missing: Done(0) Running(0) Queued(N), exit 0" {
+  local rid="2026-04-22T18:30:00Z"
+  write_queue "$rid" ENG-X ENG-Y
+  # Explicitly DO NOT write progress.json.
+  [ ! -f "$REPO_DIR/.sensible-ralph/progress.json" ]
 
   run_render
   [ "$status" -eq 0 ]
-  # Legacy issue does NOT appear (it's in an older run_id)
-  [[ "$output" != *"ENG-50"* ]]
-  # New issue does appear
-  [[ "$output" == *"ENG-300"* ]]
-  [[ "$output" == *"Run started: $new_run"* ]]
+  [[ "$output" == *"Run started: $rid"* ]]
+  [[ "$output" == *"=== Done (0) ==="* ]]
+  [[ "$output" == *"=== Running (0) ==="* ]]
+  [[ "$output" == *"=== Queued (2) ==="* ]]
+  [[ "$output" == *"ENG-X"* ]]
+  [[ "$output" == *"ENG-Y"* ]]
 }
 
 # ---------------------------------------------------------------------------
-# 13. Not in a git repo: exit 1 with clear message
+# 10. Not in a git repo: exit 1 with clear message
 # ---------------------------------------------------------------------------
 @test "not in a git repo: exit 1 with clear message on stderr" {
   local non_git_dir; non_git_dir="$(mktemp -d)"
@@ -218,15 +257,15 @@ write_queue() {
 }
 
 # ---------------------------------------------------------------------------
-# 14. Empty ordered_queue.txt: Queued section shows (none)
+# 11. Queue file with header but no issue IDs: Queued shows (none)
 # ---------------------------------------------------------------------------
-@test "empty ordered_queue.txt: Queued section shows (none)" {
+@test "header-only ordered_queue.txt (no issues): Queued section shows (none)" {
   local run_id="2026-04-22T18:30:00Z"
   write_progress '[
     {"event":"start","issue":"ENG-400","branch":"eng-400","base":"main","timestamp":"2026-04-22T18:30:00Z","run_id":"'"$run_id"'"},
     {"event":"end","issue":"ENG-400","outcome":"in_review","branch":"eng-400","base":"main","exit_code":0,"duration_seconds":300,"timestamp":"2026-04-22T18:30:00Z","run_id":"'"$run_id"'"}
   ]'
-  : > "$REPO_DIR/.sensible-ralph/ordered_queue.txt"
+  write_queue "$run_id"
 
   run_render
   [ "$status" -eq 0 ]
@@ -235,29 +274,7 @@ write_queue() {
 }
 
 # ---------------------------------------------------------------------------
-# 15. Out-of-insertion-order run_ids: chronological selection, not array position
-# ---------------------------------------------------------------------------
-@test "run_ids out of insertion order: chronologically-latest selected via fromdateiso8601" {
-  local newest="2026-04-22T18:30:00Z"
-  local oldest="2026-03-01T08:00:00Z"
-  # The OLDER run_id appears LAST in the array — defeats lexicographic
-  # array-position sort but works with explicit fromdateiso8601 sort.
-  write_progress '[
-    {"event":"start","issue":"ENG-NEW","branch":"eng-new","base":"main","timestamp":"2026-04-22T18:30:00Z","run_id":"'"$newest"'"},
-    {"event":"end","issue":"ENG-NEW","outcome":"in_review","branch":"eng-new","base":"main","exit_code":0,"duration_seconds":300,"timestamp":"2026-04-22T18:30:00Z","run_id":"'"$newest"'"},
-    {"event":"start","issue":"ENG-OLD","branch":"eng-old","base":"main","timestamp":"2026-03-01T08:00:00Z","run_id":"'"$oldest"'"},
-    {"event":"end","issue":"ENG-OLD","outcome":"in_review","branch":"eng-old","base":"main","exit_code":0,"duration_seconds":300,"timestamp":"2026-03-01T08:00:00Z","run_id":"'"$oldest"'"}
-  ]'
-
-  run_render
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"ENG-NEW"* ]]
-  [[ "$output" != *"ENG-OLD"* ]]
-  [[ "$output" == *"Run started: $newest"* ]]
-}
-
-# ---------------------------------------------------------------------------
-# 16. End-only record (failed start-record write): classifies as Done, not Running
+# 12. End-only record (failed start-record write): classifies as Done, not Running
 # ---------------------------------------------------------------------------
 @test "end-only record (no matching start): classifies as Done, NOT Running, NOT Queued" {
   local run_id="2026-04-22T18:30:00Z"
@@ -267,7 +284,7 @@ write_queue() {
   ]'
   # Queue file lists ENG-500 — without the Done classification, it would
   # incorrectly land in Queued.
-  write_queue ENG-500
+  write_queue "$run_id" ENG-500
 
   run_render
   [ "$status" -eq 0 ]
@@ -280,7 +297,8 @@ write_queue() {
 # ---------------------------------------------------------------------------
 # ENG-308 session-diagnostics sub-block. Driven by field presence on the end
 # record; the only outcome-named rule is the in_review whole-sub-block
-# override.
+# override. These tests use a queue file with a header (ENG-287) so the
+# renderer reaches the rendering path.
 # ---------------------------------------------------------------------------
 
 @test "ENG-308 failed row with hint+transcript+session: full diagnostic sub-block renders" {
@@ -288,6 +306,7 @@ write_queue() {
   write_progress '[
     {"event":"end","issue":"ENG-294","outcome":"exit_clean_no_review","branch":"eng-294","base":"main","exit_code":0,"duration_seconds":840,"timestamp":"2026-04-22T18:30:00Z","run_id":"'"$run_id"'","session_id":"abc-123","transcript_path":"/Users/x/.claude/projects/-foo/abc-123.jsonl","worktree_log_path":"/Users/x/repo/.worktrees/eng-294/ralph-output.log","hint":"no implementation commits; context-loss after Skill (using-superpowers) (claude-code#17351)"}
   ]'
+  write_queue "$run_id" ENG-294
 
   run_render
   [ "$status" -eq 0 ]
@@ -306,6 +325,7 @@ write_queue() {
   write_progress '[
     {"event":"end","issue":"ENG-200","outcome":"in_review","branch":"eng-200","base":"main","exit_code":0,"duration_seconds":600,"timestamp":"2026-04-22T18:30:00Z","run_id":"'"$run_id"'","session_id":"abc-200","transcript_path":"/Users/x/.claude/projects/-foo/abc-200.jsonl","worktree_log_path":"/Users/x/repo/.worktrees/eng-200/ralph-output.log"}
   ]'
+  write_queue "$run_id" ENG-200
 
   run_render
   [ "$status" -eq 0 ]
@@ -322,6 +342,7 @@ write_queue() {
   write_progress '[
     {"event":"end","issue":"ENG-150","outcome":"failed","branch":"eng-150","base":"main","exit_code":7,"duration_seconds":120,"timestamp":"2026-04-22T18:30:00Z","run_id":"'"$run_id"'"}
   ]'
+  write_queue "$run_id" ENG-150
 
   run_render
   [ "$status" -eq 0 ]
@@ -336,6 +357,7 @@ write_queue() {
   write_progress '[
     {"event":"end","issue":"ENG-160","outcome":"failed","branch":"eng-160","base":"main","exit_code":1,"duration_seconds":300,"timestamp":"2026-04-22T18:30:00Z","run_id":"'"$run_id"'","hint":"no implementation commits"}
   ]'
+  write_queue "$run_id" ENG-160
 
   run_render
   [ "$status" -eq 0 ]
@@ -350,6 +372,7 @@ write_queue() {
   write_progress '[
     {"event":"end","issue":"ENG-170","outcome":"failed","branch":"eng-170","base":"main","exit_code":1,"duration_seconds":300,"timestamp":"2026-04-22T18:30:00Z","run_id":"'"$run_id"'","worktree_log_path":"/some/wt/ralph-output.log"}
   ]'
+  write_queue "$run_id" ENG-170
 
   run_render
   [ "$status" -eq 0 ]
@@ -363,6 +386,7 @@ write_queue() {
   write_progress '[
     {"event":"end","issue":"ENG-180","outcome":"setup_failed","failed_step":"linear_set_state","timestamp":"2026-04-22T18:30:00Z","run_id":"'"$run_id"'"}
   ]'
+  write_queue "$run_id" ENG-180
 
   run_render
   [ "$status" -eq 0 ]
@@ -378,6 +402,7 @@ write_queue() {
   write_progress '[
     {"event":"end","issue":"ENG-190","outcome":"failed","branch":"eng-190","base":"main","exit_code":1,"duration_seconds":300,"timestamp":"2026-04-22T18:30:00Z","run_id":"'"$run_id"'","worktree_log_path":"/Users/x/repo/.worktrees/eng-190/old-name.log"}
   ]'
+  write_queue "$run_id" ENG-190
 
   # Reconfigure the live env vars to a new filename — the renderer must
   # NOT use them for the transcript: line; the persisted path is verbatim.
@@ -392,6 +417,7 @@ write_queue() {
   write_progress '[
     {"event":"end","issue":"ENG-201","outcome":"unknown_post_state","branch":"eng-201","base":"main","exit_code":0,"duration_seconds":120,"timestamp":"2026-04-22T18:30:00Z","run_id":"'"$run_id"'","session_id":"u-201","transcript_path":"/Users/x/.claude/projects/-foo/u-201.jsonl","worktree_log_path":"/Users/x/repo/.worktrees/eng-201/ralph-output.log","hint":"uncommitted edits left in worktree"}
   ]'
+  write_queue "$run_id" ENG-201
 
   run_render
   [ "$status" -eq 0 ]
@@ -406,6 +432,7 @@ write_queue() {
   write_progress '[
     {"event":"start","issue":"ENG-205","branch":"eng-205-foo","base":"main","timestamp":"'"$now_iso"'","run_id":"'"$now_iso"'","session_id":"r-205","transcript_path":"/Users/x/.claude/projects/-bar/r-205.jsonl","worktree_log_path":"/persisted/worktree/path/dispatch-time.log"}
   ]'
+  write_queue "$now_iso" ENG-205
 
   run_render
   [ "$status" -eq 0 ]
@@ -419,6 +446,7 @@ write_queue() {
   write_progress '[
     {"event":"start","issue":"ENG-206","branch":"eng-206-bar","base":"main","timestamp":"'"$now_iso"'","run_id":"'"$now_iso"'"}
   ]'
+  write_queue "$now_iso" ENG-206
 
   run_render
   [ "$status" -eq 0 ]

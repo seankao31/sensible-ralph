@@ -3,11 +3,21 @@ set -euo pipefail
 
 # Build the dispatch queue: list pickup-ready Approved issues, sort
 # topologically by blocked-by relations with priority as the tiebreaker,
-# and print the ordered issue IDs (one per line) to stdout.
+# and atomically publish the ordered issue IDs (one per line, no header) to
+# the destination path passed as $1.
 #
 # Usage:
 #   sr_root="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/.sensible-ralph"
-#   mkdir -p "$sr_root" && scripts/build_queue.sh > "$sr_root/ordered_queue.txt"
+#   mkdir -p "$sr_root" && scripts/build_queue.sh "$sr_root/queue_pending.txt"
+#
+# Exit codes:
+#   0 — published a non-empty queue (destination overwritten via tempfile + mv).
+#   1 — construction failed (toposort cycle, linear error, blocker fetch, etc.).
+#       The destination file is left untouched.
+#   2 — empty queue (no pickup-ready Approved issues). The destination file is
+#       left untouched. Distinct from 0 so callers can branch on
+#       "nothing-to-dispatch" without leaving a stale file behind that could be
+#       mistaken for a fresh queue.
 #
 # An issue is pickup-ready only if:
 #   - state == $CLAUDE_PLUGIN_OPTION_APPROVED_STATE
@@ -17,6 +27,9 @@ set -euo pipefail
 #
 # Issues with any blocker in another state are skipped (not yet pickup-ready)
 # and a warning is emitted to stderr.
+
+dest="${1:?build_queue.sh: destination path required as \$1}"
+dest_dir="$(dirname "$dest")"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
@@ -52,15 +65,21 @@ _project_in_scope() {
   return 1
 }
 
+# Tempfiles: $toposort_input collects the issue/priority/blocker rows; $out_tmp
+# holds the toposorted output until the atomic mv. Both share an EXIT trap so
+# any early exit (set -e, explicit exit, signal) cleans up.
+toposort_input="$(mktemp)"
+out_tmp="$(mktemp "${dest}.XXXXXX")"
+trap 'rm -f "$toposort_input" "$out_tmp"' EXIT
+
 approved_ids="$(linear_list_approved_issues)"
-[[ -z "$approved_ids" ]] && exit 0
+if [[ -z "$approved_ids" ]]; then
+  exit 2
+fi
 
 # Membership-test fixture for the approved set (space-delimited with leading
 # and trailing space so substring match `*" $id "*` works for any id).
 approved_set=" $(printf '%s' "$approved_ids" | tr '\n' ' ') "
-
-toposort_input="$(mktemp)"
-trap 'rm -f "$toposort_input"' EXIT
 
 while IFS= read -r issue_id; do
   [[ -z "$issue_id" ]] && continue
@@ -114,6 +133,21 @@ while IFS= read -r issue_id; do
   printf '%s %s %s\n' "$issue_id" "$priority" "$blocker_ids" >> "$toposort_input"
 done <<< "$approved_ids"
 
-[[ ! -s "$toposort_input" ]] && exit 0
+if [[ ! -s "$toposort_input" ]]; then
+  exit 2
+fi
 
-"$SCRIPT_DIR/toposort.sh" < "$toposort_input"
+"$SCRIPT_DIR/toposort.sh" < "$toposort_input" > "$out_tmp"
+
+if [[ ! -s "$out_tmp" ]]; then
+  # Defensive: toposort produced empty output despite non-empty input. Treat
+  # as construction failure rather than empty-queue — the input was non-empty,
+  # so a missing output means something went wrong.
+  exit 1
+fi
+
+# Atomic publish: same-directory rename is atomic on POSIX. Readers see either
+# the prior file (fully formed) or the new one (fully formed), never a partial
+# mix. Drop the EXIT-trap entry for $out_tmp because mv consumes it.
+mv "$out_tmp" "$dest"
+trap 'rm -f "$toposort_input"' EXIT
