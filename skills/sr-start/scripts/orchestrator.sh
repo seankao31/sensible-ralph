@@ -218,13 +218,53 @@ _taint_descendants() {
   done
 }
 
+# Apply the failed label and verify it actually landed on the issue.
+# Returns 0 only when the label is observed on the issue post-add.
+# On failure, logs the specific reason (CLI failure / read failure /
+# silent no-op) to stderr — three distinct mechanisms with three
+# distinct terminal Linear states.
+#
+# Linear silently no-ops --label updates that reference a workspace
+# label name that doesn't exist; we cannot trust linear_add_label's
+# exit code as proof of post-write state. Preflight checks for label
+# existence before the run, but the label can be deleted between
+# preflight and a failed-dispatch label-add — so verify on every call.
+_apply_failed_label_verified() {
+  local issue_id="$1"
+  if ! linear_add_label "$issue_id" "$CLAUDE_PLUGIN_OPTION_FAILED_LABEL"; then
+    printf 'orchestrator: failed to add %s label to %s; leaving state In Progress (continuing)\n' \
+      "$CLAUDE_PLUGIN_OPTION_FAILED_LABEL" "$issue_id" >&2
+    return 1
+  fi
+  local labels
+  if ! labels="$(linear_get_issue_labels "$issue_id" 2>/dev/null)"; then
+    printf 'orchestrator: linear_get_issue_labels failed for %s after label-add; label MAY be on the issue (operator: check Linear and follow the labeled-In-Progress recovery recipe in linear-lifecycle.md); leaving state In Progress (continuing)\n' \
+      "$issue_id" >&2
+    return 1
+  fi
+  # -Fx: fixed-string + exact-line match. -F alone would false-positive on a
+  # label whose name contains FAILED_LABEL as a prefix (e.g. "ralph-failed-v2").
+  if printf '%s\n' "$labels" | grep -qFx "$CLAUDE_PLUGIN_OPTION_FAILED_LABEL"; then
+    return 0
+  fi
+  printf 'orchestrator: %s did not land on %s after label-add (silent no-op — workspace label may be missing); leaving state In Progress (continuing)\n' \
+    "$CLAUDE_PLUGIN_OPTION_FAILED_LABEL" "$issue_id" >&2
+  return 1
+}
+
 # Record a setup_failed outcome and taint downstream dependents. Used by the
 # per-issue fault-isolation path so one bad issue can't abort the whole run.
+#
+# Setup-failed paths fire BEFORE the dispatch-time `linear_set_state ... In
+# Progress` call, so state is still `Approved` when this handler runs — no
+# state-revert is needed (or possible). The verify-after-add gate runs for
+# diagnostic value only: if the workspace label is missing, the helper's
+# silent-no-op stderr surfaces the cause without changing the outcome.
 _record_setup_failure() {
   local issue_id="$1"
   local failed_step="$2"
   local timestamp="$3"
-  linear_add_label "$issue_id" "$CLAUDE_PLUGIN_OPTION_FAILED_LABEL" || true
+  _apply_failed_label_verified "$issue_id" || true
   _taint_descendants "$issue_id"
   local record
   record="$(jq -n \
@@ -713,8 +753,18 @@ _dispatch_issue() {
 
   case "$outcome" in
     exit_clean_no_review|failed)
-      linear_add_label "$issue_id" "$CLAUDE_PLUGIN_OPTION_FAILED_LABEL" || \
-        printf 'orchestrator: failed to add %s label to %s (continuing)\n' "$CLAUDE_PLUGIN_OPTION_FAILED_LABEL" "$issue_id" >&2
+      if _apply_failed_label_verified "$issue_id"; then
+        # Gate: only revert if state is still In Progress — avoids overwriting
+        # a state the operator intentionally changed mid-session (e.g. Canceled).
+        # For failed (non-zero exit), post_state may be empty if the state
+        # fetch also failed; the empty-string comparison is intentionally
+        # non-matching so we skip the revert in that case.
+        if [[ "$post_state" == "$CLAUDE_PLUGIN_OPTION_IN_PROGRESS_STATE" ]]; then
+          linear_set_state "$issue_id" "$CLAUDE_PLUGIN_OPTION_APPROVED_STATE" || \
+            printf 'orchestrator: failed to revert %s to %s (continuing)\n' \
+              "$issue_id" "$CLAUDE_PLUGIN_OPTION_APPROVED_STATE" >&2
+        fi
+      fi
       _taint_descendants "$issue_id"
       ;;
   esac

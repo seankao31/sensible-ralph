@@ -47,7 +47,7 @@ Three workspace-scoped labels are part of the lifecycle. All label names are use
 
 | Label | Default name | userConfig option | Applied by | Cleared by |
 |---|---|---|---|---|
-| Failed dispatch | `ralph-failed` | `failed_label` | `orchestrator.sh` on `failed`, `exit_clean_no_review`, or `setup_failed` outcomes | Operator removes the label in Linear before re-queueing |
+| Failed dispatch | `ralph-failed` | `failed_label` | `orchestrator.sh` on `failed`, `exit_clean_no_review`, or `setup_failed` outcomes | Operator removes the label; see [re-queue recipe](#re-queue-recipe) for happy-path and degraded steps |
 | Stale parent | `stale-parent` | `stale_parent_label` | `/close-issue` (step 6) on In-Review children whose parent landed amendments during review | Operator dismisses after rebasing the child or accepting the review gap |
 | Coordination dependency | `ralph-coord-dep` | `coord_dep_label` | `/sr-spec` step 12 (and ENG-281's `/sr-start` backstop) when the coord-dep scan auto-adds `blocked-by` edges | `/close-issue` step 8 once the audited edges are deleted; kept on a non-clean cleanup as the operator's signal |
 
@@ -57,12 +57,18 @@ Three workspace-scoped labels are part of the lifecycle. All label names are use
 
 **`ralph-coord-dep` is observational + cleanup-bearing.** It does not gate dispatch; the load-bearing artifact for cleanup is the ```` ```coord-dep-audit ```` fenced JSON block in the `/sr-spec` audit comment. The label exists so an operator scanning Linear can tell at a glance which issues had auto-added coord-dep edges, and so that a non-clean `/close-issue` cleanup leaves a persistent visual signal (the label sticks around when at least one audited edge could not be deleted).
 
-To re-queue an issue that hit `ralph-failed`:
+<a id="re-queue-recipe"></a>To re-queue an issue that hit `ralph-failed`:
 
 1. Read `.sensible-ralph/progress.json` and find the `"end"` record for the issue. The `outcome` field tells you which failure path triggered the label:
-   - `failed` / `exit_clean_no_review`: a `claude -p` session ran. Inspect `<worktree>/<stdout_log_filename>` for the session's final output.
-   - `setup_failed`: the orchestrator never created the worktree (or failed partway through setup before `claude -p` launched). There may be no worktree log — use the `failed_step` field in the progress record to identify which setup step broke.
-2. Fix the underlying issue, then remove the `ralph-failed` label via the Linear UI so the next `/sr-start` picks it up again, or cancel the issue if the work is no longer wanted. The `linear` CLI exposes no per-issue label-removal command; do not run `linear label delete`, which deletes the label workspace-wide.
+   - `failed` / `exit_clean_no_review`: a `claude -p` session ran. `cd` into the worktree and inspect `<worktree>/<stdout_log_filename>` for the session's final output.
+   - `setup_failed`: the orchestrator never invoked `claude -p` (or failed partway through setup). There may be no worktree log — use the `failed_step` field in the progress record to identify which setup step broke.
+2. Decide retry / cancel / debug.
+3. To retry, remove the `ralph-failed` label via the Linear UI. The `linear` CLI exposes no per-issue label-removal command; do not run `linear label delete`, which deletes the label workspace-wide. Then **check the issue's state**:
+   - **State is `Approved`** (the common path): the orchestrator's automatic state-revert succeeded. The next `/sr-start` will pick the issue up. Done.
+   - **State is `In Progress`** (the rare degraded path): the orchestrator's revert call failed after the label landed — look for `'failed to revert ... (continuing)'` or `'linear_get_issue_labels failed for ... after label-add'` in the run's stderr / log. Manually flip state to `Approved` via the Linear UI before the next `/sr-start`.
+4. Cancellation alternative: mark the issue `Canceled`; the label is irrelevant in terminal states.
+
+The degraded path is a transient Linear-API blip and is logged to stderr at run-time, so the recovery cost is one extra UI click on the rare occasion the API stuttered between the label-add and the state-revert (or between the label-add and the post-add verification read).
 
 ## Pickup rule
 

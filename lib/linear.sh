@@ -16,6 +16,7 @@
 #   linear_get_issue_blocks         — get outgoing (blocks) relations as JSON array
 #   linear_get_issue_branch         — get Linear-generated branch name for an issue
 #   linear_get_issue_state          — get current workflow state name for an issue
+#   linear_get_issue_labels         — list label names currently applied to an issue
 #   linear_set_state                — move an issue to a named workflow state
 #   linear_add_label                — add a label additively (preserves existing labels)
 #   linear_remove_label             — remove a label from an issue (idempotent on absent)
@@ -259,6 +260,17 @@ linear_get_issue_state() {
   view_json="$(linear issue view "$issue_id" --json --no-comments)" \
     || { printf 'linear_get_issue_state: failed to view %s\n' "$issue_id" >&2; return 1; }
   printf '%s' "$view_json" | jq -r '.state.name'
+}
+
+# Get the list of label names currently applied to an issue.
+# Outputs one label name per line on stdout.
+# Returns non-zero if the linear issue view call fails.
+linear_get_issue_labels() {
+  local issue_id="$1"
+  local view_json
+  view_json="$(linear issue view "$issue_id" --json --no-comments)" \
+    || { printf 'linear_get_issue_labels: failed to view %s\n' "$issue_id" >&2; return 1; }
+  printf '%s' "$view_json" | jq -r '(.labels.nodes // []) | .[].name'
 }
 
 # Move an issue to a named workflow state.
