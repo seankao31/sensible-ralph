@@ -69,28 +69,89 @@ git -C "$WORKTREE_PATH" status --short
 
 ```bash
 git -C "$WORKTREE_PATH" fetch origin main
-git -C "$WORKTREE_PATH" rebase main
+rebase_rc=0
+git -C "$WORKTREE_PATH" rebase main || rebase_rc=$?
+if [ "$rebase_rc" -ne 0 ]; then
+  echo "close-branch: rebase failed (exit $rebase_rc) in $WORKTREE_PATH." >&2
+  echo "  Inspect the worktree state and resolve before re-invoking /close-issue." >&2
+  echo "  - conflicts (typically exit 1): resolve in the worktree and 'git rebase --continue', or 'git rebase --abort' to discard." >&2
+  echo "  - fatal (typically exit 128, e.g. dirty index, missing main): no rebase is in progress; investigate the underlying issue." >&2
+  exit "$rebase_rc"
+fi
 ```
 
 Rebase onto **local** `main`, not `origin/main`. Direct commits to local main happen during plugin development (progress notes, doc tweaks) without immediate push; rebasing onto local main absorbs those so Step 2's merge has a clean linear pre-merge history. The `git fetch` is still useful — Step 2's `git pull --ff-only origin main` catches any movement on the remote before the merge.
 
 The rebase matters even though Step 2 uses `--no-ff` (which doesn't *require* a fast-forward). Without it, the merge commit's first-parent line on `main` would zigzag through pre-rebase history, and `git log --first-parent main` (the canonical "what landed and when" view) would lose its readable shape.
 
-**If rebase fails with conflicts:** resolve them yourself when the right answer is mechanical, then `git -C "$WORKTREE_PATH" add <files>` and `git -C "$WORKTREE_PATH" rebase --continue`. The goal is minimal human intervention *when the decision is mechanical*.
+**When the guard fires** (rebase exited non-zero), close-branch has
+already exited. close-issue receives the non-zero return, prints
+close-branch's diagnostic, and stops without running the Linear
+Done transition, stale-parent labeling, or worktree removal (per
+close-issue SKILL.md Step 4: "On non-zero exit from `close-branch`,
+print the diagnostic and stop — no cleanup runs on failure"). The
+worktree is in whatever state rebase left it — mid-rebase for
+content conflicts (typically exit 1), untouched for fatal errors
+(typically exit 128) — and the main checkout is untouched. close-
+branch did NOT write `.close-branch-result`; on the failure path,
+close-issue stops *before* reading it (the absent-file fallback at
+close-issue Step 5 is for the successful-but-empty case — e.g.
+PR-pending workflows — not for failures).
 
-Mechanical resolutions (resolve, don't escalate):
+/close-issue is interactive-only (per
+`docs/design/autonomous-mode.md`: dispatched autonomous sessions
+do not invoke /close-issue; they exit at /prepare-for-review with
+the issue in `In Review`, and the operator runs /close-issue
+manually next). So the recovery flow below is operator-only.
 
-- Unrelated edits in adjacent regions (formatting, nearby lines, imports) — keep both.
-- Same logical change landed on both sides — drop the feature-branch duplicate; take main's version.
-- Both sides appended different items to the same list, changelog, or docs section — merge the content.
+*Mechanical conflict — resolve in the worktree, then re-run.*
+In the worktree, edit the conflicted files; `git -C
+"$WORKTREE_PATH" add <files>`; `git -C "$WORKTREE_PATH" rebase
+--continue`. `--continue` may surface another conflict (multi-
+conflict rebases iterate); resolve and continue again as needed.
+Re-invoke `/close-issue` only after the rebase has fully completed
+AND the worktree is fully clean — `git -C "$WORKTREE_PATH" status
+--short` produces NO output at all. Both `??` lines (untracked)
+and non-`??` lines (modified, mid-rebase markers like `UU`, etc.)
+cause close-branch's Pre-flight at lines 57-63 to exit non-zero on
+re-entry. Untracked files left over from prior work must be
+committed, removed, or preserved per close-issue's preservation
+step before /close-issue can re-enter close-branch. Once
+`status --short` is empty, re-invoke /close-issue. The
+re-invocation runs Step 1's rebase from scratch; if local main
+has not advanced, the rebase is a no-op and Step 2 proceeds. If
+local main has advanced (new direct-to-main commits, or someone
+ran `git pull` on the main checkout), Step 1 may conflict again —
+be prepared to repeat the cycle. close-branch makes no
+idempotence guarantee here; each invocation runs Step 1 from
+scratch.
 
-Abort (`git rebase --abort`) and exit non-zero only when:
+Mechanical resolutions (the operator can do these without
+escalation):
 
-- Both sides made substantive, contradicting changes to the same logic.
+- Unrelated edits in adjacent regions (formatting, nearby lines,
+  imports) — keep both.
+- Same logical change landed on both sides — drop the feature-
+  branch duplicate; take main's version.
+- Both sides appended different items to the same list,
+  changelog, or docs section — merge the content.
+
+*Ambiguous conflict — abort and escalate.* `git -C
+"$WORKTREE_PATH" rebase --abort` if a rebase is in progress; for
+fatal errors there is no rebase to abort, just investigate the
+underlying issue. Surface the conflict to whoever owns the
+resolution. Do not re-invoke `/close-issue` until it's resolved.
+
+Cases that are NOT mechanical:
+
+- Both sides made substantive, contradicting changes to the same
+  logic.
 - A file was deleted on one side and modified on the other.
-- The right answer isn't obvious without user context.
+- The right answer isn't obvious without operator context.
 
-Silently picking a side on ambiguous logic is worse than stopping — the "minimal intervention" principle applies only when the decision is obvious.
+Silently picking a side on ambiguous logic is worse than stopping
+— the "minimal intervention" principle applies only when the
+decision is obvious.
 
 ### Step 2: No-ff merge to main
 
@@ -217,7 +278,7 @@ On failure at any earlier step, do NOT write this file. `close-issue` treats an 
 
 ## Red Flags / When to Stop
 
-- **Rebase introduces conflicts that need user context.** `git rebase --abort` and exit non-zero. Mechanical conflicts are resolved inline; only ambiguous/contradicting ones stop here.
+- **Rebase introduces conflicts that need user context.** The Step 1 guard exits the skill non-zero. Resolution (mechanical or aborted) happens caller-side per Step 1's prose; close-branch itself never resolves conflicts.
 - **Push is rejected AND neither retry nor reset completes cleanly.** Escalate; never exit while local main is ahead of origin/main.
 - **Main has moved during the ritual.** Re-rebase and re-merge via the retry path. Do NOT bridge with an extra merge commit — the convention is "one merge commit per closed issue", not a chain of fix-up merges.
 - **`-d` refuses to delete the branch.** The branch isn't merged despite the preceding no-ff merge. Exit non-zero; do NOT escalate to `-D`.
